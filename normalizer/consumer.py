@@ -79,13 +79,30 @@ class Normalizer:
         return f"{TOPIC}|{parts}"
 
     def _should_flush(self) -> bool:
-        return bool(self.rows) and (
-            len(self.rows) >= BATCH_MAX_ROWS
-            or (time.time() - self.last_flush) >= BATCH_MAX_SECONDS
-        )
+        elapsed = time.time() - self.last_flush
+        if self.rows and (len(self.rows) >= BATCH_MAX_ROWS or elapsed >= BATCH_MAX_SECONDS):
+            return True
+        # Offsets pending with no insertable rows -- every message was
+        # dead-lettered. This branch is the other half of the partition-stall
+        # bug: gating the flush on `self.rows` means flush() is never even
+        # called, so the commit inside it can never run.
+        return bool(self.batch_bounds) and elapsed >= BATCH_MAX_SECONDS
 
     def flush(self) -> None:
         if not self.rows:
+            # A batch can legitimately contain no rows: every message in it was
+            # dead-lettered. Those offsets STILL have to be committed, or the
+            # partition replays the poison message forever -- lag never clears
+            # and the DLQ fills with duplicates of the same record. Returning
+            # early here (the obvious implementation) is a partition-stall bug.
+            if self.batch_bounds:
+                self.consumer.commit(asynchronous=False)
+                print(
+                    f"[normalizer] committed {len(self.batch_bounds)} partition(s) "
+                    f"with no insertable rows (all dead-lettered)",
+                    flush=True,
+                )
+                self.batch_bounds.clear()
             self.last_flush = time.time()
             return
         token = self._dedup_token()

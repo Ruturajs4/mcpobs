@@ -109,6 +109,34 @@ def produce_poison() -> None:
     producer.flush(20)
 
 
+def consumer_lag() -> int:
+    proc = subprocess.run(
+        [
+            "docker", "exec", "mcpobs-kafka",
+            "/opt/kafka/bin/kafka-consumer-groups.sh",
+            "--bootstrap-server", "localhost:9092", "--describe", "--group", "normalizer",
+        ],
+        capture_output=True, text=True,
+    )
+    total = 0
+    for line in proc.stdout.splitlines():
+        fields = line.split()
+        if len(fields) > 5 and fields[1] == "otlp.spans.raw" and fields[5].isdigit():
+            total += int(fields[5])
+    return total
+
+
+def wait_for_zero_lag(timeout: float = 60.0) -> int:
+    deadline = time.time() + timeout
+    lag = -1
+    while time.time() < deadline:
+        lag = consumer_lag()
+        if lag == 0:
+            return 0
+        time.sleep(3)
+    return lag
+
+
 def wait_for_dlq(ch, timeout: float = 45.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -127,8 +155,13 @@ def main() -> int:
 
     # ---------------- A8 first: it needs a clean before/after -------------
     print("\n--- A8: buffer test (stopping normalizer) ---")
-    before_rows = ch.query("SELECT count() FROM spans_raw").result_rows[0][0]
+    # Quiesce first. Taking the baseline while the normalizer is still draining
+    # an earlier `make demo` makes A8b compare against a moving number, which
+    # reads as a durability failure when it is only a race in this harness.
+    print(f"  waiting for the pipeline to quiesce (lag={wait_for_zero_lag(timeout=90)})")
     compose("stop", "normalizer")
+    time.sleep(3)  # let the container actually exit before sampling
+    before_rows = ch.query("SELECT count() FROM spans_raw").result_rows[0][0]
     offsets_before = kafka_offsets()
 
     asyncio.run(run_demo())
@@ -252,6 +285,15 @@ def main() -> int:
         "A9b normalizer survived the poison message",
         normalizer_restarts() == restarts_before,
         f"restart count stayed at {restarts_before}",
+    )
+    # The partition-stall check. A dead-lettered message whose offset is never
+    # committed leaves lag stuck forever and re-DLQs on every restart. Without
+    # this assertion the pipeline looks healthy while quietly replaying poison.
+    lag = wait_for_zero_lag(timeout=60)
+    record(
+        "A9c consumer lag drains to zero after the DLQ",
+        lag == 0,
+        f"total lag = {lag} (a stuck offset means the partition replays the poison)",
     )
 
     # A7 now means: nothing UNEXPECTED was dead-lettered. The deliberate
