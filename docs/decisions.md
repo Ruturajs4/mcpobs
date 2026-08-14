@@ -74,3 +74,8 @@ through `tools/call`.
 
 This is the most important thing Day 1 found. It belongs on the Day-2 agenda,
 not in a backlog.
+
+| D23 | 2026-08-15 | Replay is proven, not assumed. A deliberate normalizer bug was shipped, detected, fixed, and the data corrected by reprocessing from Kafka with a fresh consumer group — no producer resent anything. | ADR-007 is the justification for the entire Kafka tier and had never been exercised. `scripts/replay.py` is the operational tool. |
+| D24 | 2026-08-15 | Reads that must be correct across a normalizer change MUST resolve `argMax(..., normalization_version)` per `(trace_id, span_id)`. | Proven necessary: a naive query over replayed data mixes buggy v2 rows with corrected v3 rows and reported 6 tools where there are 5. |
+| D25 | 2026-08-15 | Any `trace_locator` read must dedupe explicitly (`LIMIT 1 BY trace_id`). | ReplacingMergeTree deduplicates only when parts merge, which is asynchronous and may never have happened. A replay re-inserts every trace_id, so a naive lookup returns duplicates. Day 3's API depends on this. |
+| D26 | 2026-08-15 | "Is recent data healthy?" must be asked in **event time**, never ingest time. | Replay deliberately decouples the two clocks: it re-ingests old spans *now*, so `ingested_at` cannot isolate a current run. Found when a helper-coverage assertion failed against replayed history. |

@@ -249,14 +249,22 @@ def main() -> int:
         f"{leaked} rows carry payload previews (must be 0)",
     )
 
+    # Scoped by EVENT time (`timestamp`), not ingest time. A replay reprocesses
+    # history that predates the helper middleware, and those rows are correctly
+    # span-sourced -- an attribute cannot be added retroactively to telemetry
+    # produced before it existed. Crucially, `ingested_at` does NOT isolate the
+    # current run either, because a replay re-ingests old spans *now*: replay
+    # deliberately decouples the two clocks. For "is recent data healthy?",
+    # event time is the only meaningful clock.
     sources = dict(
         ch.query(
             "SELECT failure_kind_source, count() FROM spans_raw "
-            "WHERE failure_category != '' AND failure_category != 'ok' GROUP BY 1"
+            "WHERE failure_category NOT IN ('', 'ok') "
+            "  AND timestamp > now() - INTERVAL 15 MINUTE GROUP BY 1"
         ).result_rows
     )
     record(
-        "B3 failures are classified by the helper, not guessed from the span",
+        "B3 recent failures are classified by the helper, not guessed from the span",
         sources.get("helper", 0) > 0 and sources.get("span", 0) == 0,
         f"{sources} (span-sourced failures mean the helper is not attached)",
     )
@@ -292,13 +300,19 @@ def main() -> int:
         f"category={multi[0][2]!r}" if multi else "no multi-span trace found",
     )
 
+    # NOTE THE `LIMIT 1 BY`. trace_locator is a ReplacingMergeTree, and
+    # ReplacingMergeTree deduplicates only when parts merge -- which is
+    # asynchronous and may never have happened. A replay re-inserts every
+    # trace_id, so a naive lookup returns the same trace several times. Any
+    # locator read MUST dedupe explicitly; Day 3's API depends on this.
     located = ch.query(
         "SELECT l.tenant_id, l.project_id, l.trace_date FROM trace_locator AS l "
         "INNER JOIN (SELECT trace_id FROM spans_raw GROUP BY trace_id "
-        "            HAVING count() > 1 LIMIT 1) AS t ON l.trace_id = t.trace_id"
+        "            HAVING count() > 1 LIMIT 1) AS t ON l.trace_id = t.trace_id "
+        "ORDER BY l.first_seen DESC LIMIT 1 BY l.trace_id"
     ).result_rows
     record(
-        "B5 trace_locator resolves a trace to its tenant/project/date",
+        "B5 trace_locator resolves a trace to exactly one tenant/project/date",
         len(located) == 1,
         f"{located}" if located else "locator did not resolve a known trace",
     )
@@ -344,6 +358,44 @@ def main() -> int:
         "A6 protocol version is 2026-07-28",
         versions == ["2026-07-28"],
         f"{versions}",
+    )
+
+    # ---------------- B6: replay correctness (ADR-007) ---------------------
+    # A normalizer bug must be recoverable by reprocessing from Kafka rather
+    # than by asking customers to resend. That requires reads to resolve the
+    # LATEST normalization_version per span -- a naive query mixing versions
+    # returns the buggy rows alongside the corrected ones.
+    print("\n--- B6: replay / normalization_version ---")
+    resolved = {
+        r[0]
+        for r in ch.query(
+            "SELECT mcp_tool_name FROM ("
+            "  SELECT trace_id, span_id,"
+            "         argMax(mcp_tool_name, normalization_version) AS mcp_tool_name,"
+            "         argMax(mcp_method, normalization_version) AS mcp_method"
+            "  FROM spans_raw GROUP BY trace_id, span_id"
+            ") WHERE mcp_method = 'tools/call' GROUP BY mcp_tool_name"
+        ).result_rows
+    }
+    expected_tools = {"echo_fast", "fetch_status", "soft_fail", "explode", "no_such_tool"}
+    record(
+        "B6 version-resolved read returns the correct tool set",
+        resolved == expected_tools,
+        f"{sorted(resolved)}"
+        + (f" UNEXPECTED {sorted(resolved - expected_tools)}" if resolved - expected_tools else ""),
+    )
+
+    versions = sorted(
+        r[0] for r in ch.query(
+            "SELECT DISTINCT normalization_version FROM spans_raw"
+        ).result_rows
+    )
+    record(
+        "B6b normalization_version is stamped on every row",
+        all(v > 0 for v in versions),
+        f"versions present: {versions}"
+        + (" (multiple versions = a replay happened, which is the point)"
+           if len(versions) > 1 else ""),
     )
 
     # ---------------- B7: freshness, the headline metric -------------------

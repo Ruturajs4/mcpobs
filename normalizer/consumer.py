@@ -92,6 +92,7 @@ class Normalizer:
         sink: ClickHouseSink | None = None,
         decoder: OtlpDecoder | None = None,
         normalizer: SpanNormalizer | None = None,
+        stop_when_idle: float | None = None,
     ) -> None:
         self.settings = settings or default_settings
         self.sink = sink or ClickHouseSink(self.settings)
@@ -102,6 +103,9 @@ class Normalizer:
             self.settings.batch_max_seconds,
             self.settings.kafka_topic,
         )
+        # Replay tooling sets this: exit once the topic is drained instead of
+        # running forever (Architecture.md §5.4).
+        self.stop_when_idle = stop_when_idle
         self.span_count = 0
         self._running = True
         self._consumer: Consumer | None = None
@@ -148,8 +152,16 @@ class Normalizer:
             self.settings.kafka_bootstrap,
         )
         try:
+            idle_since: float | None = None
             while self._running:
                 message = self.consumer.poll(1.0)
+                if message is None and self.stop_when_idle is not None:
+                    idle_since = idle_since or time.monotonic()
+                    if time.monotonic() - idle_since >= self.stop_when_idle:
+                        log.info("topic drained; stopping (idle %.0fs)", self.stop_when_idle)
+                        self._running = False
+                elif message is not None:
+                    idle_since = None
                 if message is not None:
                     error = message.error()
                     if error is not None:
