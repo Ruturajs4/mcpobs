@@ -8,10 +8,29 @@ come back out as a queryable, MCP-aware trace.
 
 ```bash
 python -m venv .venv && .venv/Scripts/pip install -r requirements-dev.txt
+make check     # unit tests + ruff + mypy (no stack required)
 make up        # clickhouse + kafka + collector + normalizer
 make demo      # run the tool scenarios over stdio and streamable HTTP
-make verify    # A1-A8 acceptance assertions
+make verify    # A1-A9 acceptance assertions
 ```
+
+## Structure
+
+`normalizer/` is production code and is held to a strict bar: typed Pydantic
+models, `mypy --disallow-untyped-defs`, full ruff rule set. `demo_server/`,
+`scripts/` and `tests/` are the harness and are linted more loosely.
+
+- `models.py` — `SpanRow` is the single declaration of the ClickHouse schema;
+  insert columns are **derived** from it, so a column list can never drift out
+  of alignment with the values.
+- `migrations.py` — `MigrationRunner` applies ordered `.sql` files once, tracked
+  by checksum in a `schema_migrations` table. Replaces `docker-entrypoint-initdb.d`,
+  which only runs against an empty data directory and so silently ignored every
+  schema change after the first boot.
+- `consumer.py` — `SpanBatch` owns rows *and* offsets, because a batch can hold
+  offsets with no rows (everything dead-lettered) and those offsets still must
+  be committed.
+- `taxonomy.py` / `normalize.py` — stateless transforms per ADR-005.
 
 `make attrs` regenerates `docs/observed_attributes.md` — the observed span
 contract, which outranks every document where they disagree.

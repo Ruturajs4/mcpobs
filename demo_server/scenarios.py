@@ -12,6 +12,7 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -54,7 +55,7 @@ def _python() -> str:
 
 
 @asynccontextmanager
-async def stdio_session(span_file: Path | None = None):
+async def stdio_session(span_file: Path | None = None) -> AsyncIterator[Client]:
     """Spawn the demo server as a stdio subprocess and connect to it."""
     env = {"OTEL_MODE": "file", "OTEL_SPAN_FILE": str(span_file)} if span_file else {}
     params = StdioServerParameters(
@@ -79,7 +80,9 @@ def _wait_for_port(port: int, timeout: float = 25.0) -> bool:
 
 
 @asynccontextmanager
-async def http_session(span_file: Path | None = None, port: int = HTTP_PORT):
+async def http_session(
+    span_file: Path | None = None, port: int = HTTP_PORT
+) -> AsyncIterator[Client]:
     """Spawn the demo server as a streamable-http service and connect to it."""
     env = dict(os.environ)
     if span_file:

@@ -19,8 +19,14 @@ processors:
   # Production resolves these from the authenticated API key and OVERWRITES
   # whatever the customer sent, so a tenant cannot write into another tenant.
   # Locally they are hard-coded.
-  attributes/tenant:
-    actions:
+  #
+  # MUST be `resource`, not `attributes`: the attributes processor writes SPAN
+  # attributes, so tenant.id never reached the Resource and the normalizer --
+  # which reads tenancy from the Resource per V2 §8.3 -- silently fell back to
+  # its "local" default. With real tenants that collapses every customer into
+  # one. Caught by tests/test_otlp_decode.py.
+  resource/tenant:
+    attributes:
       - { key: tenant.id, value: local, action: upsert }
       - { key: project.id, value: local, action: upsert }
       - { key: data.region, value: local, action: upsert }
@@ -62,7 +68,7 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, attributes/tenant, batch]
+      processors: [memory_limiter, resource/tenant, batch]
       exporters: [kafka, debug]
   telemetry:
     logs:

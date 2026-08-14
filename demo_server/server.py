@@ -38,7 +38,7 @@ mcp = MCPServer("mcp-demo-server", version=SERVICE_VERSION)
 # A hermetic downstream HTTP service, so fetch_status needs no internet.
 # --------------------------------------------------------------------------
 class _StatusHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:  # noqa: N802 - stdlib naming
+    def do_GET(self) -> None:
         code = 200
         parts = self.path.strip("/").split("/")
         if len(parts) == 2 and parts[0] == "status" and parts[1].isdigit():

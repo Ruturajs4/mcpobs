@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
 
@@ -106,7 +106,7 @@ def fmt_table(rows: list[list[str]], headers: list[str]) -> str:
 
 
 def build_report(by_transport: dict[str, list[dict]]) -> str:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     all_spans = [s for spans in by_transport.values() for s in spans]
     all_mcp = mcp_spans(all_spans)
 
@@ -196,7 +196,7 @@ def build_report(by_transport: dict[str, list[dict]]) -> str:
     })
     failing = [s for s in all_mcp if (s.get("status") or {}).get("status_code") == "ERROR"]
     lines += [
-        f"Distinct `error.type` values observed across all failure scenarios: "
+        "Distinct `error.type` values observed across all failure scenarios: "
         + (", ".join(f"`{e}`" for e in error_types) or "_none_"),
         "",
         f"Failing spans: {len(failing)} · spans carrying `rpc.response.status_code`: "
