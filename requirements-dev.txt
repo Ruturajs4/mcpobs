@@ -1,0 +1,9 @@
+# Local development. Pinned -- unpinned versions make the T3 report unreproducible.
+mcp[cli]==2.0.0
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp==1.44.0
+opentelemetry-instrumentation-httpx==0.65b0
+opentelemetry-proto==1.44.0
+httpx==0.28.1
+confluent-kafka==2.15.0
+clickhouse-connect==1.7.1

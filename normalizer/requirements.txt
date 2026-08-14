@@ -1,0 +1,4 @@
+# Pinned: unpinned versions make the T3 attribute report unreproducible.
+confluent-kafka==2.15.0
+clickhouse-connect==1.7.1
+opentelemetry-proto==1.44.0

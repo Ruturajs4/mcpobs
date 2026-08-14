@@ -1,0 +1,108 @@
+# Day-1 local slice. Same SHAPE as production (Architecture.md §3), one rung
+# down the environment ladder (Architecture.md §10): single broker, RF=1,
+# no auth, no replication.
+name: mcp-observability
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: mcpobs-clickhouse
+    ports: ["8123:8123", "9000:9000"]
+    environment:
+      CLICKHOUSE_DB: mcpobs
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    volumes:
+      - ./normalizer/schema:/docker-entrypoint-initdb.d:ro
+      - ch-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  kafka:
+    image: apache/kafka:3.9.0
+    container_name: mcpobs-kafka
+    # Dual listener: containers reach the broker at kafka:9092, the host at
+    # localhost:29092. With only the internal listener, a host client connects
+    # but then gets metadata advertising `kafka:9092`, which it cannot resolve --
+    # a confusing failure that looks like a network problem.
+    ports: ["9092:9092", "29092:29092"]
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,PLAINTEXT_HOST://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      # Without this the image writes its log dir under /tmp, so the named
+      # volume below is silently ignored and every container recreate loses all
+      # topics and data. Found the hard way on Day 1.
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      # Topics are a contract (Architecture.md §6). Auto-created topics get
+      # default partitions and no retention policy, then quietly become prod.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
+  kafka-init:
+    image: apache/kafka:3.9.0
+    container_name: mcpobs-kafka-init
+    depends_on:
+      kafka: { condition: service_healthy }
+    volumes:
+      - ./kafka/create_topics.sh:/create_topics.sh:ro
+    entrypoint: ["/bin/bash", "/create_topics.sh"]
+    restart: "no"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    container_name: mcpobs-collector
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./collector/config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "13133:13133" # health
+    depends_on:
+      kafka: { condition: service_healthy }
+      kafka-init: { condition: service_completed_successfully }
+
+  normalizer:
+    build: ./normalizer
+    container_name: mcpobs-normalizer
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC: otlp.spans.raw
+      KAFKA_DLQ_TOPIC: otlp.spans.dlq
+      KAFKA_GROUP_ID: normalizer
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      CLICKHOUSE_DB: mcpobs
+      BATCH_MAX_ROWS: "10000"
+      BATCH_MAX_SECONDS: "5"
+    depends_on:
+      clickhouse: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      kafka-init: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+volumes:
+  ch-data:
+  kafka-data:
