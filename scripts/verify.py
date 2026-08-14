@@ -1,4 +1,4 @@
-"""Day-1 acceptance assertions A1-A8.
+"""Acceptance assertions. Cumulative across days -- Day 2 must not regress Day 1.
 
 A8 is the buffer test -- the only assertion that proves the architecture's
 central claim (ingest survives everything downstream). Never cut it.
@@ -261,6 +261,48 @@ def main() -> int:
         f"{sources} (span-sourced failures mean the helper is not attached)",
     )
 
+    # ---------------- B4-B5: trace assembly (ADR-005) ---------------------
+    print("\n--- B4-B5: trace assembly ---")
+    raw_traces, summary_traces = ch.query(
+        "SELECT (SELECT uniqExact(trace_id) FROM spans_raw), "
+        "       (SELECT uniqExact(trace_id) FROM trace_summaries)"
+    ).result_rows[0]
+    raw_spans, summed_spans = ch.query(
+        "SELECT (SELECT count() FROM spans_raw), "
+        "       (SELECT sum(span_count) FROM trace_summaries)"
+    ).result_rows[0]
+    record(
+        "B4 trace_summaries has exactly one row per trace",
+        raw_traces == summary_traces and raw_spans == summed_spans,
+        f"{summary_traces}/{raw_traces} traces, {summed_spans}/{raw_spans} spans accounted for",
+    )
+
+    # A trace assembled from more than one span is the case that matters: it
+    # proves incremental aggregation across separate inserts, not just a
+    # pass-through of single-span traces.
+    multi = ch.query(
+        "SELECT max(tool_name), sum(span_count), argMaxMerge(failure_category) "
+        "FROM trace_summaries GROUP BY tenant_id, project_id, trace_id "
+        "HAVING sum(span_count) > 1 ORDER BY 2 DESC LIMIT 1"
+    ).result_rows
+    record(
+        "B4b multi-span traces assemble correctly",
+        bool(multi) and multi[0][1] > 1,
+        f"largest assembled trace: tool={multi[0][0]!r} spans={multi[0][1]} "
+        f"category={multi[0][2]!r}" if multi else "no multi-span trace found",
+    )
+
+    located = ch.query(
+        "SELECT l.tenant_id, l.project_id, l.trace_date FROM trace_locator AS l "
+        "INNER JOIN (SELECT trace_id FROM spans_raw GROUP BY trace_id "
+        "            HAVING count() > 1 LIMIT 1) AS t ON l.trace_id = t.trace_id"
+    ).result_rows
+    record(
+        "B5 trace_locator resolves a trace to its tenant/project/date",
+        len(located) == 1,
+        f"{located}" if located else "locator did not resolve a known trace",
+    )
+
     children = ch.query(
         "SELECT p.mcp_tool_name, c.span_name, c.http_status_code "
         "FROM spans_raw AS c INNER JOIN spans_raw AS p ON c.parent_span_id = p.span_id "
@@ -302,6 +344,24 @@ def main() -> int:
         "A6 protocol version is 2026-07-28",
         versions == ["2026-07-28"],
         f"{versions}",
+    )
+
+    # ---------------- B7: freshness, the headline metric -------------------
+    # Architecture.md §9.1 names end-to-end freshness -- span event time to
+    # queryable time -- as the one number that says whether the pipeline is
+    # healthy. It had never been measured. Asserted here so it is checked on
+    # every run rather than being a metric nobody looks at.
+    print("\n--- B7: freshness ---")
+    p50, p95, newest = ch.query(
+        "SELECT quantile(0.50)(dateDiff('millisecond', timestamp, ingested_at)), "
+        "       quantile(0.95)(dateDiff('millisecond', timestamp, ingested_at)), "
+        "       max(ingested_at) "
+        "FROM spans_raw WHERE timestamp > now() - INTERVAL 30 MINUTE"
+    ).result_rows[0]
+    record(
+        "B7 end-to-end freshness p95 under 60s",
+        (p95 or 0) < 60_000,
+        f"p50={(p50 or 0) / 1000:.1f}s p95={(p95 or 0) / 1000:.1f}s newest={newest}",
     )
 
     # ---------------- A9: poison message -> DLQ, partition advances --------

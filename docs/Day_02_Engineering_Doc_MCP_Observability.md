@@ -346,7 +346,7 @@ Day 1 promotes `http_*` from child spans. The V2 trace-waterfall promise (§6.1)
 
 ## 11. Acceptance: B1–B9
 
-Added to `scripts/verify_day1.py` (rename to `verify.py`; the assertions are cumulative, not per-day).
+Added to `scripts/verify.py` (rename to `verify.py`; the assertions are cumulative, not per-day).
 
 | # | Assertion |
 | --- | --- |

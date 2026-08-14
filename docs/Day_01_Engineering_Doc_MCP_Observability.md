@@ -263,7 +263,7 @@ LOCAL MACHINE                          production analogue (Architecture.md §3)
     table: ingest_dead_letter (section 9.3)
     |                                  + MVs: trace_summaries, rollups (Day 4+)
     v
-  verification: clickhouse-client + scripts/verify_day1.py  (section 10)
+  verification: clickhouse-client + scripts/verify.py  (section 10)
 
   NOT TODAY: edge/auth, quotas, archiver + billing consumer groups,
              Postgres control plane, Redis, object storage, rollups, UI
@@ -362,7 +362,7 @@ Time-boxes assume one engineer; with two, T1 and T2 run in parallel after T0. Th
 | **T5** | Kafka consumer loop + OTLP decode + normalizer: message → flat spans → MCP fields. | 90m | `consumer.py`, `otlp_decode.py`, `normalize.py`. | Unit test over a captured OTLP fixture produces the expected row dict; `enable.auto.commit=false` is set and offsets commit after the insert. |
 | **T6** | Failure taxonomy v0 and dead-letter path to `otlp.spans.dlq`. | 45m | `taxonomy.py`. | Success, `isError`, thrown exception and JSON-RPC protocol error map to four distinct categories; `input_required` maps to none of them. |
 | **T7** | ClickHouse sink: batched insert, retry, dead-letter on decode failure. | 45m | `clickhouse_sink.py`. | Rows land; a deliberately malformed message lands in the DLQ, the partition advances, and the process stays up. |
-| **T8** | **Buffer test** + verification script + README. | 60m | `scripts/verify_day1.py`, `README.md`. | `make verify` prints PASS for all §10 assertions, **including A8**: stop the normalizer, call all three tools, restart, and every span still arrives. |
+| **T8** | **Buffer test** + verification script + README. | 60m | `scripts/verify.py`, `README.md`. | `make verify` prints PASS for all §10 assertions, **including A8**: stop the normalizer, call all three tools, restart, and every span still arrives. |
 
 *Total time-box: 8 hours 15 minutes. Adding Kafka costs about 45 minutes over the pre-Kafka plan (T2b, plus offset handling and the buffer test in T5 and T8) and removes the FastAPI ingest service entirely.*
 
