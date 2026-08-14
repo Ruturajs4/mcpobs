@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from normalizer.models import SpanRow
 from normalizer.normalize import SpanNormalizer
 
@@ -112,3 +114,13 @@ class TestToRow:
         row = self.normalizer.to_row(span_factory(start_unix_nano=1_786_000_000_000_000_000))
         assert row.timestamp.year == 2026
         assert row.timestamp.tzinfo is None  # ClickHouse DateTime64 is naive UTC
+
+    def test_sub_second_precision_is_not_lost_to_float_rounding(self, span_factory) -> None:
+        """`unix_nano / 1e9` rounds: float64 has ~16 digits, epoch-ns needs 19."""
+        row = self.normalizer.to_row(span_factory(start_unix_nano=1_786_000_000_123_456_789))
+        assert row.timestamp.microsecond == 123_456  # truncated, not rounded to 123457
+
+    def test_timestamp_is_utc_not_local(self, span_factory) -> None:
+        """A naive local-time datetime would silently shift every span."""
+        row = self.normalizer.to_row(span_factory(start_unix_nano=1_786_000_000_000_000_000))
+        assert (row.timestamp - datetime(1970, 1, 1)).total_seconds() == 1_786_000_000

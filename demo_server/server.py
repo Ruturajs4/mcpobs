@@ -3,10 +3,17 @@
 Four tools, each chosen to produce a distinct failure_category so the Day-1
 taxonomy has real data rather than synthetic data:
 
-    echo_fast      -> ok                 (baseline latency, clean success)
-    fetch_status   -> ok                 (+ downstream httpx child span, A4)
-    soft_fail      -> tool_error         (isError=True, tool ran and said no)
-    explode        -> server_exception    (handler raised)
+    echo_fast      -> ok          (baseline latency, clean success)
+    fetch_status   -> ok          (+ downstream httpx child span, A4)
+    soft_fail      -> tool_error  (isError=True, tool ran and said no)
+    explode        -> tool_error  (handler raised -- see below)
+
+NOTE: `explode` was written expecting `server_exception`, and it does NOT
+produce one. MCPServer's `_handle_call_tool` catches the exception and converts
+it to `CallToolResult(isError=True)` before `OpenTelemetryMiddleware` observes
+the result, so the span is indistinguishable from `soft_fail`'s. That is the
+D13 finding, and this tool is the evidence for it -- keep it. Day 2 recovers the
+distinction from the result content without storing the content.
 
 Run:
     python -m demo_server.server                 # stdio
@@ -92,7 +99,12 @@ def soft_fail(reason: str = "upstream rejected the request") -> CallToolResult:
 
 @mcp.tool()
 def explode() -> str:
-    """Raise an unhandled exception -> error.type == 'RuntimeError'."""
+    """Raise an unhandled exception.
+
+    Yields error.type == 'tool_error', NOT 'RuntimeError': the SDK converts it
+    before the span sees it (D13). The exception text survives only in the
+    result content.
+    """
     raise RuntimeError("deliberate failure: downstream credentials expired")
 
 

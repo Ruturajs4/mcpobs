@@ -117,7 +117,22 @@ class SpanNormalizer:
 
     @staticmethod
     def _timestamp(unix_nano: int) -> datetime:
-        return datetime.fromtimestamp(unix_nano / 1e9, tz=UTC).replace(tzinfo=None)
+        """OTLP nanoseconds -> naive-UTC datetime for ClickHouse DateTime64.
+
+        Integer division, not `unix_nano / 1e9`: float64 carries ~15-16
+        significant digits and an epoch-nanosecond value needs 19, so the float
+        path rounds the sub-second part before `datetime` ever sees it.
+
+        Python `datetime` caps at MICROSECONDS, so the final three digits of an
+        OTLP timestamp cannot be represented at all. The column is DateTime64(9)
+        because OTLP is nanosecond-native and we would rather widen the value
+        later than migrate the column; but do not read nanosecond precision out
+        of it. Sub-microsecond span ordering within a trace is not available.
+        """
+        seconds, remainder_ns = divmod(unix_nano, 1_000_000_000)
+        return datetime.fromtimestamp(seconds, tz=UTC).replace(
+            tzinfo=None, microsecond=remainder_ns // 1000
+        )
 
     @staticmethod
     def _str(value: object) -> str:

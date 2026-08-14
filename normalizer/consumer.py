@@ -211,7 +211,15 @@ class Normalizer:
         """Poison message -> DLQ, then the offset advances. Never skip silently."""
         log.warning("DLQ %s p%d@%d: %s", reason, partition, offset, detail)
         try:
-            self.dlq.produce(self.settings.kafka_dlq_topic, value=payload)
+            # Headers carry the reason so the DLQ topic is triageable on its
+            # own. Without them the reason exists only in ClickHouse, and DLQ
+            # triage is exactly the case where ClickHouse may be the thing
+            # that is broken.
+            self.dlq.produce(
+                self.settings.kafka_dlq_topic,
+                value=payload,
+                headers={"reason": reason, "detail": detail[:200]},
+            )
             self.dlq.poll(0)
         except Exception as exc:  # noqa: BLE001
             log.error("DLQ produce failed: %s", exc)
