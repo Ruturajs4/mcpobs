@@ -21,10 +21,10 @@ test:
 	$(PY) -m pytest
 
 lint:
-	$(PY) -m ruff check normalizer/ tests/ scripts/ demo_server/
+	$(PY) -m ruff check normalizer/ mcpobs/ tests/ scripts/ demo_server/
 
 typecheck:
-	$(PY) -m mypy normalizer/
+	$(PY) -m mypy normalizer/ mcpobs/
 
 check: test lint typecheck
 

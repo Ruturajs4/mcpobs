@@ -216,16 +216,49 @@ def main() -> int:
     has_ok = cats.get("ok", 0) > 0
     has_tool_error = cats.get("tool_error", 0) > 0
     record("A3a ok and tool_error both present", has_ok and has_tool_error, f"{cats}")
-    distinguishable = cats.get("server_exception", 0) > 0 or cats.get("protocol_error", 0) > 0
+    # V2 §25 launch gate. Was a documented WARN until U1: the raw span cannot
+    # express this distinction, so the helper middleware recovers it from the
+    # result content in the customer's process (D13/D17).
     record(
         "A3b thrown exception distinguishable from isError",
-        PASS if distinguishable else WARN,
-        "distinguishable"
-        if distinguishable
-        else "KNOWN GAP: MCPServer converts every tool failure to isError before the "
-        "OTel middleware sees it, so all failures collapse to error.type='tool_error'. "
-        "V2 §25 checklist item is NOT achievable from span attributes. See "
-        "docs/observed_attributes.md and docs/decisions.md D13.",
+        cats.get("server_exception", 0) > 0 and cats.get("tool_error", 0) > 0,
+        f"server_exception={cats.get('server_exception', 0)} vs "
+        f"tool_error={cats.get('tool_error', 0)}",
+    )
+
+    # ---------------- B1-B3: the refined taxonomy -------------------------
+    print("\n--- B1-B3: failure taxonomy v1 ---")
+    expected_kinds = {"tool_error", "server_exception", "unknown_tool", "invalid_arguments"}
+    present = {k for k in cats if k in expected_kinds and cats[k] > 0}
+    record(
+        "B1 all four failure kinds present on real telemetry",
+        present == expected_kinds,
+        f"{sorted(present)}" + (f" MISSING {sorted(expected_kinds - present)}" if
+                                present != expected_kinds else ""),
+    )
+
+    # The privacy property that makes this a core feature rather than one gated
+    # behind payload capture (V2 §15).
+    leaked = ch.query(
+        "SELECT count() FROM spans_raw "
+        "WHERE input_preview IS NOT NULL OR output_preview IS NOT NULL"
+    ).result_rows[0][0]
+    record(
+        "B2 no tool content stored to achieve the taxonomy",
+        leaked == 0,
+        f"{leaked} rows carry payload previews (must be 0)",
+    )
+
+    sources = dict(
+        ch.query(
+            "SELECT failure_kind_source, count() FROM spans_raw "
+            "WHERE failure_category != '' AND failure_category != 'ok' GROUP BY 1"
+        ).result_rows
+    )
+    record(
+        "B3 failures are classified by the helper, not guessed from the span",
+        sources.get("helper", 0) > 0 and sources.get("span", 0) == 0,
+        f"{sources} (span-sourced failures mean the helper is not attached)",
     )
 
     children = ch.query(

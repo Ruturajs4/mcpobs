@@ -1,0 +1,39 @@
+name: check
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements-dev.txt -r requirements-check.txt
+
+      # Unit tests need no stack: the OTLP fixture in tests/fixtures is a real
+      # captured Kafka message, so decode/normalize/taxonomy are exercised
+      # against genuine SDK output rather than a synthetic sample.
+      - name: Tests
+        run: pytest
+
+      - name: Lint
+        run: ruff check normalizer/ tests/ scripts/ demo_server/
+
+      - name: Typecheck
+        run: mypy normalizer/
+
+      # This is the tripwire that matters. The failure classifier matches
+      # SDK-generated message prefixes; an SDK release that changes them would
+      # otherwise silently degrade every customer's error intelligence. Failing
+      # the build is the point.
+      - name: SDK contract
+        run: pytest tests/test_sdk_contract.py -v

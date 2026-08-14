@@ -34,11 +34,16 @@ from mcp.server import MCPServer
 from mcp_types import CallToolResult, TextContent
 
 from demo_server.otel_bootstrap import SERVICE_VERSION, init_telemetry, shutdown
+from mcpobs import instrument
 
 DOWNSTREAM_PORT = int(os.getenv("DOWNSTREAM_PORT", "8899"))
 DOWNSTREAM_BASE = f"http://127.0.0.1:{DOWNSTREAM_PORT}"
 
 mcp = MCPServer("mcp-demo-server", version=SERVICE_VERSION)
+
+# The entire customer-facing integration. Annotates the SDK's existing span with
+# a derived failure kind; creates no spans and captures no tool content.
+instrument(mcp)
 
 
 # --------------------------------------------------------------------------

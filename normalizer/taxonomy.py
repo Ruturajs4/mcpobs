@@ -63,6 +63,24 @@ class FailureTaxonomy:
     RESULT_TYPE: Final = "mcp.result.type"
     MCP_METHOD: Final = "mcp.method.name"
 
+    # Set by the optional helper middleware (mcpobs). When present it carries a
+    # real distinction the raw span cannot express; when absent we degrade to
+    # the coarse classification rather than inventing one.
+    HELPER_KIND: Final = "mcpobs.failure.kind"
+    HELPER_RESULT_TYPE: Final = "mcpobs.result.type"
+    HELPER_VERSION: Final = "mcpobs.failure.kind.version"
+
+    SOURCE_HELPER: Final = "helper"
+    SOURCE_SPAN: Final = "span"
+
+    def source(self, span: DecodedSpan) -> str:
+        """Where the category came from -- helper middleware or the bare span."""
+        return (
+            self.SOURCE_HELPER
+            if self.HELPER_KIND in span.span_attributes
+            else self.SOURCE_SPAN
+        )
+
     def classify(self, span: DecodedSpan) -> str:
         """Return the failure category for a span.
 
@@ -76,13 +94,23 @@ class FailureTaxonomy:
 
         error_type = self._str(attrs.get(self.ERROR_TYPE))
         rpc_status = self._str(attrs.get(self.RPC_STATUS))
-        result_type = self._str(attrs.get(self.RESULT_TYPE))
+        # The SDK's own span carries no resultType; the helper middleware reads
+        # it off the sealed wire form and puts it there.
+        result_type = self._str(attrs.get(self.RESULT_TYPE)) or self._str(
+            attrs.get(self.HELPER_RESULT_TYPE)
+        )
 
-        # MRTR interim results are NOT failures. Undetectable today -- the SDK
-        # emits no resultType -- but the branch exists so that the day it
-        # becomes visible it cannot be miscounted as an error.
+        # MRTR interim results are NOT failures. Checked before anything else so
+        # an `input_required` can never be counted into an error rate.
         if result_type == "input_required":
             return Category.PENDING_INPUT
+
+        # The helper's classification wins when present: it saw the failure
+        # before the SDK erased the distinction. It is never *less* precise than
+        # what we could derive from the span alone.
+        helper_kind = self._str(attrs.get(self.HELPER_KIND))
+        if helper_kind:
+            return helper_kind
 
         failed = span.status_code == "ERROR"
         if not error_type and not failed:

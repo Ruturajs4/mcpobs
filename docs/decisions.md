@@ -16,9 +16,27 @@ which remains the system of record. D11+ were taken during Day-1 execution.
 | D14 | 2026-08-14 | `rpc_status_code` is `Nullable(String)`, not `Int32`. | The SDK sets `str(code)`. Day-1 doc §9.3 was wrong. |
 | D15 | 2026-08-14 | Demo server calls downstream via plain `httpx`, not the SDK's `httpx2`. | `opentelemetry-instrumentation-httpx` patches `httpx` only; with `httpx2` the downstream child span never appears and A4 would silently pass as vacuous. |
 
+| D17 | 2026-08-15 | Failure classification runs in the customer's process via an opt-in middleware that annotates the SDK's existing span. **No tool content is captured, transmitted or stored.** | Resolves D13 without dragging the taxonomy behind payload capture and its redaction/retention gates (V2 §15). Error intelligence stays a core feature. |
+| D18 | 2026-08-15 | The classifier is a bridge, not an endpoint. Pursue an upstream SDK change that exposes the failure kind directly. | We match SDK-internal message strings; `tests/test_sdk_contract.py` fails the build if they move, but the durable fix is upstream. |
+| D19 | 2026-08-15 | `protocol_error` **is** reachable — correcting D13. | `_handle_call_tool` re-raises `MCPError` rather than converting it (`mcpserver/server.py:422`). Day 1 saw no such error only because no demo tool raised one. |
+| D20 | 2026-08-15 | `resultType` is read off the sealed wire form by the same middleware, **reversing D11**. | Middleware receives the serialized dict, which carries `resultType`. MRTR interim results are therefore observable, and `pending_input` is checked before any error branch so it can never enter an error rate. |
+| D21 | 2026-08-15 | Record `failure_kind_source` (`helper` \| `span`) on every row. | Two different data qualities must not silently mix. A dashboard can say "12% of your servers are not running the helper" instead of quietly under-reporting. |
+
 ---
 
-## Finding D13 — the failure taxonomy is not reachable from span attributes
+## Finding D13 — RESOLVED 2026-08-15 by D17
+
+> **Status: resolved.** The finding below stands as written — the taxonomy is
+> genuinely not reachable *from span attributes*. What changed is that it does
+> not have to be: the distinguishing text is SDK-generated boilerplate present
+> in the result, and a middleware can classify it in the customer's process and
+> annotate the span the SDK already opened.
+>
+> Verified end to end: `server_exception`, `tool_error`, `unknown_tool` and
+> `invalid_arguments` are now distinct on real telemetry, with zero tool content
+> stored (assertions A3b, B1–B3). The V2 §25 launch gate is met.
+
+## Original finding — the failure taxonomy is not reachable from span attributes
 
 **What we tested.** Four deliberately distinct failure modes:
 

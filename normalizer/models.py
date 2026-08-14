@@ -94,9 +94,12 @@ class SpanRow(_Row):
     resource_attributes: dict[str, str] = Field(default_factory=dict)
     span_attributes: dict[str, str] = Field(default_factory=dict)
 
-    normalization_version: int = 1
+    normalization_version: int = 2
     kafka_partition: int = -1
     kafka_offset: int = -1
+    # Appended, never inserted: field order IS insert-column order.
+    failure_kind_source: str = ""
+    classifier_version: int = 0
 
 
 class DeadLetterRow(_Row):

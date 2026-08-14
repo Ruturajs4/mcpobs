@@ -19,7 +19,7 @@ from normalizer.taxonomy import FailureTaxonomy
 class SpanNormalizer:
     """Extracts MCP fields and derives the failure category."""
 
-    normalization_version: Final[int] = 1
+    normalization_version: Final[int] = 2
 
     # span attributes
     MCP_METHOD: Final = "mcp.method.name"
@@ -34,6 +34,7 @@ class SpanNormalizer:
     RPC_STATUS: Final = "rpc.response.status_code"
     RESULT_TYPE: Final = "mcp.result.type"
     TRANSPORT: Final = "network.transport"
+    HELPER_VERSION: Final = "mcpobs.failure.kind.version"
 
     # resource attributes
     RES_SERVICE_NAME: Final = "service.name"
@@ -49,6 +50,7 @@ class SpanNormalizer:
         attrs = span.span_attributes
         res = span.resource_attributes
 
+        is_mcp = self.MCP_METHOD in attrs
         category = self.taxonomy.classify(span)
         http_method, http_status, http_host = self._http(attrs)
         session_id = attrs.get(self.MCP_SESSION_ID)
@@ -96,6 +98,8 @@ class SpanNormalizer:
             normalization_version=self.normalization_version,
             kafka_partition=partition,
             kafka_offset=offset,
+            failure_kind_source=self.taxonomy.source(span) if is_mcp else "",
+            classifier_version=self._int(attrs.get(self.HELPER_VERSION)),
         )
 
     # -- internals ---------------------------------------------------------
@@ -137,3 +141,17 @@ class SpanNormalizer:
     @staticmethod
     def _str(value: object) -> str:
         return "" if value is None else str(value)
+
+    @staticmethod
+    def _int(value: object) -> int:
+        """Attribute values arrive as Any; coerce defensively, never raise."""
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, (str, float)):
+            try:
+                return int(float(value))
+            except (TypeError, ValueError):
+                return 0
+        return 0
