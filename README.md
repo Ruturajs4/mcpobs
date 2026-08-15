@@ -85,6 +85,29 @@ keys and JWTs by shape). That redaction is **incomplete by construction** — it
 will not catch a secret in a field called `note`. It reduces harm; it does not
 make capture safe. Turn it on deliberately.
 
+**Outbound HTTP calls** are a separate opt-in again, because they instrument a
+different thing — your HTTP client, not your MCP server:
+
+```python
+from mcpobs import instrument_httpx
+instrument_httpx()
+```
+
+This records, on the downstream span: the **request body**, and request and
+response headers filtered to an **allow-list** (`content-type`, `user-agent`,
+`traceparent`, …). `authorization`, `cookie` and friends are never read at all,
+rather than read and then scrubbed — so a header nobody anticipated is excluded
+by default rather than captured by default. Bodies go through the same
+truncation and redaction as tool payloads, with the same incompleteness.
+
+There is **no response body**, and that is a limitation rather than a setting.
+The OpenTelemetry instrumentation wraps the HTTP *transport*, so its span ends
+when the transport returns — and httpx reads the response body after that.
+Capturing one would mean buffering every response inside the hook, turning any
+streaming download in your process into a full in-memory read to satisfy our
+telemetry. The console says so on the span instead of showing a blank
+(`docs/decisions.md` D67–D69).
+
 It annotates the span the SDK already opened — it does not wrap the protocol or
 create spans — and **captures no tool input or output**. The distinguishing text
 is SDK-generated boilerplate, read in the customer's process and reduced to a

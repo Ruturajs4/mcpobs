@@ -41,6 +41,7 @@ SCENARIOS: list[tuple[str, dict, str]] = [
     # a latency sample (DF-1).
     ("confirm_deploy", {"service": "checkout"}, "pending_input"),
     # U6: downstream dimensions beyond HTTP.
+    ("submit_order", {"customer": "acme", "sku": "widget-1"}, "ok"),
     ("query_orders", {"customer": "acme"}, "ok"),
     ("summarize", {"text": "quarterly numbers"}, "ok"),
 ]

@@ -118,8 +118,17 @@ class SpanRow(_Row):
     # above, which stay NULL unless payload capture is switched on (DF-8).
     failure_detail: str = ""
     # The downstream analogue of request/response. Redacted at normalize time.
+    # Which client called. Self-reported and unverified per the spec: display
+    # and debugging only, never an authorisation input.
+    client_name: str = ""
+    client_version: str = ""
     http_url: str = ""
     db_statement: str = ""
+    # Downstream HTTP bodies and allow-listed headers. Captured only when the
+    # customer calls `instrument_httpx()`; empty means not captured (D60).
+    http_request_body: str = ""
+    http_request_headers: str = ""
+    http_response_headers: str = ""
 
 
 class DeadLetterRow(_Row):

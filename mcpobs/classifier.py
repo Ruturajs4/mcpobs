@@ -103,6 +103,22 @@ the same reason they are opt-in here. Using the standard names means a customer
 already collecting them sees one set of attributes, not two.
 """
 
+CLIENT_NAME_ATTRIBUTE: Final = "mcpobs.client.name"
+CLIENT_VERSION_ATTRIBUTE: Final = "mcpobs.client.version"
+"""Which client made the call.
+
+Recovered from `_meta.io.modelcontextprotocol/clientInfo`, present on EVERY
+request. The SDK sets no client attribute on the span, so before this the answer
+to V2 6.1's "which clients are calling which tools" was simply unavailable.
+
+Promoted to a SPAN ATTRIBUTE rather than left inside the captured payload,
+because payload capture is off by default and this must not depend on it. Two
+low-cardinality strings; safe to group by.
+
+Self-reported and unverified, per the spec's own warning: display and debugging
+only, never an authorisation input.
+"""
+
 REQUEST_SIZE_ATTRIBUTE: Final = "mcpobs.request.size"
 RESPONSE_SIZE_ATTRIBUTE: Final = "mcpobs.response.size"
 """Original byte counts, recorded even when the preview is truncated -- "the
@@ -222,6 +238,23 @@ class FailureClassifier:
         if len(text) <= DETAIL_MAX_CHARS:
             return text
         return text[:DETAIL_MAX_CHARS] + f"… (+{len(text) - DETAIL_MAX_CHARS} chars)"
+
+    @staticmethod
+    def client_info(params: Any) -> tuple[str, str]:
+        """(name, version) the client reported, or ("", "")."""
+        if not isinstance(params, dict):
+            return "", ""
+        meta = params.get("_meta")
+        if not isinstance(meta, dict):
+            return "", ""
+        info = meta.get("io.modelcontextprotocol/clientInfo")
+        if not isinstance(info, dict):
+            return "", ""
+        name = info.get("name")
+        version = info.get("version")
+        return (name if isinstance(name, str) else ""), (
+            version if isinstance(version, str) else ""
+        )
 
     @staticmethod
     def resource_uri(params: Any) -> str:

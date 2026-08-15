@@ -117,6 +117,15 @@ def _instrument_httpx() -> None:
     except Exception as exc:  # pragma: no cover - instrumentation is best-effort
         print(f"[otel_bootstrap] httpx instrumentation unavailable: {exc}")
 
+    # Body capture on top of it (D60). Separate call, and separate from
+    # `instrument(mcp)`, because it captures a different thing: the customer's
+    # OUTBOUND HTTP, not their MCP server. The demo enables it because the demo
+    # already enables payload capture; a real server opts in deliberately.
+    if os.getenv("MCPOBS_HTTP_BODIES", "1") == "1":
+        from mcpobs import instrument_httpx
+
+        instrument_httpx()
+
     try:
         from opentelemetry.instrumentation.sqlite3 import SQLite3Instrumentor
 

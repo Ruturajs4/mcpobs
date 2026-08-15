@@ -124,3 +124,146 @@ class TestToRow:
         """A naive local-time datetime would silently shift every span."""
         row = self.normalizer.to_row(span_factory(start_unix_nano=1_786_000_000_000_000_000))
         assert (row.timestamp - datetime(1970, 1, 1)).total_seconds() == 1_786_000_000
+
+
+class TestStatementParsing:
+    """`db.operation` and `db.collection` derived from the statement (DF-12).
+
+    The dbapi instrumentation emits neither, so "which table is slow" needed
+    someone to read every statement by eye. Both are derivable from the
+    statement we already store.
+    """
+
+    def parse(self, statement: str) -> tuple[str, str]:
+        from normalizer.redact import parse_statement
+
+        return parse_statement(statement)
+
+    def test_select(self) -> None:
+        assert self.parse("SELECT id, total FROM orders WHERE id = ?") == ("SELECT", "orders")
+
+    def test_insert_and_update_and_delete(self) -> None:
+        assert self.parse("INSERT INTO orders (id) VALUES (?)") == ("INSERT", "orders")
+        assert self.parse("UPDATE orders SET total = ?") == ("UPDATE", "orders")
+        assert self.parse("DELETE FROM orders WHERE id = ?") == ("DELETE", "orders")
+
+    def test_case_and_whitespace_insensitive(self) -> None:
+        assert self.parse("\n  select * from Orders\n") == ("SELECT", "Orders")
+
+    def test_join_finds_the_driving_table_not_the_joined_one(self) -> None:
+        op, table = self.parse("SELECT * FROM orders o JOIN users u ON u.id = o.user_id")
+        assert (op, table) == ("SELECT", "orders")
+
+    def test_quoted_and_schema_qualified_names(self) -> None:
+        assert self.parse('SELECT * FROM "public"."orders"')[1].startswith("public")
+        assert self.parse("SELECT * FROM shop.orders") == ("SELECT", "shop.orders")
+
+    def test_unparseable_yields_nothing_never_a_guess(self) -> None:
+        """A wrong label is worse than a missing one: it would silently
+        misattribute latency to a table that was never queried. Anything this
+        cannot parse returns what we had before -- empty."""
+        for statement in ("", "   ", "PRAGMA foreign_keys", "EXPLAIN QUERY PLAN xyz"):
+            assert self.parse(statement)[0] == ""
+
+    def test_does_not_invent_a_table_for_a_tableless_statement(self) -> None:
+        assert self.parse("SELECT 1")[1] == ""
+
+    def test_parses_the_redacted_form_so_literals_do_not_leak_into_labels(self) -> None:
+        """Redaction runs first in the normalizer. Verified here at the seam,
+        because a derived label is exactly the kind of field that gets exported
+        to a metrics backend where redaction no longer applies."""
+        from normalizer.models import DecodedSpan
+        from normalizer.normalize import SpanNormalizer
+
+        span = DecodedSpan(
+            trace_id="a" * 32, span_id="b" * 16,
+            span_attributes={
+                "db.system": "sqlite",
+                "db.statement": "SELECT * FROM orders WHERE email = 'nick@example.com'",
+            },
+        )
+        row = SpanNormalizer().to_row(span)
+        assert row.db_operation == "SELECT"
+        assert row.db_collection == "orders"
+        assert "nick@example.com" not in row.db_statement
+
+    def test_instrumentation_value_wins_over_the_derived_one(self) -> None:
+        """Deriving is a fallback. If a future instrumentation library starts
+        emitting `db.operation` it knows better than a regex, and this must not
+        quietly override it."""
+        from normalizer.models import DecodedSpan
+        from normalizer.normalize import SpanNormalizer
+
+        span = DecodedSpan(
+            trace_id="a" * 32, span_id="b" * 16,
+            span_attributes={
+                "db.system": "sqlite",
+                "db.operation": "BATCH",
+                "db.collection.name": "authoritative",
+                "db.statement": "SELECT * FROM orders",
+            },
+        )
+        row = SpanNormalizer().to_row(span)
+        assert (row.db_operation, row.db_collection) == ("BATCH", "authoritative")
+
+
+class TestClientIdentityColumn:
+    def test_client_attributes_become_columns(self) -> None:
+        from normalizer.models import DecodedSpan
+        from normalizer.normalize import SpanNormalizer
+
+        span = DecodedSpan(
+            trace_id="a" * 32, span_id="b" * 16,
+            span_attributes={
+                "mcp.method.name": "tools/call",
+                "mcpobs.client.name": "claude-code",
+                "mcpobs.client.version": "2.1.0",
+            },
+        )
+        row = SpanNormalizer().to_row(span)
+        assert (row.client_name, row.client_version) == ("claude-code", "2.1.0")
+
+    def test_absent_client_is_empty_not_null(self) -> None:
+        from normalizer.models import DecodedSpan
+        from normalizer.normalize import SpanNormalizer
+
+        row = SpanNormalizer().to_row(
+            DecodedSpan(trace_id="a" * 32, span_id="b" * 16,
+                        span_attributes={"mcp.method.name": "tools/list"})
+        )
+        assert row.client_name == ""
+
+
+class TestHttpDownstreamColumns:
+    def test_captured_http_detail_is_promoted_verbatim(self) -> None:
+        """Not re-redacted here: it was already redacted and truncated in the
+        customer's process, and running the scrubber twice over an already
+        scrubbed string only risks mangling it."""
+        from normalizer.models import DecodedSpan
+        from normalizer.normalize import SpanNormalizer
+
+        span = DecodedSpan(
+            trace_id="a" * 32, span_id="b" * 16,
+            span_attributes={
+                "http.request.method": "GET",
+                "mcpobs.http.request.body": '{"q": 1}',
+                "mcpobs.http.request.headers": '{"content-type": "application/json"}',
+                "mcpobs.http.response.headers": '{"content-type": "application/json"}',
+            },
+        )
+        row = SpanNormalizer().to_row(span)
+        assert row.http_request_body == '{"q": 1}'
+        assert "content-type" in row.http_request_headers
+        assert "content-type" in row.http_response_headers
+
+    def test_there_is_no_response_body_column(self) -> None:
+        """Deliberate, and worth pinning so nobody "fixes" the asymmetry back.
+
+        The OTel client span ends when the transport returns; httpx reads the
+        response body afterwards. A column for it could only ever be empty, and
+        an always-empty column reads as "this call had no response body" --
+        a wrong answer where we currently give none.
+        """
+        from normalizer.models import SpanRow
+
+        assert "http_response_body" not in SpanRow.model_fields

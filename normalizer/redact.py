@@ -107,3 +107,36 @@ class AttributeRedactor:
         for pattern in SENSITIVE_VALUES:
             text = pattern.sub(REDACTED, text)
         return text
+
+
+#: Leading keyword -> operation name. Deliberately small: these are the
+#: statements that actually appear in a tool's hot path.
+_SQL_OPERATIONS: Final[tuple[str, ...]] = (
+    "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER",
+    "REPLACE", "MERGE", "TRUNCATE", "WITH",
+)
+
+_SQL_TABLE: Final = re.compile(
+    r"\b(?:FROM|INTO|UPDATE|TABLE|JOIN)\s+[\"'`\[]?([A-Za-z_][\w.]*)", re.I
+)
+
+
+def parse_statement(statement: str) -> tuple[str, str]:
+    """(operation, collection) from a SQL statement -- closes DF-12.
+
+    `opentelemetry-instrumentation-dbapi` emits `db.system` and `db.statement`
+    but neither `db.operation` nor `db.collection`, so "which table is slow" was
+    unanswerable without reading every statement by eye. Both are derivable from
+    the statement we already hold.
+
+    Parsing SQL with regex is only defensible because of what it is used FOR:
+    two low-cardinality labels to group by. A statement it cannot parse yields
+    ("", ""), which is exactly the status quo -- never a wrong answer.
+    """
+    if not statement:
+        return "", ""
+    stripped = statement.lstrip()
+    head = stripped.split(None, 1)[0].upper().strip("(") if stripped else ""
+    operation = head if head in _SQL_OPERATIONS else ""
+    match = _SQL_TABLE.search(stripped)
+    return operation, (match.group(1) if match else "")

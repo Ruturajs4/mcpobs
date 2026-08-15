@@ -693,6 +693,90 @@ def main() -> int:
         f"{leaked} previews contain an unredacted key or bearer token",
     )
 
+    # ---------------- D6: downstream + client identity ---------------------
+    print()
+    print("--- D6: downstream capture and client identity ---")
+
+    # D60 was revised by measurement (D67): request bodies and BOTH sets of
+    # headers are capturable through the instrumentation's hooks.
+    http = ch.query(
+        "SELECT countIf(http_request_body != ''), countIf(http_request_headers != ''), "
+        "       countIf(http_response_headers != '') "
+        "FROM spans_raw WHERE downstream_kind = 'http' "
+        "  AND timestamp > now() - INTERVAL 30 MINUTE"
+    ).result_rows[0]
+    record(
+        "D6 downstream HTTP request bodies and headers are captured",
+        http[0] > 0 and http[1] > 0 and http[2] > 0,
+        f"{http[0]} bodies, {http[1]} request-header sets, {http[2]} response-header sets",
+    )
+
+    # The allow-list, checked against the database rather than only in a unit
+    # test. `submit_order` deliberately sends a bearer token: if the allow-list
+    # ever becomes a deny-list, this is what catches it.
+    credential_leak = ch.query(
+        "SELECT count() FROM spans_raw WHERE "
+        "  http_request_headers ILIKE '%authorization%' "
+        "  OR http_request_headers ILIKE '%demo-token%' "
+        "  OR http_request_headers ILIKE '%cookie%'"
+    ).result_rows[0][0]
+    record(
+        "D6b credential headers never reach storage",
+        credential_leak == 0,
+        f"{credential_leak} rows carry an authorization or cookie header",
+    )
+
+    # There must be NO response-body column (D69). An always-empty column reads
+    # as "this call had no response body", which is a wrong answer rather than
+    # a missing one -- so its ABSENCE is the assertion.
+    response_body_column = ch.query(
+        "SELECT count() FROM system.columns WHERE database = 'mcpobs' "
+        "  AND table = 'spans_raw' AND name = 'http_response_body'"
+    ).result_rows[0][0]
+    record(
+        "D6c no http_response_body column exists",
+        response_body_column == 0,
+        "the client span ends before httpx reads a response body"
+        if response_body_column == 0
+        else "an always-empty column survived migration 011",
+    )
+
+    # D71: client identity without payload capture. Asserted on SUCCESSFUL
+    # spans specifically -- recording it only on failures would answer "which
+    # clients call which tools" with a breakdown of failures.
+    clients = ch.query(
+        "SELECT countIf(client_name != ''), uniqExact(client_name), "
+        "       countIf(client_name != '' AND mcp_is_error = 0) "
+        "FROM spans_raw WHERE mcp_method != '' "
+        "  AND timestamp > now() - INTERVAL 30 MINUTE"
+    ).result_rows[0]
+    record(
+        "D6d client identity is recorded on MCP spans, successes included",
+        clients[0] > 0 and clients[2] > 0,
+        f"{clients[0]} spans name a client ({clients[1]} distinct), {clients[2]} of them successful",
+    )
+
+    # D72: DF-12 closed. Derived from the redacted statement, so a literal
+    # cannot ride out inside a label that a metrics backend would export.
+    # Scoped to the CURRENT normalization version, which is what this asserts
+    # about: that the normalizer running now derives these fields. Spans written
+    # by an earlier version are correctly showing what that version produced,
+    # and only a replay would change them -- counting them here would make the
+    # assertion fail for history rather than for behaviour. argMax does not help
+    # either: those are different spans, not older rows for the same ones.
+    db = ch.query(
+        "SELECT countIf(db_operation != ''), countIf(db_collection != ''), "
+        "       countIf(db_statement != '') "
+        "FROM spans_raw WHERE downstream_kind = 'db' "
+        "  AND timestamp > now() - INTERVAL 30 MINUTE "
+        "  AND normalization_version = (SELECT max(normalization_version) FROM spans_raw)"
+    ).result_rows[0]
+    record(
+        "D6e db.operation and db.collection are derived from the statement",
+        db[2] > 0 and db[0] == db[2] and db[1] == db[2],
+        f"{db[0]}/{db[2]} have an operation, {db[1]}/{db[2]} a collection",
+    )
+
     # ---------------- B7: freshness, the headline metric -------------------
     # Architecture.md §9.1 names end-to-end freshness -- span event time to
     # queryable time -- as the one number that says whether the pipeline is

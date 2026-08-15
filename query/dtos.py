@@ -210,6 +210,16 @@ class SpanDetail(BaseModel):
     #: Redacted at normalize time, not at render (D59).
     http_url: str = ""
     db_statement: str = ""
+    #: Downstream HTTP detail. Empty means `instrument_httpx()` was not
+    #: called; the UI says which, because blank and "not captured" are
+    #: different facts. There is no response body: the client span ends before
+    #: httpx reads one (mcpobs/http.py).
+    http_request_body: str = ""
+    http_request_headers: str = ""
+    http_response_headers: str = ""
+    #: Self-reported by the client, never verified. Display only.
+    client_name: str = ""
+    client_version: str = ""
     gen_ai_system: str = ""
     gen_ai_model: str = ""
     gen_ai_input_tokens: int | None = None

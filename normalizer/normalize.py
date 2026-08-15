@@ -13,14 +13,14 @@ from datetime import UTC, datetime
 from typing import Any, Final
 
 from normalizer.models import DecodedSpan, SpanRow
-from normalizer.redact import AttributeRedactor
+from normalizer.redact import AttributeRedactor, parse_statement
 from normalizer.taxonomy import FailureTaxonomy
 
 
 class SpanNormalizer:
     """Extracts MCP fields and derives the failure category."""
 
-    normalization_version: Final[int] = 8
+    normalization_version: Final[int] = 9
 
     # span attributes
     MCP_METHOD: Final = "mcp.method.name"
@@ -36,6 +36,11 @@ class SpanNormalizer:
     RESULT_TYPE: Final = "mcp.result.type"
     TRANSPORT: Final = "network.transport"
     HELPER_VERSION: Final = "mcpobs.failure.kind.version"
+    HTTP_REQ_BODY: Final = "mcpobs.http.request.body"
+    HTTP_REQ_HEADERS: Final = "mcpobs.http.request.headers"
+    HTTP_RESP_HEADERS: Final = "mcpobs.http.response.headers"
+    CLIENT_NAME: Final = "mcpobs.client.name"
+    CLIENT_VERSION: Final = "mcpobs.client.version"
     MRTR_STATE_OUT: Final = "mcpobs.mrtr.state.out"
     MRTR_STATE_IN: Final = "mcpobs.mrtr.state.in"
     FAILURE_DETAIL: Final = "mcpobs.failure.detail"
@@ -79,6 +84,14 @@ class SpanNormalizer:
 
         is_mcp = self.MCP_METHOD in attrs
         category = self.taxonomy.classify(span)
+
+        # The instrumentation emits db.statement but neither db.operation nor
+        # db.collection, so derive them (DF-12). Redact first: parsing the
+        # redacted form keeps literals out of the derived labels too.
+        statement = self.redactor.value(
+            "db.statement", self._first(attrs, self.DB_STATEMENT)
+        )
+        parsed_operation, parsed_collection = parse_statement(statement)
         http_method, http_status, http_host = self._http(attrs)
         session_id = attrs.get(self.MCP_SESSION_ID)
         rpc_status = attrs.get(self.RPC_STATUS)
@@ -120,14 +133,16 @@ class SpanNormalizer:
             http_status_code=http_status,
             http_host=http_host,
             db_system=self._first(attrs, self.DB_SYSTEM),
-            db_operation=self._first(attrs, self.DB_OPERATION),
-            db_collection=self._first(attrs, self.DB_COLLECTION),
+            db_operation=self._first(attrs, self.DB_OPERATION) or parsed_operation,
+            db_collection=self._first(attrs, self.DB_COLLECTION) or parsed_collection,
             gen_ai_system=self._first(attrs, self.GEN_AI_SYSTEM),
             gen_ai_model=self._first(attrs, self.GEN_AI_MODEL),
             gen_ai_input_tokens=self._opt_int(attrs, self.GEN_AI_IN_TOKENS),
             gen_ai_output_tokens=self._opt_int(attrs, self.GEN_AI_OUT_TOKENS),
             downstream_kind=self._downstream_kind(attrs, is_mcp),
             failure_detail=self._str(attrs.get(self.FAILURE_DETAIL)),
+            client_name=self._str(attrs.get(self.CLIENT_NAME)),
+            client_version=self._str(attrs.get(self.CLIENT_VERSION)),
             # Populated only when the customer enabled payload capture. Empty
             # string means "not captured", which is different from an empty
             # payload -- so NULL rather than "" (DF-8).
@@ -136,9 +151,13 @@ class SpanNormalizer:
             input_size=self._opt_int(attrs, (self.REQUEST_SIZE,)),
             output_size=self._opt_int(attrs, (self.RESPONSE_SIZE,)),
             http_url=self.redactor.value("http.url", self._first(attrs, self.HTTP_URL)),
-            db_statement=self.redactor.value(
-                "db.statement", self._first(attrs, self.DB_STATEMENT)
-            ),
+            db_statement=statement,
+            # Already redacted and truncated in the customer's process. Stored
+            # verbatim here for the same reason input_preview is: re-redacting
+            # a redacted string only risks mangling it.
+            http_request_body=self._str(attrs.get(self.HTTP_REQ_BODY)),
+            http_request_headers=self._str(attrs.get(self.HTTP_REQ_HEADERS)),
+            http_response_headers=self._str(attrs.get(self.HTTP_RESP_HEADERS)),
             resource_attributes={k: self._str(v) for k, v in res.items()},
             # Redacted before storage, not before display: a secret that reaches
             # the table cannot be recalled, and `http.url` query strings and

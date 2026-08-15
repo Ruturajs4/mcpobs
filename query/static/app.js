@@ -351,10 +351,19 @@ function renderSpanDetail(d) {
     reqSize = respSize = null;
     if (d.downstream_kind === "http") {
       reqLabel = "Request"; respLabel = "Response";
-      request = [d.http_method, d.http_url || d.http_host].filter(Boolean).join(" ");
-      response = d.http_status_code ? `HTTP ${d.http_status_code}` : "";
-      // Bodies are genuinely absent, not hidden -- say which, and why.
-      footnote = "bodies are not recorded by OTel HTTP instrumentation (D60)";
+      // The request line, then the body under it. Showing the body alone would
+      // lose which URL produced it; showing the URL alone was the old D60 gap.
+      const reqLine = [d.http_method, d.http_url || d.http_host].filter(Boolean).join(" ");
+      const respLine = d.http_status_code ? `HTTP ${d.http_status_code}` : "";
+      request = [reqLine, d.http_request_headers, d.http_request_body]
+        .filter(Boolean).join("\n\n");
+      // No response body, and the reason is worth stating rather than leaving a
+      // blank: the OTel client span ends when the transport returns, and httpx
+      // reads the body after that.
+      response = [respLine, d.http_response_headers].filter(Boolean).join("\n\n");
+      footnote = d.http_request_headers
+        ? "captured by instrument_httpx() \u00b7 redacted and truncated, credential headers never read \u00b7 no response body: the client span ends before httpx reads one"
+        : "request body and headers not captured \u2014 call instrument_httpx() in your server";
     } else if (d.downstream_kind === "db") {
       reqLabel = "Statement"; respLabel = "";
       request = d.db_statement;
@@ -415,6 +424,10 @@ function renderSpanDetail(d) {
         row("protocol", d.protocol_version), row("jsonrpc id", d.jsonrpc_request_id),
         row("result type", d.result_type), row("transport", d.transport),
         row("session", d.session_id),
+        // Self-reported by the client and unverified, exactly as the spec warns.
+        // Labelled so nobody reads it as an identity the server authenticated.
+        row("client", [d.client_name, d.client_version].filter(Boolean).join(" ")
+          + (d.client_name ? " · self-reported" : "")),
         row("mrtr in", d.mrtr_state_in), row("mrtr out", d.mrtr_state_out),
       ].join(""))}
       ${group("Downstream", [

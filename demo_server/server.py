@@ -74,6 +74,23 @@ class _StatusHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_POST(self) -> None:
+        """Echoes what it was sent, so `submit_order` has a real request body.
+
+        Exists because `fetch_status` is a bodyless GET, which meant the HTTP
+        request-body capture (D60) had no way to be seen with data -- and a
+        feature that ships having never rendered is a feature nobody has
+        checked.
+        """
+        length = int(self.headers.get("content-length", 0))
+        received = self.rfile.read(length)
+        body = f'{{"accepted": true, "bytes": {len(received)}}}'.encode()
+        self.send_response(201)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def log_message(self, *args: object) -> None:
         pass  # keep stdio transport clean
 
@@ -121,6 +138,23 @@ async def fetch_status(code: int = 200) -> str:
     async with httpx.AsyncClient(timeout=5.0) as client:
         response = await client.get(f"{DOWNSTREAM_BASE}/status/{code}")
         return f"downstream returned {response.status_code}"
+
+
+@mcp.tool()
+async def submit_order(customer: str = "acme", sku: str = "widget-1") -> str:
+    """POST an order downstream -- the request-body capture path (D60).
+
+    Deliberately sends an `authorization` header. It must NOT appear in the
+    console: header capture is allow-listed, so a credential is never read in
+    the first place rather than read and then scrubbed.
+    """
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        response = await client.post(
+            f"{DOWNSTREAM_BASE}/orders",
+            json={"customer": customer, "sku": sku, "quantity": 2},
+            headers={"authorization": "Bearer demo-token-must-not-be-captured"},
+        )
+        return f"downstream accepted with {response.status_code}"
 
 
 @mcp.tool()

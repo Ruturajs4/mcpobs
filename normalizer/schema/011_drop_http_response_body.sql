@@ -1,0 +1,24 @@
+-- Drops `http_response_body`, added by 009 and never populated.
+--
+-- WHY IT WAS ADDED, AND WHY IT CANNOT WORK
+-- 009 assumed a response hook can see a response body. Measured, it cannot.
+-- `HTTPXClientInstrumentor` wraps the TRANSPORT, so its span ends when
+-- `handle_async_request` returns -- and httpx reads the body afterwards, in
+-- `Client.send`. By the time a response body exists, the span it belongs to
+-- has been exported, and attributes set on an ended span are dropped in
+-- silence.
+--
+-- Buffering the body inside the hook would close the gap and is exactly what
+-- mcpobs must not do: it would turn every streaming download in the customer's
+-- process into a full in-memory read, to satisfy our telemetry.
+--
+-- A permanently empty column is worse than a missing one. It reads as "this
+-- call had no response body" -- a wrong answer where we otherwise give none.
+-- Request bodies and both sets of headers ARE captured; see mcpobs/http.py.
+--
+-- Done as a NEW migration rather than by editing 009, which the runner refuses
+-- (and was right to: it caught this exact edit). A fresh install therefore
+-- creates the column and drops it again, which is the cost of never letting an
+-- applied checksum drift.
+ALTER TABLE mcpobs.spans_raw
+    DROP COLUMN IF EXISTS http_response_body;

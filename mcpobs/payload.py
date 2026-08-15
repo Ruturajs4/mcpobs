@@ -118,6 +118,15 @@ class PayloadCapture:
                         return {}
         return {}
 
+    def render(self, value: Any) -> tuple[str, int]:
+        """Redact + truncate an arbitrary value, as (preview, original size).
+
+        Public because `mcpobs.http` needs exactly the same treatment for HTTP
+        bodies, and a second copy of the redaction rules is how the two drift
+        apart until one of them leaks.
+        """
+        return self._render(value)
+
     # -- internals ---------------------------------------------------------
     def _render(self, value: Any) -> tuple[str, int]:
         if value is None or value == "":

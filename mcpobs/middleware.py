@@ -26,6 +26,8 @@ from opentelemetry.trace import get_current_span
 from mcpobs.classifier import (
     ATTRIBUTE,
     CLASSIFIER_VERSION,
+    CLIENT_NAME_ATTRIBUTE,
+    CLIENT_VERSION_ATTRIBUTE,
     DETAIL_ATTRIBUTE,
     MRTR_STATE_ATTRIBUTE,
     REQUEST_ATTRIBUTE,
@@ -93,6 +95,14 @@ class FailureClassifierMiddleware:
         # point is to see what a successful-but-wrong call actually returned.
         if self.capture_payloads:
             self._capture_payload(span, ctx, params, result)
+
+        # Which client made the call. Set as a span attribute, not left in
+        # the captured payload, so it survives with payload capture off.
+        client_name, client_version = self.classifier.client_info(params)
+        if client_name:
+            span.set_attribute(CLIENT_NAME_ATTRIBUTE, client_name)
+        if client_version:
+            span.set_attribute(CLIENT_VERSION_ATTRIBUTE, client_version)
 
         # Which resource was read. The SDK records nothing for resources/*
         # because it derives its target from params["name"], and resources are

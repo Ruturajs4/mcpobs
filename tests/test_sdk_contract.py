@@ -16,6 +16,8 @@ Docker, no Kafka and no ClickHouse.
 
 from __future__ import annotations
 
+from typing import Any
+
 from mcp.client import Client
 from mcp.server import MCPServer
 from mcp_types import CallToolResult, TextContent
@@ -258,3 +260,220 @@ class TestJsonRpcEnvelope:
         })
         assert "iVBORw0KGgo" not in text
         assert "image omitted" in text
+
+
+class RecordingSpan:
+    """A span that remembers what was set on it, instead of a mock.
+
+    The assertions are about WHICH attributes appear, so a real dict of
+    attributes is both simpler to read and harder to fool than a mock whose
+    call list has to be decoded.
+    """
+
+    def __init__(self) -> None:
+        self.recorded: dict[str, object] = {}
+
+    def is_recording(self) -> bool:
+        return True
+
+    def set_attribute(self, key: str, value: object) -> None:
+        self.recorded[key] = value
+
+
+class TestClientIdentity:
+    """`clientInfo` is promoted to a span attribute, not left in the payload.
+
+    V2 §6.1 asks which clients call which tools. The SDK sets no client
+    attribute, and before this the answer lived only inside a captured payload
+    -- so the question could only be answered by customers who had also switched
+    on the far more invasive payload capture. Two low-cardinality strings should
+    not cost that.
+    """
+
+    def setup_method(self) -> None:
+        from mcpobs.classifier import FailureClassifier
+
+        self.c = FailureClassifier()
+
+    def test_reads_name_and_version_from_meta(self) -> None:
+        assert self.c.client_info({
+            "_meta": {"io.modelcontextprotocol/clientInfo": {
+                "name": "claude-code", "version": "2.1.0"}},
+        }) == ("claude-code", "2.1.0")
+
+    def test_absent_meta_is_empty_not_an_error(self) -> None:
+        """Every shape a malformed request can take yields ("", ""). This runs on
+        the customer's hot path; raising here would break their tool call."""
+        for params in (None, {}, "nonsense", {"_meta": None}, {"_meta": {}},
+                       {"_meta": {"io.modelcontextprotocol/clientInfo": "no"}},
+                       {"_meta": {"io.modelcontextprotocol/clientInfo": {"name": 7}}}):
+            assert self.c.client_info(params) == ("", "") or \
+                self.c.client_info(params)[0] == ""
+
+    def test_middleware_sets_the_attributes(self) -> None:
+        from mcpobs.classifier import CLIENT_NAME_ATTRIBUTE, CLIENT_VERSION_ATTRIBUTE
+        from mcpobs.middleware import FailureClassifierMiddleware
+
+        span = RecordingSpan()
+        recorded = span.recorded
+
+        mw = FailureClassifierMiddleware()
+        import mcpobs.middleware as mod
+
+        original = mod.get_current_span
+        mod.get_current_span = lambda: span  # type: ignore[assignment]
+        try:
+            mw._annotate(
+                {"content": [{"type": "text", "text": "ok"}], "isError": False},
+                {"_meta": {"io.modelcontextprotocol/clientInfo": {
+                    "name": "inspector", "version": "0.9"}}},
+            )
+        finally:
+            mod.get_current_span = original
+
+        assert recorded[CLIENT_NAME_ATTRIBUTE] == "inspector"
+        assert recorded[CLIENT_VERSION_ATTRIBUTE] == "0.9"
+
+    def test_set_on_success_not_only_on_failure(self) -> None:
+        """Client identity is a dimension, not an error detail. If it were only
+        recorded on failures, "which clients call which tools" would answer with
+        a breakdown of failures -- a subtly wrong answer, which is worse than
+        none."""
+        import inspect
+
+        from mcpobs.middleware import FailureClassifierMiddleware
+
+        source = inspect.getsource(FailureClassifierMiddleware._annotate)
+        client_at = source.index("CLIENT_NAME_ATTRIBUTE")
+        error_at = source.index("if not self.classifier.is_error(result):")
+        assert client_at < error_at
+
+
+class TestHttpBodyCapture:
+    """Downstream HTTP capture (D60), against the hook contract as measured.
+
+    The hooks do NOT receive `httpx.Request`/`httpx.Response`. They receive
+    `RequestInfo(method, url, headers, stream, extensions)` and
+    `ResponseInfo(status_code, headers, stream, extensions)` at the TRANSPORT
+    layer. These fakes copy that shape deliberately: a test built on the
+    convenient object rather than the real one passes while production does
+    nothing, which is how the first cut of this file went green while capturing
+    nothing at all.
+    """
+
+    def setup_method(self) -> None:
+        from mcpobs.http import HttpBodyCapture
+
+        self.h = HttpBodyCapture()
+        self.span = RecordingSpan()
+        self.recorded = self.span.recorded
+
+    @staticmethod
+    def _request(body: object = b"", headers: dict[str, str] | None = None) -> Any:
+        class ByteStream:
+            _stream = body
+
+        class RequestInfo:
+            stream = ByteStream()
+
+        RequestInfo.headers = _Headers(headers or {})  # type: ignore[attr-defined]
+        return RequestInfo()
+
+    def test_records_the_request_body(self) -> None:
+        from mcpobs.http import REQUEST_BODY_ATTRIBUTE
+
+        self.h.on_request(self.span, self._request(b'{"q": "hello"}'))
+        assert '"q": "hello"' in str(self.recorded[REQUEST_BODY_ATTRIBUTE])
+
+    def test_a_streaming_upload_is_reported_not_drained(self) -> None:
+        """`_stream` is an iterator for a streaming upload. Consuming it here
+        would send an empty body -- the telemetry would have eaten the
+        customer's data on its way out."""
+        from mcpobs.http import REQUEST_BODY_ATTRIBUTE, STREAMING_REQUEST
+
+        self.h.on_request(self.span, self._request(iter([b"chunk"])))
+        assert self.recorded[REQUEST_BODY_ATTRIBUTE] == STREAMING_REQUEST
+
+    def test_credential_headers_are_never_read(self) -> None:
+        """Allow-list, not deny-list: anything unrecognised is dropped, so a
+        bespoke `x-acme-session` is excluded without anyone predicting it."""
+        from mcpobs.http import REQUEST_HEADERS_ATTRIBUTE
+
+        self.h.on_request(self.span, self._request(b"", {
+            "authorization": "Bearer supersecrettoken",
+            "cookie": "session=abc",
+            "x-acme-session": "nobody-predicted-this",
+            "content-type": "application/json",
+        }))
+        rendered = str(self.recorded[REQUEST_HEADERS_ATTRIBUTE])
+        assert "supersecrettoken" not in rendered
+        assert "nobody-predicted-this" not in rendered
+        assert "application/json" in rendered
+
+    def test_bodies_are_redacted_like_every_other_payload(self) -> None:
+        from mcpobs.http import REQUEST_BODY_ATTRIBUTE
+
+        self.h.on_request(self.span, self._request(b'{"t": "sk-abcdefghijklmnopqrst"}'))
+        assert "sk-abcdefghij" not in str(self.recorded[REQUEST_BODY_ATTRIBUTE])
+
+    def test_binary_body_records_its_size_not_its_bytes(self) -> None:
+        from mcpobs.http import REQUEST_BODY_ATTRIBUTE
+
+        png = bytes([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe])
+        self.h.on_request(self.span, self._request(png))
+        assert "binary" in str(self.recorded[REQUEST_BODY_ATTRIBUTE])
+
+    def test_no_response_body_attribute_exists_at_all(self) -> None:
+        """Not an oversight. The instrumentation's span ends when the transport
+        returns and httpx reads the body afterwards, so any such attribute would
+        be set on an ended span and silently dropped. An always-empty column
+        reads as "this call had no response body", which is a wrong answer where
+        we currently give none."""
+        import mcpobs.http as mod
+
+        assert not [n for n in dir(mod) if "RESPONSE_BODY" in n]
+
+    def test_response_hook_still_records_headers(self) -> None:
+        from mcpobs.http import RESPONSE_HEADERS_ATTRIBUTE
+
+        class ResponseInfo:
+            status_code = 200
+            headers = _Headers({"content-type": "application/json", "server": "nginx"})
+
+        self.h.on_response(self.span, None, ResponseInfo())
+        assert "application/json" in str(self.recorded[RESPONSE_HEADERS_ATTRIBUTE])
+
+    def test_async_hooks_exist_because_the_instrumentation_awaits_them(self) -> None:
+        """`_handle_async_request_wrapper` does `await async_request_hook(...)`.
+        A sync callable there raises inside the customer's HTTP call -- so the
+        async variants are a correctness requirement, not a convenience."""
+        import asyncio
+        import inspect
+
+        from mcpobs.http import REQUEST_BODY_ATTRIBUTE
+
+        assert inspect.iscoroutinefunction(self.h.on_request_async)
+        assert inspect.iscoroutinefunction(self.h.on_response_async)
+        asyncio.run(self.h.on_request_async(self.span, self._request(b'{"a": 1}')))
+        assert self.recorded[REQUEST_BODY_ATTRIBUTE]
+
+    def test_a_broken_request_object_never_breaks_the_call(self) -> None:
+        """The hook runs inside the customer's HTTP client. An exception here
+        would fail their request, which no telemetry is worth."""
+
+        class Exploding:
+            @property
+            def headers(self) -> dict[str, str]:
+                raise RuntimeError("boom")
+
+        self.h.on_request(self.span, Exploding())  # must not raise
+
+
+class _Headers:
+    """Stands in for `httpx.Headers`: case-insensitive, `.items()` of strings."""
+
+    def __init__(self, values: dict[str, str]) -> None:
+        self._values = values
+
+    def items(self) -> Any:
+        return self._values.items()
