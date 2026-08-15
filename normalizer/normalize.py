@@ -20,7 +20,7 @@ from normalizer.taxonomy import FailureTaxonomy
 class SpanNormalizer:
     """Extracts MCP fields and derives the failure category."""
 
-    normalization_version: Final[int] = 10
+    normalization_version: Final[int] = 11
 
     # span attributes
     MCP_METHOD: Final = "mcp.method.name"
@@ -33,7 +33,14 @@ class SpanNormalizer:
     JSONRPC_REQUEST_ID: Final = "jsonrpc.request.id"
     ERROR_TYPE: Final = "error.type"
     RPC_STATUS: Final = "rpc.response.status_code"
-    RESULT_TYPE: Final = "mcp.result.type"
+    # BOTH names. The SDK does not emit `mcp.result.type` at all -- measured
+    # against the installed version -- so the helper sets `mcpobs.result.type`,
+    # and the taxonomy has always read both. This column read only the SDK one,
+    # so `result_type` was EMPTY on every MRTR round while the taxonomy sitting
+    # beside it correctly derived `pending_input` from the helper attribute.
+    # The data was present and discarded on its way to the column: the same
+    # shape of defect as DF-12.
+    RESULT_TYPE: Final = ("mcp.result.type", "mcpobs.result.type")
     TRANSPORT: Final = "network.transport"
     HELPER_VERSION: Final = "mcpobs.failure.kind.version"
     HTTP_REQ_BODY: Final = "mcpobs.http.request.body"
@@ -136,7 +143,7 @@ class SpanNormalizer:
             transport=self._str(attrs.get(self.TRANSPORT)),
             mcp_session_id=self._str(session_id) if session_id is not None else None,
             mcp_is_error=int(self.taxonomy.is_error(category)),
-            result_type=self._str(attrs.get(self.RESULT_TYPE)),
+            result_type=self._first(attrs, self.RESULT_TYPE),
             failure_category=category,
             error_type=self._str(attrs.get(self.ERROR_TYPE)),
             rpc_status_code=self._str(rpc_status) if rpc_status is not None else None,

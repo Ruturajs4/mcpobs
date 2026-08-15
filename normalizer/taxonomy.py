@@ -82,7 +82,24 @@ class FailureTaxonomy:
     #: `subscriptions/listen` span lasts as long as the stream does, so one of
     #: them in a p95 destroys the chart. Matched by prefix, never an enum: the
     #: protocol keeps adding methods (D8).
-    NON_LATENCY_METHODS: Final[tuple[str, ...]] = ("subscriptions/listen",)
+    NON_LATENCY_METHODS: Final[tuple[str, ...]] = (
+        # A stream lifetime, not a latency.
+        "subscriptions/listen",
+        # SERVER-INITIATED requests. Their duration is dominated by the time the
+        # CLIENT takes to answer -- a model generating a completion, or a human
+        # approving an elicitation. That is think-time, exactly like an MRTR
+        # interim round, and it is not a measure of how fast this server is.
+        #
+        # Listed even though the current stateless transport has no back-channel
+        # to issue them on, and none has ever been observed here. The cost of
+        # listing them is nothing; the cost of not listing them is a p95
+        # silently poisoned by human approval time the first time a customer
+        # runs a stateful transport, which is the kind of defect that is only
+        # ever found by not trusting the number.
+        "sampling/createMessage",
+        "elicitation/create",
+        "roots/list",
+    )
 
     def is_latency_eligible(self, span: DecodedSpan) -> bool:
         """False when a span's duration must never enter a latency aggregate.

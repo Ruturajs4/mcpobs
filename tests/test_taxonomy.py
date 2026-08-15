@@ -111,3 +111,93 @@ class TestLatencyEligibility:
     def test_completing_mrtr_round_is_eligible(self, span_factory) -> None:
         span = span_factory(span_attributes={"mcpobs.mrtr.state.in": "abc123"})
         assert self.taxonomy.is_latency_eligible(span)
+
+
+class TestServerInitiatedRequests:
+    """`sampling/createMessage`, `elicitation/create`, `roots/list`.
+
+    These are SERVER-INITIATED: the server asks the client, and the client may
+    take as long as a model generation or a human decision to answer. That
+    duration is think-time, not a measure of how fast the server is -- the same
+    reasoning that excludes MRTR interim rounds (D28).
+
+    None has ever been observed in this stack, because the stateless 2026-07-28
+    transport has no back-channel to issue them on. They are handled anyway: the
+    cost is nothing, and the cost of NOT handling them is a p95 poisoned by
+    human approval time the first time a customer runs a stateful transport.
+    """
+
+    def span(self, method: str, **attrs: object):
+        from normalizer.models import DecodedSpan
+
+        return DecodedSpan(
+            trace_id="a" * 32, span_id="b" * 16,
+            span_attributes={"mcp.method.name": method, **attrs},
+        )
+
+    def setup_method(self) -> None:
+        from normalizer.taxonomy import FailureTaxonomy
+
+        self.taxonomy = FailureTaxonomy()
+
+    def test_sampling_never_enters_a_latency_aggregate(self) -> None:
+        """A model generating a completion can take tens of seconds. One of
+        those in a p95 destroys the chart exactly as a stream lifetime does."""
+        assert not self.taxonomy.is_latency_eligible(self.span("sampling/createMessage"))
+
+    def test_elicitation_never_enters_a_latency_aggregate(self) -> None:
+        """Bounded by a human deciding, which is not a server metric."""
+        assert not self.taxonomy.is_latency_eligible(self.span("elicitation/create"))
+
+    def test_roots_list_never_enters_a_latency_aggregate(self) -> None:
+        assert not self.taxonomy.is_latency_eligible(self.span("roots/list"))
+
+    def test_ordinary_methods_are_still_eligible(self) -> None:
+        """The exclusion must stay narrow. `tools/list` runs on every client
+        connect and a slow one is a real customer symptom (D53)."""
+        for method in ("tools/call", "tools/list", "prompts/get", "resources/read",
+                       "server/discover"):
+            assert self.taxonomy.is_latency_eligible(self.span(method)), method
+
+    def test_they_are_not_treated_as_failures(self) -> None:
+        """Excluded from LATENCY, not from success. Classifying a sampling
+        round as an error would corrupt the error rate, which is the single
+        most likely way to discredit the product (Day-1 doc)."""
+        category = self.taxonomy.classify(self.span("sampling/createMessage"))
+        assert not self.taxonomy.is_error(category), category
+
+
+class TestResultTypeReachesTheColumn:
+    def test_the_helper_attribute_populates_result_type(self) -> None:
+        """The SDK emits no `mcp.result.type`, so the helper sets
+        `mcpobs.result.type`. The taxonomy always read both; the COLUMN read
+        only the SDK name, so `result_type` was empty on every MRTR round while
+        `failure_category` beside it correctly said `pending_input`. Present
+        data, discarded on the way to the column."""
+        from normalizer.models import DecodedSpan
+        from normalizer.normalize import SpanNormalizer
+
+        row = SpanNormalizer().to_row(DecodedSpan(
+            trace_id="a" * 32, span_id="b" * 16,
+            span_attributes={
+                "mcp.method.name": "tools/call",
+                "mcpobs.result.type": "input_required",
+            },
+        ))
+        assert row.result_type == "input_required"
+        assert row.failure_category == "pending_input"
+        assert row.is_latency_eligible == 0
+
+    def test_the_sdk_attribute_still_wins_if_it_ever_appears(self) -> None:
+        from normalizer.models import DecodedSpan
+        from normalizer.normalize import SpanNormalizer
+
+        row = SpanNormalizer().to_row(DecodedSpan(
+            trace_id="a" * 32, span_id="b" * 16,
+            span_attributes={
+                "mcp.method.name": "tools/call",
+                "mcp.result.type": "complete",
+                "mcpobs.result.type": "input_required",
+            },
+        ))
+        assert row.result_type == "complete"
