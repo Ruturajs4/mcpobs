@@ -339,11 +339,42 @@ function renderSpanDetail(d) {
        <pre>${esc(text)}</pre></div>`
     : "";
 
-  const payloadBlock = (d.input_preview || d.output_preview)
-    ? `<div class="grp"><h4>Request / Response
-         <span class="note">redacted and truncated at capture</span></h4>
-       ${io("Request", d.input_preview, d.input_size)}
-       ${io("Response", d.output_preview, d.output_size)}</div>`
+  // Request/Response means something different per span kind, and rendering
+  // only the MCP shape is why a downstream call looked empty. An HTTP span's
+  // request IS its URL; a DB span's request IS its statement.
+  let reqLabel = "Request", respLabel = "Response";
+  let request = d.input_preview, response = d.output_preview;
+  let reqSize = d.input_size, respSize = d.output_size;
+  let footnote = "redacted and truncated at capture";
+
+  if (!d.mcp_method) {
+    reqSize = respSize = null;
+    if (d.downstream_kind === "http") {
+      reqLabel = "Request"; respLabel = "Response";
+      request = [d.http_method, d.http_url || d.http_host].filter(Boolean).join(" ");
+      response = d.http_status_code ? `HTTP ${d.http_status_code}` : "";
+      // Bodies are genuinely absent, not hidden -- say which, and why.
+      footnote = "bodies are not recorded by OTel HTTP instrumentation (D60)";
+    } else if (d.downstream_kind === "db") {
+      reqLabel = "Statement"; respLabel = "";
+      request = d.db_statement;
+      response = "";
+      footnote = "literals redacted; placeholders preserved";
+    } else if (d.downstream_kind === "llm") {
+      reqLabel = "Request"; respLabel = "Response";
+      request = [d.gen_ai_system, d.gen_ai_model,
+        d.gen_ai_input_tokens ? `${d.gen_ai_input_tokens} input tokens` : ""]
+        .filter(Boolean).join(" · ");
+      response = d.gen_ai_output_tokens ? `${d.gen_ai_output_tokens} output tokens` : "";
+      footnote = "prompt and completion are not recorded by the LLM instrumentation";
+    }
+  }
+
+  const payloadBlock = (request || response)
+    ? `<div class="grp"><h4>${d.mcp_method ? "Request / Response" : "Downstream call"}
+         <span class="note">${esc(footnote)}</span></h4>
+       ${io(reqLabel, request, reqSize)}
+       ${respLabel ? io(respLabel, response, respSize) : ""}</div>`
     : (d.mcp_method === "tools/call"
       ? `<div class="grp"><h4>Request / Response</h4>
          <div class="io-off">Not captured. Payload capture is off by default —

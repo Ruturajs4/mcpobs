@@ -117,6 +117,9 @@ class SpanRow(_Row):
     # Error text from a FAILING result only. Distinct from the payload columns
     # above, which stay NULL unless payload capture is switched on (DF-8).
     failure_detail: str = ""
+    # The downstream analogue of request/response. Redacted at normalize time.
+    http_url: str = ""
+    db_statement: str = ""
 
 
 class DeadLetterRow(_Row):

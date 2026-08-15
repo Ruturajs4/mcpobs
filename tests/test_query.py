@@ -211,3 +211,48 @@ class TestSpanDetailCompleteness:
 
         assert "span_attributes" in SpanDetail.model_fields
         assert "resource_attributes" in SpanDetail.model_fields
+
+
+class TestAttributeRedaction:
+    """Secrets must not reach storage. Redaction at render is too late."""
+
+    def setup_method(self) -> None:
+        from normalizer.redact import AttributeRedactor
+
+        self.r = AttributeRedactor()
+
+    def test_api_key_in_query_string_is_scrubbed(self) -> None:
+        """The classic leak: `?api_key=…` flowing straight into http.url."""
+        out = self.r.value("http.url", "https://api.example.com/v1?api_key=sk-abcdefghij123456&page=2")
+        assert "sk-abcdefghij123456" not in out
+        assert "page=2" in out          # the useful part survives
+        assert "/v1" in out             # so does the path
+
+    def test_url_without_query_is_untouched(self) -> None:
+        url = "http://127.0.0.1:8899/status/500"
+        assert self.r.value("http.url", url) == url
+
+    def test_sql_literals_are_scrubbed_but_placeholders_survive(self) -> None:
+        """A parameterised statement is what you group by; keep its shape."""
+        out = self.r.value(
+            "db.statement", "SELECT * FROM users WHERE email = 'alice@example.com' AND id = ?"
+        )
+        assert "alice@example.com" not in out
+        assert "id = ?" in out
+        assert "FROM users" in out
+
+    def test_bearer_token_anywhere(self) -> None:
+        out = self.r.value("db.statement", "-- auth: Bearer eyJhbGciOiJIUzI1NiJ9.body.sig")
+        assert "eyJhbGciOiJIUzI1NiJ9" not in out
+
+    def test_only_risky_keys_are_touched(self) -> None:
+        """Raw fidelity matters for replay; scrub the known-risky keys only."""
+        attrs = {"http.url": "https://x/?token=abc123def456", "custom.note": "token=abc123def456"}
+        out = self.r.apply(attrs)
+        assert "abc123def456" not in out["http.url"]
+        assert out["custom.note"] == "token=abc123def456"
+
+    def test_never_raises(self) -> None:
+        from normalizer.redact import AttributeRedactor
+
+        assert AttributeRedactor().value("http.url", "::: not a url :::")

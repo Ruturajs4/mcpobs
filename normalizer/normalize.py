@@ -13,13 +13,14 @@ from datetime import UTC, datetime
 from typing import Any, Final
 
 from normalizer.models import DecodedSpan, SpanRow
+from normalizer.redact import AttributeRedactor
 from normalizer.taxonomy import FailureTaxonomy
 
 
 class SpanNormalizer:
     """Extracts MCP fields and derives the failure category."""
 
-    normalization_version: Final[int] = 7
+    normalization_version: Final[int] = 8
 
     # span attributes
     MCP_METHOD: Final = "mcp.method.name"
@@ -61,8 +62,16 @@ class SpanNormalizer:
     RES_TENANT: Final = "tenant.id"
     RES_PROJECT: Final = "project.id"
 
-    def __init__(self, taxonomy: FailureTaxonomy | None = None) -> None:
+    HTTP_URL: Final = ("url.full", "http.url")
+    DB_STATEMENT: Final = ("db.query.text", "db.statement")
+
+    def __init__(
+        self,
+        taxonomy: FailureTaxonomy | None = None,
+        redactor: AttributeRedactor | None = None,
+    ) -> None:
         self.taxonomy = taxonomy or FailureTaxonomy()
+        self.redactor = redactor or AttributeRedactor()
 
     def to_row(self, span: DecodedSpan, *, partition: int = -1, offset: int = -1) -> SpanRow:
         attrs = span.span_attributes
@@ -126,8 +135,15 @@ class SpanNormalizer:
             output_preview=self._str(attrs.get(self.RESPONSE)) or None,
             input_size=self._opt_int(attrs, (self.REQUEST_SIZE,)),
             output_size=self._opt_int(attrs, (self.RESPONSE_SIZE,)),
+            http_url=self.redactor.value("http.url", self._first(attrs, self.HTTP_URL)),
+            db_statement=self.redactor.value(
+                "db.statement", self._first(attrs, self.DB_STATEMENT)
+            ),
             resource_attributes={k: self._str(v) for k, v in res.items()},
-            span_attributes={k: self._str(v) for k, v in attrs.items()},
+            # Redacted before storage, not before display: a secret that reaches
+            # the table cannot be recalled, and `http.url` query strings and
+            # inlined SQL literals were flowing in untouched.
+            span_attributes=self.redactor.apply({k: self._str(v) for k, v in attrs.items()}),
             normalization_version=self.normalization_version,
             kafka_partition=partition,
             kafka_offset=offset,
