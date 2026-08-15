@@ -26,7 +26,9 @@ import argparse
 import atexit
 import os
 import signal
+import sqlite3
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Annotated
 
@@ -34,6 +36,8 @@ import httpx
 from mcp.server import MCPServer
 from mcp.server.mcpserver.resolve import Elicit, Resolve
 from mcp_types import CallToolResult, TextContent
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
 from pydantic import BaseModel
 
 from demo_server.otel_bootstrap import SERVICE_VERSION, init_telemetry, shutdown
@@ -41,6 +45,7 @@ from mcpobs import instrument
 
 DOWNSTREAM_PORT = int(os.getenv("DOWNSTREAM_PORT", "8899"))
 DOWNSTREAM_BASE = f"http://127.0.0.1:{DOWNSTREAM_PORT}"
+DB_PATH = os.getenv("DEMO_DB_PATH", ":memory:")
 
 mcp = MCPServer("mcp-demo-server", version=SERVICE_VERSION)
 
@@ -67,6 +72,24 @@ class _StatusHandler(BaseHTTPRequestHandler):
 
     def log_message(self, *args: object) -> None:
         pass  # keep stdio transport clean
+
+
+def seed_database() -> None:
+    """A tiny local table so query_orders has something real to query."""
+    global DB_PATH
+    DB_PATH = "file:demo?mode=memory&cache=shared"
+    connection = sqlite3.connect(DB_PATH, uri=True)
+    connection.execute("CREATE TABLE IF NOT EXISTS orders (customer TEXT)")
+    connection.executemany(
+        "INSERT INTO orders VALUES (?)", [("acme",), ("acme",), ("globex",)]
+    )
+    connection.commit()
+    # Held open: an in-memory shared-cache database disappears when the last
+    # connection to it closes.
+    _KEEPALIVE.append(connection)
+
+
+_KEEPALIVE: list[sqlite3.Connection] = []
 
 
 def start_downstream() -> HTTPServer:
@@ -137,6 +160,52 @@ mcp.tool()(confirm_deploy)
 
 
 @mcp.tool()
+def query_orders(customer: str = "acme") -> str:
+    """Query a local database -- produces a real instrumented db child span.
+
+    U6: proves `db_system` / `db_operation` promote, so a tool whose latency
+    comes from a database shows WHERE the time went instead of looking like
+    unexplained server time (V2 §6.1).
+
+    MUST go through an explicit cursor. `opentelemetry-instrumentation-dbapi`
+    wraps `Cursor.execute`, NOT the `Connection.execute` shortcut -- so the
+    idiomatic one-liner produces NO span at all. Verified, not assumed. This is
+    the kind of silent gap a customer reports as "my database calls do not show
+    up", so it is worth knowing before they ask (D35).
+    """
+    connection = sqlite3.connect(DB_PATH, uri=True)
+    try:
+        cursor = connection.cursor()
+        cursor.execute("SELECT count(*) FROM orders WHERE customer = ?", (customer,))
+        return f"{cursor.fetchone()[0]} orders for {customer}"
+    finally:
+        connection.close()
+
+
+@mcp.tool()
+def summarize(text: str = "quarterly numbers") -> str:
+    """A tool whose server calls an LLM downstream.
+
+    The span below is what an instrumented LLM client emits -- we do NOT call a
+    real model here, so the attributes are hand-set to the GenAI semantic
+    convention. Labelled plainly rather than dressed up: it exercises our
+    extraction, it does not prove any vendor's instrumentation.
+
+    Note this is the SERVER calling a model, which we can see. What the client's
+    model does is outside our boundary entirely (V2 §2.2).
+    """
+    tracer = trace.get_tracer("demo-llm")
+    with tracer.start_as_current_span("chat gpt-4o-mini", kind=SpanKind.CLIENT) as span:
+        span.set_attribute("gen_ai.system", "openai")
+        span.set_attribute("gen_ai.operation.name", "chat")
+        span.set_attribute("gen_ai.request.model", "gpt-4o-mini")
+        span.set_attribute("gen_ai.usage.input_tokens", 128)
+        span.set_attribute("gen_ai.usage.output_tokens", 64)
+        time.sleep(0.02)  # stand-in for model latency
+    return f"summary of {text!r}"
+
+
+@mcp.tool()
 def explode() -> str:
     """Raise an unhandled exception.
 
@@ -155,6 +224,7 @@ def main() -> None:
 
     init_telemetry()
     start_downstream()
+    seed_database()
 
     # BatchSpanProcessor buffers. Without an explicit flush the last spans of a
     # short-lived server are lost when the client tears the process down -- which

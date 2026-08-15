@@ -117,6 +117,13 @@ def _instrument_httpx() -> None:
     except Exception as exc:  # pragma: no cover - instrumentation is best-effort
         print(f"[otel_bootstrap] httpx instrumentation unavailable: {exc}")
 
+    try:
+        from opentelemetry.instrumentation.sqlite3 import SQLite3Instrumentor
+
+        SQLite3Instrumentor().instrument()
+    except Exception as exc:  # pragma: no cover
+        print(f"[otel_bootstrap] sqlite3 instrumentation unavailable: {exc}")
+
 
 def shutdown() -> None:
     """Flush pending spans. Required for short-lived processes."""

@@ -37,6 +37,9 @@ SCENARIOS: list[tuple[str, dict, str]] = [
     # MRTR: no elicitation callback on this client, so the call stops at the
     # interim `input_required` round -- the span U5 must exclude from latency.
     ("confirm_deploy", {"service": "checkout"}, "pending_input"),
+    # U6: downstream dimensions beyond HTTP.
+    ("query_orders", {"customer": "acme"}, "ok"),
+    ("summarize", {"text": "quarterly numbers"}, "ok"),
 ]
 
 

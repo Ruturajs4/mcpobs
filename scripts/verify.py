@@ -473,6 +473,34 @@ def main() -> int:
         ),
     )
 
+    # ---------------- B10: downstream dimensions (U6) ----------------------
+    # V2 §6.1: a slow tool call must show WHERE the time went. Without this,
+    # database and LLM latency both look like unexplained server time.
+    print("\n--- B10: downstream dimensions ---")
+    kinds = dict(
+        ch.query(
+            "SELECT downstream_kind, count() FROM spans_raw "
+            "WHERE downstream_kind != '' AND timestamp > now() - INTERVAL 30 MINUTE GROUP BY 1"
+        ).result_rows
+    )
+    record(
+        "B10 http, db and llm downstream calls are all attributed",
+        {"http", "db", "llm"}.issubset(kinds),
+        f"{kinds}",
+    )
+
+    waterfall = ch.query(
+        "SELECT p.mcp_tool_name, c.downstream_kind FROM spans_raw AS c "
+        "INNER JOIN spans_raw AS p ON c.parent_span_id = p.span_id "
+        "WHERE c.downstream_kind != '' AND p.mcp_tool_name != '' "
+        "GROUP BY 1, 2"
+    ).result_rows
+    record(
+        "B10b each downstream call is attributable to its tool",
+        len({kind for _, kind in waterfall}) >= 3,
+        f"{sorted({(tool, kind) for tool, kind in waterfall})}",
+    )
+
     # ---------------- B7: freshness, the headline metric -------------------
     # Architecture.md §9.1 names end-to-end freshness -- span event time to
     # queryable time -- as the one number that says whether the pipeline is

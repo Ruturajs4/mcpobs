@@ -19,7 +19,7 @@ from normalizer.taxonomy import FailureTaxonomy
 class SpanNormalizer:
     """Extracts MCP fields and derives the failure category."""
 
-    normalization_version: Final[int] = 4
+    normalization_version: Final[int] = 5
 
     # span attributes
     MCP_METHOD: Final = "mcp.method.name"
@@ -37,6 +37,17 @@ class SpanNormalizer:
     HELPER_VERSION: Final = "mcpobs.failure.kind.version"
     MRTR_STATE_OUT: Final = "mcpobs.mrtr.state.out"
     MRTR_STATE_IN: Final = "mcpobs.mrtr.state.in"
+
+    # Downstream (U6). Both current and legacy semconv names are read: OTel
+    # instrumentation libraries migrate at their own pace, and a customer's
+    # pinned version decides which they emit.
+    DB_SYSTEM: Final = ("db.system.name", "db.system")
+    DB_OPERATION: Final = ("db.operation.name", "db.operation")
+    DB_COLLECTION: Final = ("db.collection.name", "db.sql.table", "db.name")
+    GEN_AI_SYSTEM: Final = ("gen_ai.system",)
+    GEN_AI_MODEL: Final = ("gen_ai.request.model", "gen_ai.response.model")
+    GEN_AI_IN_TOKENS: Final = ("gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens")
+    GEN_AI_OUT_TOKENS: Final = ("gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens")
 
     # resource attributes
     RES_SERVICE_NAME: Final = "service.name"
@@ -94,7 +105,14 @@ class SpanNormalizer:
             http_method=http_method,
             http_status_code=http_status,
             http_host=http_host,
-            db_system=self._str(attrs.get("db.system")),
+            db_system=self._first(attrs, self.DB_SYSTEM),
+            db_operation=self._first(attrs, self.DB_OPERATION),
+            db_collection=self._first(attrs, self.DB_COLLECTION),
+            gen_ai_system=self._first(attrs, self.GEN_AI_SYSTEM),
+            gen_ai_model=self._first(attrs, self.GEN_AI_MODEL),
+            gen_ai_input_tokens=self._opt_int(attrs, self.GEN_AI_IN_TOKENS),
+            gen_ai_output_tokens=self._opt_int(attrs, self.GEN_AI_OUT_TOKENS),
+            downstream_kind=self._downstream_kind(attrs, is_mcp),
             resource_attributes={k: self._str(v) for k, v in res.items()},
             span_attributes={k: self._str(v) for k, v in attrs.items()},
             normalization_version=self.normalization_version,
@@ -108,6 +126,36 @@ class SpanNormalizer:
         )
 
     # -- internals ---------------------------------------------------------
+    def _downstream_kind(self, attrs: dict[str, Any], is_mcp: bool) -> str:
+        """What explains this span's time.
+
+        Derived once here rather than per query, so "unexplained server time" is
+        a value you can filter on instead of an absence you have to infer.
+        """
+        if is_mcp:
+            return ""
+        if self._first(attrs, self.GEN_AI_SYSTEM):
+            return "llm"
+        if self._first(attrs, self.DB_SYSTEM):
+            return "db"
+        if attrs.get("http.request.method") or attrs.get("http.method"):
+            return "http"
+        if attrs.get("messaging.system"):
+            return "messaging"
+        return "internal"
+
+    def _first(self, attrs: dict[str, Any], keys: tuple[str, ...]) -> str:
+        """First present key, so old and new semconv names both work."""
+        for key in keys:
+            value = attrs.get(key)
+            if value is not None and value != "":
+                return self._str(value)
+        return ""
+
+    def _opt_int(self, attrs: dict[str, Any], keys: tuple[str, ...]) -> int | None:
+        raw = self._first(attrs, keys)
+        return self._int(raw) if raw else None
+
     def _http(self, attrs: dict[str, Any]) -> tuple[str, int | None, str]:
         """Downstream HTTP dimensions, tolerating old and new semconv names."""
         method = attrs.get("http.request.method") or attrs.get("http.method") or ""

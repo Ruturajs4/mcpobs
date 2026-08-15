@@ -106,6 +106,14 @@ class SpanRow(_Row):
     # Hashes, never the raw requestState -- it carries the user's answers.
     mrtr_state_out: str = ""
     mrtr_state_in: str = ""
+    # Downstream dimensions: what explains this span's time (U6).
+    db_operation: str = ""
+    db_collection: str = ""
+    gen_ai_system: str = ""
+    gen_ai_model: str = ""
+    gen_ai_input_tokens: int | None = None
+    gen_ai_output_tokens: int | None = None
+    downstream_kind: str = ""
 
 
 class DeadLetterRow(_Row):
