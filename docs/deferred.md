@@ -66,8 +66,8 @@ today, will bite at scale) · `CLOSED` (kept for the record).
 | DF-C4 | "Do we stitch MRTR round-trips?" | Settled by experiment, not argument (D28): 2 spans, no shared trace_id, 135× latency understatement. |
 | DF-C5 | "How is `subscriptions/listen` represented?" | Stored column `is_latency_eligible`, not a query-time filter (D29). |
 | DF-C6 | "Trace-locator shape for trace-by-id" | Built in U2; reads must dedupe explicitly (D25). |
-| DF-1 | `pending_input` never exercised end to end | Closed by giving the demo client an elicitation callback. Round 1 is `pending_input` and not latency-eligible; round 2 completes. |
-| DF-5 | Query service and stable DTOs | Built on Day 3. Found a 500 on the empty-tenant path that no amount of local data would have surfaced (D42). |
+| DF-C7 | `pending_input` never exercised end to end (was DF-1) | Closed by giving the demo client an elicitation callback. Round 1 is `pending_input` and not latency-eligible; round 2 completes. |
+| DF-C8 | Query service and stable DTOs (was DF-5) | Built on Day 3. Found a 500 on the empty-tenant path that no amount of local data would have surfaced (D42). |
 
 ---
 
