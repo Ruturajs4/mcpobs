@@ -26,6 +26,7 @@ from opentelemetry.trace import get_current_span
 from mcpobs.classifier import (
     ATTRIBUTE,
     CLASSIFIER_VERSION,
+    MRTR_STATE_ATTRIBUTE,
     RESULT_TYPE_ATTRIBUTE,
     FailureClassifier,
 )
@@ -45,7 +46,7 @@ class FailureClassifierMiddleware:
     async def __call__(self, ctx: Any, call_next: Any) -> Any:
         result = await call_next(ctx)
         try:
-            self._annotate(result)
+            self._annotate(result, getattr(ctx, "params", None))
         except Exception as exc:  # noqa: BLE001
             # Telemetry enrichment must never break a customer's tool call.
             # Losing an attribute is an acceptable failure; losing the request
@@ -53,10 +54,21 @@ class FailureClassifierMiddleware:
             log.debug("failure classification skipped: %s", exc)
         return result
 
-    def _annotate(self, result: Any) -> None:
+    def _annotate(self, result: Any, params: Any = None) -> None:
         span = get_current_span()
         if not span.is_recording():
             return
+
+        # MRTR correlation. A round that ASKS emits requestState; the next round
+        # RECEIVES the same blob echoed back. Stamping both sides lets a query
+        # chain the rounds of one logical call -- which trace_id cannot do,
+        # because the rounds are separate traces (D28).
+        for attribute, value in (
+            (f"{MRTR_STATE_ATTRIBUTE}.out", self.classifier.outgoing_state(result)),
+            (f"{MRTR_STATE_ATTRIBUTE}.in", self.classifier.incoming_state(params)),
+        ):
+            if value:
+                span.set_attribute(attribute, value)
 
         # `resultType` is only interesting when it is NOT "complete". Setting it
         # on every span would cost an attribute on the overwhelmingly common

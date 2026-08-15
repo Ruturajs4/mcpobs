@@ -100,6 +100,12 @@ class SpanRow(_Row):
     # Appended, never inserted: field order IS insert-column order.
     failure_kind_source: str = ""
     classifier_version: int = 0
+    # False when the duration is not a latency measurement: a stream lifetime,
+    # or an MRTR interim round that excludes client think-time (D28).
+    is_latency_eligible: int = 1
+    # Hashes, never the raw requestState -- it carries the user's answers.
+    mrtr_state_out: str = ""
+    mrtr_state_in: str = ""
 
 
 class DeadLetterRow(_Row):

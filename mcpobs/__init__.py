@@ -18,6 +18,7 @@ from typing import Any
 from mcpobs.classifier import (
     ATTRIBUTE,
     CLASSIFIER_VERSION,
+    MRTR_STATE_ATTRIBUTE,
     RESULT_TYPE_ATTRIBUTE,
     FailureClassifier,
     FailureKind,
@@ -27,6 +28,7 @@ from mcpobs.middleware import FailureClassifierMiddleware
 __all__ = [
     "ATTRIBUTE",
     "CLASSIFIER_VERSION",
+    "MRTR_STATE_ATTRIBUTE",
     "RESULT_TYPE_ATTRIBUTE",
     "FailureClassifier",
     "FailureClassifierMiddleware",

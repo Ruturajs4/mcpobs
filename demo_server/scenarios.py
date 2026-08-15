@@ -34,6 +34,9 @@ SCENARIOS: list[tuple[str, dict, str]] = [
     # OpenTelemetryMiddleware sets rpc.response.status_code + a numeric error.type.
     ("no_such_tool", {}, "protocol_error"),
     ("echo_fast", {"message": {"not": "a string"}}, "protocol_error"),
+    # MRTR: no elicitation callback on this client, so the call stops at the
+    # interim `input_required` round -- the span U5 must exclude from latency.
+    ("confirm_deploy", {"service": "checkout"}, "pending_input"),
 ]
 
 

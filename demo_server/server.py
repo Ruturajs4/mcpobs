@@ -28,10 +28,13 @@ import os
 import signal
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Annotated
 
 import httpx
 from mcp.server import MCPServer
+from mcp.server.mcpserver.resolve import Elicit, Resolve
 from mcp_types import CallToolResult, TextContent
+from pydantic import BaseModel
 
 from demo_server.otel_bootstrap import SERVICE_VERSION, init_telemetry, shutdown
 from mcpobs import instrument
@@ -100,6 +103,37 @@ def soft_fail(reason: str = "upstream rejected the request") -> CallToolResult:
         content=[TextContent(type="text", text=reason)],
         isError=True,
     )
+
+
+class Confirmation(BaseModel):
+    approved: bool
+
+
+def _ask_confirmation() -> Elicit[Confirmation]:
+    """Resolver: the framework turns this into an InputRequiredResult.
+
+    NOTE `ctx.elicit()` does NOT take this path -- it issues a legacy
+    server-initiated `elicitation/create` over a back-channel, which a stateless
+    2026-07-28 transport does not have (NoBackChannelError). Resolve/Elicit is
+    the MRTR-native mechanism.
+    """
+    return Elicit("Deploy to production?", Confirmation)
+
+
+async def confirm_deploy(
+    confirmation: Annotated[Confirmation, Resolve(_ask_confirmation)],
+    service: str = "api",
+) -> str:
+    """Must ask before acting -- produces a real MRTR `input_required` round.
+
+    A client with no elicitation callback cannot answer, so the call stops at
+    the interim result. That is exactly the span we need: `input_required` must
+    be excluded from latency aggregates and never counted as an error.
+    """
+    return f"deployed {service}: {'ok' if confirmation.approved else 'declined'}"
+
+
+mcp.tool()(confirm_deploy)
 
 
 @mcp.tool()

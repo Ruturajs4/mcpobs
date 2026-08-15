@@ -31,6 +31,7 @@ KNOWN WEAKNESS
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any, Final
 
@@ -39,6 +40,21 @@ ATTRIBUTE: Final = "mcpobs.failure.kind"
 
 RESULT_TYPE_ATTRIBUTE: Final = "mcpobs.result.type"
 """Set only when resultType is not "complete" -- i.e. MRTR interim results."""
+
+MRTR_STATE_ATTRIBUTE: Final = "mcpobs.mrtr.state"
+"""Correlation key linking the round-trips of ONE logical tool call.
+
+Under MRTR a server returns `input_required` plus a `requestState` blob, and the
+client echoes that blob back on the retry. So the value a round EMITS matches the
+value the next round RECEIVES -- which is the only link between them, because
+(measured, see scripts/mrtr_experiment.py) the round-trips do NOT share a
+trace_id.
+
+ALWAYS A HASH, NEVER THE RAW BLOB: requestState carries recorded elicitation
+outcomes -- the user's actual answers. Storing it would be payload capture
+through the back door, breaking the privacy property that makes this taxonomy a
+core feature (D17).
+"""
 
 CLASSIFIER_VERSION: Final = 1
 """Bumped whenever the rules change, so reclassification is a replay."""
@@ -137,6 +153,25 @@ class FailureClassifier:
         if isinstance(result, dict):
             return bool(result.get("isError"))
         return bool(getattr(result, "is_error", False))
+
+    @staticmethod
+    def mrtr_state(value: Any) -> str:
+        """Short, stable hash of a requestState blob. Never the blob itself."""
+        if not isinstance(value, str) or not value:
+            return ""
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+    @classmethod
+    def outgoing_state(cls, result: Any) -> str:
+        """Hash of the requestState this round EMITS (round N)."""
+        value = result.get("requestState") if isinstance(result, dict) else None
+        return cls.mrtr_state(value)
+
+    @classmethod
+    def incoming_state(cls, params: Any) -> str:
+        """Hash of the requestState this round RECEIVES (round N+1)."""
+        value = params.get("requestState") if isinstance(params, dict) else None
+        return cls.mrtr_state(value)
 
     @staticmethod
     def result_type(result: Any) -> str:

@@ -20,7 +20,7 @@ import clickhouse_connect
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from demo_server.scenarios import http_session, run_scenarios, stdio_session  # noqa: E402
+from demo_server.scenarios import SCENARIOS, http_session, run_scenarios, stdio_session  # noqa: E402
 
 PASS, FAIL, WARN = "PASS", "FAIL", "WARN"
 results: list[tuple[str, str, str]] = []
@@ -256,17 +256,53 @@ def main() -> int:
     # current run either, because a replay re-ingests old spans *now*: replay
     # deliberately decouples the two clocks. For "is recent data healthy?",
     # event time is the only meaningful clock.
+    # `protocol_error` is EXCLUDED, and that is not a loophole. An MCPError
+    # propagates out of _handle_call_tool rather than being converted, so the
+    # helper middleware never sees a result to classify -- but the raw span
+    # already carries the numeric error.type, so span-sourced is CORRECT there.
+    # The helper only matters where the SDK erased the distinction (D13).
     sources = dict(
         ch.query(
             "SELECT failure_kind_source, count() FROM spans_raw "
-            "WHERE failure_category NOT IN ('', 'ok') "
+            "WHERE failure_category NOT IN ('', 'ok', 'protocol_error') "
             "  AND timestamp > now() - INTERVAL 15 MINUTE GROUP BY 1"
         ).result_rows
     )
     record(
-        "B3 recent failures are classified by the helper, not guessed from the span",
+        "B3 recent tool-level failures are classified by the helper",
         sources.get("helper", 0) > 0 and sources.get("span", 0) == 0,
-        f"{sources} (span-sourced failures mean the helper is not attached)",
+        f"{sources} (span-sourced tool failures mean the helper is not attached)",
+    )
+
+    # D19 confirmed on real telemetry: Day 1 concluded protocol_error was
+    # unreachable, but only because no demo tool triggered one.
+    protocol = ch.query(
+        "SELECT error_type, count() FROM spans_raw "
+        "WHERE failure_category = 'protocol_error' "
+        "  AND timestamp > now() - INTERVAL 15 MINUTE GROUP BY 1"
+    ).result_rows
+    record(
+        "B3b protocol_error is reachable and carries a JSON-RPC code (D19)",
+        bool(protocol),
+        f"{[(code, n) for code, n in protocol]}"
+        + (" -- -32021 is MissingRequiredClientCapability, new in 2026-07-28"
+           if any(c == "-32021" for c, _ in protocol) else ""),
+    )
+
+    # ---------------- B9: latency eligibility (U5) -------------------------
+    print("\n--- B9: latency eligibility ---")
+    ineligible = ch.query(
+        "SELECT mcp_method, count() FROM spans_raw "
+        "WHERE is_latency_eligible = 0 GROUP BY 1"
+    ).result_rows
+    streams = ch.query(
+        "SELECT count() FROM spans_raw "
+        "WHERE mcp_method LIKE 'subscriptions/listen%' AND is_latency_eligible = 1"
+    ).result_rows[0][0]
+    record(
+        "B9 no stream or interim span is latency-eligible",
+        streams == 0,
+        f"{streams} stream spans wrongly eligible; excluded so far: {ineligible or 'none seen yet'}",
     )
 
     # ---------------- B4-B5: trace assembly (ADR-005) ---------------------
@@ -377,7 +413,10 @@ def main() -> int:
             ") WHERE mcp_method = 'tools/call' GROUP BY mcp_tool_name"
         ).result_rows
     }
-    expected_tools = {"echo_fast", "fetch_status", "soft_fail", "explode", "no_such_tool"}
+    # Derived from the scenarios, not hardcoded: a hardcoded list goes stale the
+    # moment a demo tool is added, and a stale assertion is worse than none --
+    # it fails for the wrong reason and trains you to ignore it.
+    expected_tools = {tool for tool, _, _ in SCENARIOS}
     record(
         "B6 version-resolved read returns the correct tool set",
         resolved == expected_tools,

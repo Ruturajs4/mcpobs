@@ -19,10 +19,15 @@ WHAT ACTUALLY HAPPENS (docs/observed_attributes.md)
     CallToolResult(isError=True) before OpenTelemetryMiddleware sees it, so the
     middleware's `except` branches are unreachable for tools/call.
 
-Only `ok` and `tool_error` are reachable today. The other branches stay
-implemented because they ARE reachable for non-tools/call methods and for
-future SDK versions -- but must not be advertised as working. See
-docs/decisions.md D13.
+RESOLVED (D17). The distinguishing text is SDK-generated boilerplate carried in
+the result, so the optional `mcpobs` helper middleware classifies it in the
+customer's process -- without capturing any tool content -- and annotates the
+span the SDK already opened. When that attribute is present it WINS, because the
+helper saw the failure before the SDK erased the distinction.
+
+Without the helper we degrade to the coarse `tool_error` rather than inventing a
+precision the span cannot support; `failure_kind_source` records which, so the
+two data qualities never silently mix (D21).
 """
 
 from __future__ import annotations
@@ -72,6 +77,27 @@ class FailureTaxonomy:
 
     SOURCE_HELPER: Final = "helper"
     SOURCE_SPAN: Final = "span"
+
+    #: Methods whose span duration is NOT a latency measurement. A
+    #: `subscriptions/listen` span lasts as long as the stream does, so one of
+    #: them in a p95 destroys the chart. Matched by prefix, never an enum: the
+    #: protocol keeps adding methods (D8).
+    NON_LATENCY_METHODS: Final[tuple[str, ...]] = ("subscriptions/listen",)
+
+    def is_latency_eligible(self, span: DecodedSpan) -> bool:
+        """False when a span's duration must never enter a latency aggregate.
+
+        Two cases:
+          * long-lived streams -- the duration is a stream lifetime;
+          * MRTR interim rounds -- the duration excludes the client think-time
+            that dominates the real wait, so it understates badly (D28).
+        """
+        attrs = span.span_attributes
+        method = str(attrs.get(self.MCP_METHOD, ""))
+        if any(method.startswith(prefix) for prefix in self.NON_LATENCY_METHODS):
+            return False
+        result_type = attrs.get(self.RESULT_TYPE) or attrs.get(self.HELPER_RESULT_TYPE)
+        return result_type != "input_required"
 
     def source(self, span: DecodedSpan) -> str:
         """Where the category came from -- helper middleware or the bare span."""

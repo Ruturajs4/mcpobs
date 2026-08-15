@@ -19,7 +19,7 @@ from normalizer.taxonomy import FailureTaxonomy
 class SpanNormalizer:
     """Extracts MCP fields and derives the failure category."""
 
-    normalization_version: Final[int] = 3
+    normalization_version: Final[int] = 4
 
     # span attributes
     MCP_METHOD: Final = "mcp.method.name"
@@ -35,6 +35,8 @@ class SpanNormalizer:
     RESULT_TYPE: Final = "mcp.result.type"
     TRANSPORT: Final = "network.transport"
     HELPER_VERSION: Final = "mcpobs.failure.kind.version"
+    MRTR_STATE_OUT: Final = "mcpobs.mrtr.state.out"
+    MRTR_STATE_IN: Final = "mcpobs.mrtr.state.in"
 
     # resource attributes
     RES_SERVICE_NAME: Final = "service.name"
@@ -100,6 +102,9 @@ class SpanNormalizer:
             kafka_offset=offset,
             failure_kind_source=self.taxonomy.source(span) if is_mcp else "",
             classifier_version=self._int(attrs.get(self.HELPER_VERSION)),
+            is_latency_eligible=int(self.taxonomy.is_latency_eligible(span)),
+            mrtr_state_out=self._str(attrs.get(self.MRTR_STATE_OUT)),
+            mrtr_state_in=self._str(attrs.get(self.MRTR_STATE_IN)),
         )
 
     # -- internals ---------------------------------------------------------

@@ -87,3 +87,27 @@ class TestIsError:
     def test_reachable_set_documents_the_known_gap(self) -> None:
         """If this starts failing, the SDK changed and D13 needs revisiting."""
         assert {Category.OK, Category.TOOL_ERROR} == FailureTaxonomy.REACHABLE_TODAY
+
+
+class TestLatencyEligibility:
+    """Stream lifetimes and MRTR interim rounds must never enter a p95."""
+
+    def setup_method(self) -> None:
+        self.taxonomy = FailureTaxonomy()
+
+    def test_ordinary_tool_call_is_eligible(self, span_factory) -> None:
+        assert self.taxonomy.is_latency_eligible(span_factory())
+
+    def test_subscriptions_listen_is_not_eligible(self, span_factory) -> None:
+        """Its duration is a stream lifetime, not a latency."""
+        span = span_factory(span_attributes={"mcp.method.name": "subscriptions/listen"})
+        assert not self.taxonomy.is_latency_eligible(span)
+
+    def test_mrtr_interim_round_is_not_eligible(self, span_factory) -> None:
+        """Measured at ~135x understatement: it excludes client think-time."""
+        span = span_factory(span_attributes={"mcpobs.result.type": "input_required"})
+        assert not self.taxonomy.is_latency_eligible(span)
+
+    def test_completing_mrtr_round_is_eligible(self, span_factory) -> None:
+        span = span_factory(span_attributes={"mcpobs.mrtr.state.in": "abc123"})
+        assert self.taxonomy.is_latency_eligible(span)

@@ -151,3 +151,37 @@ class TestSpanAnnotation:
             assert annotated[0].attributes["mcpobs.failure.kind"] == FailureKind.SERVER_EXCEPTION
         finally:
             trace._TRACER_PROVIDER = previous
+
+
+class TestMrtrCorrelation:
+    """MRTR round-trips do not share a trace_id; requestState is the only link."""
+
+    def setup_method(self) -> None:
+        self.classifier = FailureClassifier()
+
+    def test_state_hash_is_stable(self) -> None:
+        blob = '{"v":3,"outcomes":{},"asked":{"m:ask":"V65Cup8N"}}'
+        assert self.classifier.mrtr_state(blob) == self.classifier.mrtr_state(blob)
+
+    def test_different_state_gives_different_hash(self) -> None:
+        assert self.classifier.mrtr_state("a") != self.classifier.mrtr_state("b")
+
+    def test_hash_never_reveals_the_blob(self) -> None:
+        """requestState carries recorded elicitation outcomes -- the user's
+        answers. The hash must not leak them (D17/D28)."""
+        secret = '{"outcomes":{"ask":{"approved":true,"note":"SENSITIVE"}}}'
+        digest = self.classifier.mrtr_state(secret)
+        assert "SENSITIVE" not in digest
+        assert len(digest) == 16
+
+    def test_missing_state_yields_empty(self) -> None:
+        assert self.classifier.mrtr_state(None) == ""
+        assert self.classifier.outgoing_state({}) == ""
+        assert self.classifier.incoming_state(None) == ""
+
+    def test_emitted_and_received_states_match(self) -> None:
+        """The chaining property: round N's out == round N+1's in."""
+        blob = '{"v":3,"asked":{"m:ask":"xyz"}}'
+        assert self.classifier.outgoing_state({"requestState": blob}) == (
+            self.classifier.incoming_state({"requestState": blob})
+        )
