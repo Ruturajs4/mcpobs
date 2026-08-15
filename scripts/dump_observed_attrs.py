@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import platform
 import sys
+import time
 from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
@@ -62,6 +64,16 @@ DOC_EXPECTED = [
     "gen_ai.tool.call.arguments",
     "gen_ai.tool.call.result",
 ]
+
+
+def _clock_tick_ns() -> int:
+    """Smallest observable change in time.time_ns() -- the duration floor."""
+    previous = time.time_ns()
+    for _ in range(2_000_000):
+        current = time.time_ns()
+        if current != previous:
+            return current - previous
+    return 0
 
 
 def read_spans(path: Path) -> list[dict]:
@@ -133,6 +145,43 @@ def build_report(by_transport: dict[str, list[dict]]) -> str:
         except Exception:
             version_rows.append([f"`{pkg}`", "_not installed_"])
     lines += [fmt_table(version_rows, ["Package", "Version"]), ""]
+
+    # ---- clock resolution ------------------------------------------------
+    # Span durations can be no finer than the clock OTel reads. On Windows this
+    # is coarse enough to record sub-millisecond tool calls as 0ns, which makes
+    # latency percentiles for fast tools meaningless. Recorded here because a
+    # limitation you cannot see is one you will mistake for data.
+    tick_ns = _clock_tick_ns()
+    lines += [
+        "## Clock resolution",
+        "",
+        fmt_table(
+            [
+                ["Platform", f"`{platform.system()} {platform.release()}`"],
+                ["`time.time_ns()` smallest tick", f"`{tick_ns / 1e6:.3f} ms`"],
+                ["`monotonic` resolution", f"`{time.get_clock_info('monotonic').resolution * 1e3:.3f} ms`"],
+                ["`perf_counter` resolution", f"`{time.get_clock_info('perf_counter').resolution * 1e6:.3f} us`"],
+                [
+                    "Consequence",
+                    f"Spans shorter than ~{tick_ns / 1e6:.2f} ms record as `duration_ns = 0`"
+                    if tick_ns > 100_000
+                    else "Sub-millisecond durations are measurable.",
+                ],
+            ],
+            ["Property", "Value"],
+        ),
+        "",
+    ]
+    if tick_ns > 100_000:
+        lines += [
+            "> **Latency percentiles for fast tools are not trustworthy on this platform.**",
+            "> OpenTelemetry timestamps spans with `time.time_ns()`, so the clock tick above is",
+            "> the floor on any measurable duration. Linux `clock_gettime` is nanosecond-grade,",
+            "> so production servers are very likely unaffected -- but a customer running an MCP",
+            "> server on Windows would see the same flattening, and our own local numbers must",
+            "> not be read as real latency.",
+            "",
+        ]
 
     # ---- span inventory -------------------------------------------------
     lines += ["## Span inventory", ""]

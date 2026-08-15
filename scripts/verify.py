@@ -398,6 +398,37 @@ def main() -> int:
            if len(versions) > 1 else ""),
     )
 
+    # ---------------- B8: duration data quality ---------------------------
+    # A span can be no more precise than the clock OTel reads. On a coarse
+    # clock, fast tool calls record as duration_ns = 0 and their latency
+    # percentiles become meaningless -- silently, because a zero is a number
+    # and charts happily plot it. Surfaced as a WARN, not a FAIL: it is an
+    # environment property, not a defect in this build.
+    print("\n--- B8: duration data quality ---")
+    zero, total = ch.query(
+        "SELECT countIf(duration_ns = 0), count() "
+        "FROM spans_raw WHERE mcp_method = 'tools/call' "
+        "  AND timestamp > now() - INTERVAL 30 MINUTE"
+    ).result_rows[0]
+    ratio = (zero / total) if total else 0.0
+    nonzero_floor = ch.query(
+        "SELECT min(duration_ns) FROM spans_raw WHERE duration_ns > 0 "
+        "  AND timestamp > now() - INTERVAL 30 MINUTE"
+    ).result_rows[0][0]
+    record(
+        "B8 tool-call durations are measurable",
+        PASS if ratio < 0.10 else WARN,
+        f"{zero}/{total} ({ratio:.0%}) zero-duration; smallest non-zero span "
+        f"{(nonzero_floor or 0) / 1e6:.3f}ms"
+        + (
+            "  -- COARSE CLOCK: latency percentiles for fast tools are not "
+            "trustworthy here. See the Clock resolution section of "
+            "docs/observed_attributes.md (D27)."
+            if ratio >= 0.10
+            else ""
+        ),
+    )
+
     # ---------------- B7: freshness, the headline metric -------------------
     # Architecture.md §9.1 names end-to-end freshness -- span event time to
     # queryable time -- as the one number that says whether the pipeline is
