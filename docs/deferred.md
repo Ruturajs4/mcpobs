@@ -40,7 +40,7 @@ today, will bite at scale) · `CLOSED` (kept for the record).
 | # | Deferred | Blocked on | Status |
 | --- | --- | --- | --- |
 | DF-11 | **Upstream SDK change exposing the failure kind** (D18). Our classifier matches SDK-internal message strings; that is a bridge, not an endpoint. | An MCP Python SDK contribution/discussion. `tests/test_sdk_contract.py` fails the build if the strings move, so the risk is contained but not removed. | BLOCKED |
-| DF-12 | `db.operation` / `db.collection` are empty. | The installed `opentelemetry-instrumentation-dbapi` emits only `db.system` + `db.statement`. The operation is recoverable from the span name until semconv catches up. | BLOCKED |
+| DF-12 | `db.operation` / `db.collection` are empty. Note `mcp.resource.uri` was the same shape of gap and is now recovered by the helper (D50); the db fields could follow if it matters. | The installed `opentelemetry-instrumentation-dbapi` emits only `db.system` + `db.statement`. The operation is recoverable from the span name until semconv catches up. | BLOCKED |
 | DF-13 | Managed Kafka provider choice (MSK / Confluent / Aiven), and whether **tiered storage** is GA on that version. | Cloud commit. Tiered storage is load-bearing for ADR-007's retention economics and was a pillar of the Kafka-over-Redpanda argument (ADR-002). | BLOCKED |
 | DF-14 | S3 sink connector licence review (Confluent community vs Aiven Apache 2.0). | Provider choice. We made a licensing argument in ADR-002; applying it inconsistently here would be sloppy. | BLOCKED |
 | DF-15 | Collector auth extension for real tenant resolution. | Phase 1 spike. Decides whether ADR-003 ("no bespoke ingest service") fully holds or needs a small custom extension. | BLOCKED |

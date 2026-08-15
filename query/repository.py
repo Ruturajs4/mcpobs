@@ -26,11 +26,13 @@ import clickhouse_connect
 from clickhouse_connect.driver.client import Client
 
 from query.dtos import (
+    CapabilityRow,
     FailureBreakdown,
     LatencyStats,
     Overview,
     Page,
     ServerSummary,
+    SpanDetail,
     SpanDTO,
     ToolSummary,
     TraceDetail,
@@ -57,7 +59,10 @@ SELECT
     argMax(deployment_environment, normalization_version) AS environment,
     argMax(mcp_method, normalization_version)          AS mcp_method,
     argMax(mcp_tool_name, normalization_version)       AS mcp_tool_name,
+    argMax(mcp_prompt_name, normalization_version)     AS mcp_prompt_name,
+    argMax(mcp_resource_uri, normalization_version)    AS mcp_resource_uri,
     argMax(mcp_is_error, normalization_version)        AS mcp_is_error,
+    argMax(failure_detail, normalization_version)      AS failure_detail,
     argMax(failure_category, normalization_version)    AS failure_category,
     argMax(failure_kind_source, normalization_version) AS failure_kind_source,
     argMax(is_latency_eligible, normalization_version) AS is_latency_eligible,
@@ -94,6 +99,19 @@ def _number(value: Any) -> float:
         return 0.0
     return number if math.isfinite(number) else 0.0
 
+
+#: The four capability surfaces, each a different `mcp_method` asked the same
+#: question. `name_col` is what identifies an individual item within the kind.
+#: `protocol` deliberately catches EVERYTHING else -- tools/list,
+#: server/discover, subscriptions/listen, tasks/* -- because 38% of stored
+#: protocol activity had no home in the console and a closed list would let the
+#: next new method vanish the same way (D8: never enumerate MCP methods).
+CAPABILITY_KINDS: dict[str, tuple[str, str]] = {
+    "tool": ("tools/call", "mcp_tool_name"),
+    "prompt": ("prompts/get", "mcp_prompt_name"),
+    "resource": ("resources/read", "mcp_resource_uri"),
+    "protocol": ("", "mcp_method"),
+}
 
 FRESHNESS_WINDOW_MINUTES = 15
 """Freshness is a "right now" health signal, never a historical aggregate."""
@@ -153,13 +171,24 @@ class SpanRepository:
     _LATENCY_SELECT = """
         SELECT count(), quantile(0.50)(duration_ns), quantile(0.95)(duration_ns),
                quantile(0.99)(duration_ns), max(duration_ns), countIf(duration_ns = 0)
-        FROM ({latest}) WHERE is_latency_eligible = 1 AND mcp_method = 'tools/call' {extra}
+        FROM ({latest}) WHERE is_latency_eligible = 1 {method} {extra}
     """
 
     def _latency_for(
-        self, params: dict[str, Any], extra: str = "", **extra_params: Any
+        self,
+        params: dict[str, Any],
+        extra: str = "",
+        _any_method: bool = False,
+        **extra_params: Any,
     ) -> LatencyStats:
-        sql = self._LATENCY_SELECT.format(latest=LATEST_SPANS, extra=extra)
+        """Latency over eligible spans (D29).
+
+        `_any_method` widens beyond tools/call for prompts, resources and
+        protocol methods -- a slow `tools/list` runs on every client connect and
+        is a real symptom, so restricting latency to tool calls would hide it.
+        """
+        method = "" if _any_method else "AND mcp_method = 'tools/call'"
+        sql = self._LATENCY_SELECT.format(latest=LATEST_SPANS, method=method, extra=extra)
         rows = self._rows(sql, {**params, **extra_params})
         return self._latency(rows[0] if rows else None)
 
@@ -300,6 +329,75 @@ class SpanRepository:
             )
         return out
 
+    def capabilities(
+        self,
+        tenant: str,
+        project: str,
+        since: datetime,
+        kind: str = "tool",
+        server: str | None = None,
+    ) -> list[CapabilityRow]:
+        """Tools, prompts, resources or protocol methods -- one query path.
+
+        They differ only in which `mcp_method` they filter and which column
+        names the item. Four near-identical methods would drift apart; this one
+        cannot.
+        """
+        method, name_col = CAPABILITY_KINDS.get(kind, CAPABILITY_KINDS["tool"])
+        params = self._scope(tenant, project, since)
+
+        clauses = [f"{name_col} != ''"]
+        if method:
+            clauses.append("mcp_method = {method:String}")
+            params["method"] = method
+        else:
+            # protocol = everything that is not a capability invocation
+            known = ", ".join(f"'{m}'" for m, _ in CAPABILITY_KINDS.values() if m)
+            clauses.append(f"mcp_method NOT IN ({known})")
+        if server:
+            clauses.append("service_name = {server:String}")
+            params["server"] = server
+        where = " AND ".join(clauses)
+
+        rows = self._rows(
+            f"""SELECT {name_col} AS item, anyLast(service_name), anyLast(mcp_method),
+                       count(), sum(mcp_is_error), max(span_time)
+                FROM ({LATEST_SPANS}) WHERE {where}
+                GROUP BY item ORDER BY 4 DESC""",
+            params,
+        )
+
+        out = []
+        for name, svc, meth, calls, errors, last in rows:
+            scoped = {**params, "item": name}
+            breakdown = self._breakdown(
+                self._rows(
+                    f"""SELECT failure_category, count() FROM ({LATEST_SPANS})
+                        WHERE {name_col} = {{item:String}} AND failure_category != ''
+                        GROUP BY failure_category""",
+                    scoped,
+                )
+            )
+            out.append(
+                CapabilityRow(
+                    kind=kind,
+                    name=name,
+                    method=meth or method,
+                    server=svc or "",
+                    calls=calls,
+                    errors=errors or 0,
+                    failure_breakdown=breakdown,
+                    latency=self._latency_for(
+                        params,
+                        f"AND {name_col} = {{item:String}}",
+                        item=name,
+                        _any_method=True,
+                    ),
+                    last_seen=last,
+                )
+            )
+        return out
+
     def traces(
         self,
         tenant: str,
@@ -373,6 +471,26 @@ class SpanRepository:
         next_cursor = encode_cursor(items[limit - 1].start_time) if len(items) > limit else None
         return Page(items=items[:limit], next_cursor=next_cursor)
 
+    #: Every stored column, so span detail is complete by construction rather
+    #: than by whoever last remembered to add a field (assertion D1).
+    _SPAN_COLUMNS = (
+        "span_id", "parent_span_id", "span_name", "span_kind", "timestamp",
+        "duration_ns", "status_code", "status_message", "service_name",
+        "service_version", "deployment_environment", "mcp_method",
+        "mcp_tool_name", "mcp_prompt_name", "mcp_resource_uri",
+        "gen_ai_operation", "protocol_version", "jsonrpc_request_id",
+        "transport", "mcp_session_id", "mcp_is_error", "result_type",
+        "failure_category", "failure_detail", "failure_kind_source",
+        "classifier_version", "error_type", "rpc_status_code",
+        "is_latency_eligible", "mrtr_state_in", "mrtr_state_out",
+        "downstream_kind", "http_method", "http_status_code", "http_host",
+        "db_system", "db_operation", "db_collection", "gen_ai_system",
+        "gen_ai_model", "gen_ai_input_tokens", "gen_ai_output_tokens",
+        "input_size", "output_size", "input_preview", "output_preview",
+        "span_attributes", "resource_attributes", "normalization_version",
+        "kafka_partition", "kafka_offset", "ingested_at",
+    )
+
     def trace(self, tenant: str, project: str, trace_id: str) -> TraceDetail | None:
         # trace_locator turns this into a point lookup instead of a scan of
         # spans_raw, which is ordered by (tenant, project, time, ...).
@@ -387,86 +505,207 @@ class SpanRepository:
         )
         if not located:
             return None
-        trace_date = located[0][0]
 
+        # argMax over normalization_version per span (D24): a replay leaves
+        # several versions and a naive read mixes corrected rows with buggy ones.
+        # Aliases must not shadow a source column used in the WHERE clause:
+        # `argMax(timestamp, ...) AS timestamp` makes ClickHouse resolve the
+        # `toDate(timestamp)` filter to the aggregate and reject the query with
+        # ILLEGAL_AGGREGATION. Only the alias changes; rows are read positionally
+        # against _SPAN_COLUMNS, so the dict keys are unaffected.
+        # EVERY alias is prefixed, so no alias can shadow a source column.
+        # Unprefixed aliases bit three times here: `AS timestamp` made the WHERE
+        # resolve to the aggregate, and `AS normalization_version` made the
+        # ranking column inside every other argMax resolve to an aggregate.
+        # Both surface as ILLEGAL_AGGREGATION with a confusing message. Rows are
+        # read positionally against _SPAN_COLUMNS, so aliases are cosmetic and
+        # prefixing costs nothing.
+        def pick(column: str) -> str:
+            if column == "normalization_version":
+                # Cannot argMax a column by itself; max() is the same answer.
+                return "max(normalization_version) AS s_normalization_version"
+            return f"argMax({column}, normalization_version) AS s_{column}"
+
+        selects = ", ".join(pick(c) for c in self._SPAN_COLUMNS if c != "span_id")
         rows = self._rows(
-            """SELECT span_id,
-                      argMax(parent_span_id, normalization_version),
-                      argMax(span_name, normalization_version),
-                      argMax(span_kind, normalization_version),
-                      argMax(timestamp, normalization_version),
-                      argMax(duration_ns, normalization_version),
-                      argMax(status_code, normalization_version),
-                      argMax(failure_category, normalization_version),
-                      argMax(mcp_method, normalization_version),
-                      argMax(mcp_tool_name, normalization_version),
-                      argMax(downstream_kind, normalization_version),
-                      argMax(http_method, normalization_version),
-                      argMax(http_status_code, normalization_version),
-                      argMax(db_system, normalization_version),
-                      argMax(gen_ai_model, normalization_version),
-                      argMax(is_latency_eligible, normalization_version),
-                      argMax(service_name, normalization_version)
-               FROM spans_raw
-               WHERE trace_id = {trace:String} AND tenant_id = {tenant:String}
-                 AND project_id = {project:String} AND toDate(timestamp) = {day:Date}
-               GROUP BY span_id ORDER BY 5""",
-            {"trace": trace_id, "tenant": tenant, "project": project, "day": trace_date},
+            f"""SELECT span_id, {selects}
+                FROM spans_raw
+                WHERE trace_id = {{trace:String}} AND tenant_id = {{tenant:String}}
+                  AND project_id = {{project:String}} AND toDate(timestamp) = {{day:Date}}
+                GROUP BY span_id""",
+            {"trace": trace_id, "tenant": tenant, "project": project, "day": located[0][0]},
         )
         if not rows:
             return None
 
-        spans = [
-            SpanDTO(
-                span_id=r[0],
-                parent_span_id=r[1] or "",
-                name=r[2],
-                kind=r[3] or "",
-                start_time=r[4],
-                duration_ms=round(_number(r[5]) / 1e6, 3),
-                status=r[6] or "UNSET",
-                failure_category=r[7] or "",
-                mcp_method=r[8] or "",
-                tool=r[9] or "",
-                downstream_kind=r[10] or "",
-                downstream_detail=_detail(r[10], r[11], r[12], r[13], r[14]),
-                is_latency_eligible=bool(r[15]),
+        raw = [dict(zip(self._SPAN_COLUMNS, row, strict=True)) for row in rows]
+        raw.sort(key=lambda item: item["timestamp"])
+
+        trace_start = raw[0]["timestamp"]
+        trace_end_ms = max(
+            item["timestamp"].timestamp() * 1000 + (item["duration_ns"] or 0) / 1e6
+            for item in raw
+        )
+        total_ms = round(trace_end_ms - trace_start.timestamp() * 1000, 3)
+
+        # Self-time: total minus the sum of direct children. Computed here
+        # because it needs the whole trace, and it is the difference between
+        # "this tool is slow" and "this tool waits on something slow".
+        child_ms: dict[str, float] = {}
+        for item in raw:
+            parent = item["parent_span_id"] or ""
+            if parent:
+                child_ms[parent] = child_ms.get(parent, 0.0) + (item["duration_ns"] or 0) / 1e6
+
+        spans: list[SpanDTO] = []
+        detail: dict[str, SpanDetail] = {}
+        for item in raw:
+            duration_ms = round((item["duration_ns"] or 0) / 1e6, 3)
+            self_ms = round(max(0.0, duration_ms - child_ms.get(item["span_id"], 0.0)), 3)
+            offset_ms = round(
+                (item["timestamp"].timestamp() - trace_start.timestamp()) * 1000, 3
             )
-            for r in rows
-        ]
+            downstream_detail = _detail(
+                item["downstream_kind"], item["http_method"], item["http_status_code"],
+                item["db_system"], item["gen_ai_model"], item["db_operation"],
+                item["gen_ai_input_tokens"], item["gen_ai_output_tokens"],
+            )
+            spans.append(
+                SpanDTO(
+                    span_id=item["span_id"],
+                    parent_span_id=item["parent_span_id"] or "",
+                    name=item["span_name"],
+                    kind=item["span_kind"] or "",
+                    start_time=item["timestamp"],
+                    duration_ms=duration_ms,
+                    self_ms=self_ms,
+                    offset_ms=offset_ms,
+                    status=item["status_code"] or "UNSET",
+                    failure_category=item["failure_category"] or "",
+                    failure_detail=item["failure_detail"] or "",
+                    mcp_method=item["mcp_method"] or "",
+                    tool=item["mcp_tool_name"] or "",
+                    downstream_kind=item["downstream_kind"] or "",
+                    downstream_detail=downstream_detail,
+                    is_latency_eligible=bool(item["is_latency_eligible"]),
+                )
+            )
+            ingested = item["ingested_at"]
+            detail[item["span_id"]] = SpanDetail(
+                span_id=item["span_id"],
+                parent_span_id=item["parent_span_id"] or "",
+                trace_id=trace_id,
+                name=item["span_name"],
+                kind=item["span_kind"] or "",
+                service_name=item["service_name"] or "",
+                service_version=item["service_version"] or "",
+                environment=item["deployment_environment"] or "",
+                service_instance=(item["resource_attributes"] or {}).get(
+                    "service.instance.id", ""
+                ),
+                start_time=item["timestamp"],
+                duration_ms=duration_ms,
+                self_ms=self_ms,
+                offset_ms=offset_ms,
+                pct_of_trace=round(100 * duration_ms / total_ms, 1) if total_ms else 0.0,
+                status=item["status_code"] or "UNSET",
+                status_message=item["status_message"] or "",
+                failure_category=item["failure_category"] or "",
+                failure_detail=item["failure_detail"] or "",
+                failure_kind_source=item["failure_kind_source"] or "",
+                classifier_version=int(_number(item["classifier_version"])),
+                error_type=item["error_type"] or "",
+                rpc_status_code=item["rpc_status_code"],
+                is_error=bool(item["mcp_is_error"]),
+                mcp_method=item["mcp_method"] or "",
+                tool=item["mcp_tool_name"] or "",
+                prompt=item["mcp_prompt_name"] or "",
+                resource_uri=item["mcp_resource_uri"] or "",
+                gen_ai_operation=item["gen_ai_operation"] or "",
+                protocol_version=item["protocol_version"] or "",
+                jsonrpc_request_id=item["jsonrpc_request_id"] or "",
+                transport=item["transport"] or "",
+                session_id=item["mcp_session_id"],
+                result_type=item["result_type"] or "",
+                mrtr_state_in=item["mrtr_state_in"] or "",
+                mrtr_state_out=item["mrtr_state_out"] or "",
+                is_latency_eligible=bool(item["is_latency_eligible"]),
+                downstream_kind=item["downstream_kind"] or "",
+                http_method=item["http_method"] or "",
+                http_status_code=item["http_status_code"],
+                http_host=item["http_host"] or "",
+                db_system=item["db_system"] or "",
+                db_operation=item["db_operation"] or "",
+                db_collection=item["db_collection"] or "",
+                gen_ai_system=item["gen_ai_system"] or "",
+                gen_ai_model=item["gen_ai_model"] or "",
+                gen_ai_input_tokens=item["gen_ai_input_tokens"],
+                gen_ai_output_tokens=item["gen_ai_output_tokens"],
+                input_size=item["input_size"],
+                output_size=item["output_size"],
+                input_preview=item["input_preview"],
+                output_preview=item["output_preview"],
+                span_attributes=item["span_attributes"] or {},
+                resource_attributes=item["resource_attributes"] or {},
+                normalization_version=int(_number(item["normalization_version"])),
+                kafka_partition=int(_number(item["kafka_partition"])),
+                kafka_offset=int(_number(item["kafka_offset"])),
+                ingested_at=ingested,
+                freshness_ms=round(
+                    (ingested.timestamp() - item["timestamp"].timestamp()) * 1000, 1
+                )
+                if ingested
+                else 0.0,
+            )
 
         root = _resolve_root(spans)
         _assign_depths(spans, root)
+        for span in spans:
+            detail[span.span_id].depth = span.depth
 
-        first, last_end = spans[0], max(
-            (s.start_time.timestamp() * 1000 + s.duration_ms) for s in spans
-        )
         return TraceDetail(
             trace_id=trace_id,
-            server=rows[0][16] or "",
+            server=raw[0]["service_name"] or "",
             tool=next((s.tool for s in spans if s.tool), ""),
             mcp_method=next((s.mcp_method for s in spans if s.mcp_method), ""),
-            start_time=first.start_time,
-            duration_ms=round(last_end - first.start_time.timestamp() * 1000, 3),
+            start_time=trace_start,
+            duration_ms=total_ms,
             span_count=len(spans),
             error_count=sum(
                 1 for s in spans if s.failure_category not in ("", "ok", "pending_input")
             ),
             failure_category=next(
-                (s.failure_category for s in spans if s.failure_category not in ("", "ok")), "ok"
+                (s.failure_category for s in spans if s.failure_category not in ("", "ok")),
+                "ok",
             ),
             root_span_id=root.span_id if root else "",
             spans=spans,
+            detail=detail,
         )
 
 
-def _detail(kind: str, http_method: str, http_status: Any, db: str, model: str) -> str:
+def _detail(
+    kind: str,
+    http_method: str,
+    http_status: Any,
+    db: str,
+    model: str,
+    db_operation: str = "",
+    in_tokens: Any = None,
+    out_tokens: Any = None,
+) -> str:
+    """One line saying what this span actually did.
+
+    Rendered inline in the waterfall so "where did the time go" is answerable
+    without opening every span in turn.
+    """
     if kind == "http":
         return f"{http_method} {http_status}".strip() if http_status else (http_method or "")
     if kind == "db":
-        return db or ""
+        return " ".join(part for part in (db, db_operation) if part)
     if kind == "llm":
-        return model or ""
+        tokens = f"{in_tokens}\u2192{out_tokens} tok" if in_tokens or out_tokens else ""
+        return " ".join(part for part in (model, tokens) if part)
     return ""
 
 

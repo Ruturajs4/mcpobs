@@ -19,7 +19,7 @@ from normalizer.taxonomy import FailureTaxonomy
 class SpanNormalizer:
     """Extracts MCP fields and derives the failure category."""
 
-    normalization_version: Final[int] = 5
+    normalization_version: Final[int] = 6
 
     # span attributes
     MCP_METHOD: Final = "mcp.method.name"
@@ -37,6 +37,7 @@ class SpanNormalizer:
     HELPER_VERSION: Final = "mcpobs.failure.kind.version"
     MRTR_STATE_OUT: Final = "mcpobs.mrtr.state.out"
     MRTR_STATE_IN: Final = "mcpobs.mrtr.state.in"
+    FAILURE_DETAIL: Final = "mcpobs.failure.detail"
 
     # Downstream (U6). Both current and legacy semconv names are read: OTel
     # instrumentation libraries migrate at their own pace, and a customer's
@@ -113,6 +114,7 @@ class SpanNormalizer:
             gen_ai_input_tokens=self._opt_int(attrs, self.GEN_AI_IN_TOKENS),
             gen_ai_output_tokens=self._opt_int(attrs, self.GEN_AI_OUT_TOKENS),
             downstream_kind=self._downstream_kind(attrs, is_mcp),
+            failure_detail=self._str(attrs.get(self.FAILURE_DETAIL)),
             resource_attributes={k: self._str(v) for k, v in res.items()},
             span_attributes={k: self._str(v) for k, v in attrs.items()},
             normalization_version=self.normalization_version,

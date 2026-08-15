@@ -56,7 +56,48 @@ through the back door, breaking the privacy property that makes this taxonomy a
 core feature (D17).
 """
 
-CLASSIFIER_VERSION: Final = 1
+DETAIL_ATTRIBUTE: Final = "mcpobs.failure.detail"
+"""Captured error text from a FAILING result. On by default.
+
+WHAT THIS IS AND IS NOT
+    This is the text the MCP SDK put in an errored `CallToolResult` -- normally
+    an exception string or the tool's own failure message. It exists because
+    140 of 146 failing spans carried no message anywhere in the telemetry: the
+    SDK's reachable branch calls `set_status(StatusCode.ERROR)` with no
+    description (D13), so `status_message` is empty and an operator cannot
+    answer "what actually went wrong".
+
+    It is NOT payload capture. Successful results are never read. Payload
+    capture (V2 §15) remains a separate, opt-in feature writing separate
+    columns, and assertion B2 still requires those columns to be NULL.
+
+HONEST CAVEAT
+    An exception string CAN contain user data -- "user alice@example.com not
+    found" is a realistic message. This is on by default, so that trade is made
+    for the customer rather than by them, and the README discloses it in the
+    integration snippet itself. `instrument(mcp, capture_error_detail=False)`
+    turns it off.
+"""
+
+RESOURCE_URI_ATTRIBUTE: Final = "mcp.resource.uri"
+"""Which resource was read. The SDK does not record this.
+
+`OpenTelemetryMiddleware` derives its target from `params["name"]`, which
+`tools/call` and `prompts/get` have and `resources/read` does not -- resources
+are addressed by `uri`. So a resource span says only "a read happened", never
+what was read, and neither the span name nor any attribute carries it.
+
+Recovered here from `ctx.params["uri"]`, the same way the failure kind is
+recovered: the information is present in the customer's process and simply
+never reaches the span. This is structural addressing, the direct analogue of a
+tool name -- not payload. It IS the standard semconv key, so if the SDK starts
+emitting it, this becomes a harmless no-op rather than a conflict.
+"""
+
+DETAIL_MAX_CHARS: Final = 512
+"""Bounded. An unbounded error string is a payload by another name."""
+
+CLASSIFIER_VERSION: Final = 2
 """Bumped whenever the rules change, so reclassification is a replay."""
 
 
@@ -153,6 +194,28 @@ class FailureClassifier:
         if isinstance(result, dict):
             return bool(result.get("isError"))
         return bool(getattr(result, "is_error", False))
+
+    def error_detail(self, result: Any) -> str:
+        """Truncated error text for a FAILING result. Never called otherwise.
+
+        The caller checks `is_error` first; this method does not, deliberately,
+        so that the "errors only" rule lives at one obvious call site rather
+        than being implied by a helper's internals.
+        """
+        text = self.first_text(result)
+        if not text:
+            return ""
+        if len(text) <= DETAIL_MAX_CHARS:
+            return text
+        return text[:DETAIL_MAX_CHARS] + f"… (+{len(text) - DETAIL_MAX_CHARS} chars)"
+
+    @staticmethod
+    def resource_uri(params: Any) -> str:
+        """The `uri` a resources/* call addressed, or ''."""
+        if not isinstance(params, dict):
+            return ""
+        uri = params.get("uri")
+        return uri if isinstance(uri, str) else ""
 
     @staticmethod
     def mrtr_state(value: Any) -> str:

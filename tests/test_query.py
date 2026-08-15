@@ -156,3 +156,58 @@ class TestEmptyTenant:
         nan = float("nan")
         assert (nan or 0) is nan  # truthy -> survives -> breaks json.dumps
         assert _number(nan) == 0.0
+
+
+class TestSpanDetailCompleteness:
+    """D1: the console previously showed 17 of 55 stored columns.
+
+    That drift is the entire reason for this day's work, so it is asserted
+    rather than trusted. If a migration adds a column and nobody surfaces it,
+    this fails.
+    """
+
+    #: Columns intentionally absent from SpanDetail, each with a reason. Any
+    #: OTHER stored column must appear, or the omission was an accident.
+    DELIBERATELY_ABSENT = {
+        "tenant_id",       # scoping, not span data -- never rendered per span
+        "project_id",
+        "environment",     # duplicated as `environment` from deployment_environment
+        "trace_id",        # on the trace, not repeated per span
+        "mcp_is_error",    # surfaced as the typed `is_error`
+        "timestamp",       # surfaced as `start_time`
+        "duration_ns",     # surfaced as `duration_ms`
+        "ingested_at",     # present, plus derived `freshness_ms`
+    }
+
+    def test_every_stored_column_is_reachable(self) -> None:
+        from query.dtos import SpanDetail
+        from query.repository import SpanRepository
+
+        exposed = set(SpanDetail.model_fields)
+        renames = {
+            "span_name": "name", "span_kind": "kind", "status_code": "status",
+            "deployment_environment": "environment", "mcp_tool_name": "tool",
+            "mcp_prompt_name": "prompt", "mcp_resource_uri": "resource_uri",
+            "mcp_session_id": "session_id",
+        }
+        missing = []
+        for column in SpanRepository._SPAN_COLUMNS:
+            if column in self.DELIBERATELY_ABSENT:
+                continue
+            if renames.get(column, column) not in exposed:
+                missing.append(column)
+        assert not missing, f"stored but not exposed in SpanDetail: {missing}"
+
+    def test_provenance_is_exposed(self) -> None:
+        """Which Kafka message produced this row, and which code wrote it --
+        the difference between debugging the customer's server and ours."""
+        from query.dtos import SpanDetail
+
+        for field in ("normalization_version", "kafka_partition", "kafka_offset", "freshness_ms"):
+            assert field in SpanDetail.model_fields
+
+    def test_raw_attribute_maps_are_exposed(self) -> None:
+        from query.dtos import SpanDetail
+
+        assert "span_attributes" in SpanDetail.model_fields
+        assert "resource_attributes" in SpanDetail.model_fields

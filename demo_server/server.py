@@ -205,6 +205,35 @@ def summarize(text: str = "quarterly numbers") -> str:
     return f"summary of {text!r}"
 
 
+# --------------------------------------------------------------------------
+# Prompts and resources. The product covers all three MCP capability kinds
+# (V2 §6.1); without these the prompts/resources views would ship having never
+# rendered real data, and `prompts/get` / `resources/read` spans would not exist.
+# --------------------------------------------------------------------------
+@mcp.prompt()
+def triage_error(tool: str = "fetch_status", message: str = "timeout") -> str:
+    """Draft a triage note for a failing tool."""
+    return f"Tool {tool} failed with: {message}. Suggest a first diagnostic step."
+
+
+@mcp.prompt()
+def summarize_incident(service: str = "checkout") -> str:
+    """Summarise an incident for a given service."""
+    return f"Summarise the last hour of incidents affecting {service}."
+
+
+@mcp.resource("config://limits")
+def resource_limits() -> str:
+    """Static config the client can read."""
+    return '{"max_concurrent": 8, "timeout_ms": 5000}'
+
+
+@mcp.resource("docs://runbook/{name}")
+def resource_runbook(name: str) -> str:
+    """Templated resource -- exercises mcp.resource.uri with a real value."""
+    return f"# Runbook: {name}\n\n1. Check downstream health\n2. Inspect recent traces"
+
+
 @mcp.tool()
 def explode() -> str:
     """Raise an unhandled exception.

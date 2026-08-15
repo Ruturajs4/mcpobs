@@ -95,6 +95,25 @@ class Overview(BaseModel):
     freshness_p95_seconds: float = 0.0
 
 
+class CapabilityRow(BaseModel):
+    """One tool, prompt, resource or protocol method.
+
+    All four are the same shape deliberately: they are the same question asked
+    of different `mcp_method` values, and giving them one row type is what stops
+    the UI growing four near-identical tables.
+    """
+
+    kind: str          # tool | prompt | resource | protocol
+    name: str          # tool name, prompt name, resource uri, or method
+    method: str
+    server: str = ""
+    calls: int = 0
+    errors: int = 0
+    failure_breakdown: FailureBreakdown = Field(default_factory=FailureBreakdown)
+    latency: LatencyStats = Field(default_factory=LatencyStats)
+    last_seen: datetime | None = None
+
+
 class SpanDTO(BaseModel):
     span_id: str
     parent_span_id: str = ""
@@ -112,6 +131,103 @@ class SpanDTO(BaseModel):
     downstream_detail: str = ""
     is_latency_eligible: bool = True
     depth: int = 0
+    #: Time this span spent on its OWN work: total minus the sum of its
+    #: children. The difference between "this tool is slow" and "this tool is
+    #: waiting on something slow", which duration alone cannot distinguish.
+    self_ms: float = 0.0
+    #: Milliseconds after the trace started. Drives bar placement.
+    offset_ms: float = 0.0
+    #: Error text, when the helper captured it. Failing spans only.
+    failure_detail: str = ""
+
+
+class SpanDetail(BaseModel):
+    """EVERY stored field for one span.
+
+    Nothing is omitted for being uninteresting. The console previously showed 17
+    of 55 columns, and the fields that were dropped -- `status_message`,
+    `error_type`, the raw attribute maps, the Kafka offsets -- are exactly the
+    ones an operator needs when something is wrong. Assertion D1 checks this
+    stays complete.
+    """
+
+    # identity
+    span_id: str
+    parent_span_id: str = ""
+    trace_id: str
+    name: str
+    kind: str = ""
+    depth: int = 0
+
+    # service
+    service_name: str = ""
+    service_version: str = ""
+    environment: str = ""
+    service_instance: str = ""
+
+    # timing
+    start_time: datetime
+    duration_ms: float = 0.0
+    self_ms: float = 0.0
+    offset_ms: float = 0.0
+    pct_of_trace: float = 0.0
+
+    # status
+    status: str = "UNSET"
+    status_message: str = ""
+    failure_category: str = ""
+    failure_detail: str = ""
+    failure_kind_source: str = ""
+    classifier_version: int = 0
+    error_type: str = ""
+    rpc_status_code: str | None = None
+    is_error: bool = False
+
+    # MCP
+    mcp_method: str = ""
+    tool: str = ""
+    prompt: str = ""
+    resource_uri: str = ""
+    gen_ai_operation: str = ""
+    protocol_version: str = ""
+    jsonrpc_request_id: str = ""
+    transport: str = ""
+    session_id: str | None = None
+    result_type: str = ""
+    mrtr_state_in: str = ""
+    mrtr_state_out: str = ""
+    is_latency_eligible: bool = True
+
+    # downstream
+    downstream_kind: str = ""
+    http_method: str = ""
+    http_status_code: int | None = None
+    http_host: str = ""
+    db_system: str = ""
+    db_operation: str = ""
+    db_collection: str = ""
+    gen_ai_system: str = ""
+    gen_ai_model: str = ""
+    gen_ai_input_tokens: int | None = None
+    gen_ai_output_tokens: int | None = None
+
+    # payload -- NULL unless payload capture is enabled (DF-8)
+    input_size: int | None = None
+    output_size: int | None = None
+    input_preview: str | None = None
+    output_preview: str | None = None
+
+    # raw
+    span_attributes: dict[str, str] = Field(default_factory=dict)
+    resource_attributes: dict[str, str] = Field(default_factory=dict)
+
+    # provenance -- which message produced this row, and which code wrote it.
+    # The difference between debugging the customer's server and debugging ours.
+    normalization_version: int = 0
+    kafka_partition: int = -1
+    kafka_offset: int = -1
+    ingested_at: datetime | None = None
+    freshness_ms: float = 0.0
 
 
 class TraceDetail(BaseModel):
@@ -129,6 +245,10 @@ class TraceDetail(BaseModel):
     #: legitimately be a child of an instrumented client (D7, D22).
     root_span_id: str = ""
     spans: list[SpanDTO] = Field(default_factory=list)
+    #: Full detail keyed by span_id, so selecting a span in the waterfall needs
+    #: no second request. A trace is small; a round trip per click is not worth
+    #: saving a few kilobytes.
+    detail: dict[str, SpanDetail] = Field(default_factory=dict)
 
 
 class TraceSummary(BaseModel):

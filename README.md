@@ -58,6 +58,20 @@ from mcpobs import instrument
 instrument(mcp)
 ```
 
+**What leaves your process.** By default this sends, for failing tool calls
+only: the failure category, and the error text truncated to 512 characters.
+Successful results are never read. Tool inputs and outputs are never captured —
+that is a separate opt-in feature.
+
+Error text is captured because without it nobody can answer *why* a call
+failed: the MCP SDK reports an ERROR status with no message, so the reason
+exists only inside the result. Be aware an exception string can contain user
+data. To send only the category and no text:
+
+```python
+instrument(mcp, capture_error_detail=False)
+```
+
 It annotates the span the SDK already opened — it does not wrap the protocol or
 create spans — and **captures no tool input or output**. The distinguishing text
 is SDK-generated boilerplate, read in the customer's process and reduced to a

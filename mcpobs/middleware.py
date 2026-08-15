@@ -26,7 +26,9 @@ from opentelemetry.trace import get_current_span
 from mcpobs.classifier import (
     ATTRIBUTE,
     CLASSIFIER_VERSION,
+    DETAIL_ATTRIBUTE,
     MRTR_STATE_ATTRIBUTE,
+    RESOURCE_URI_ATTRIBUTE,
     RESULT_TYPE_ATTRIBUTE,
     FailureClassifier,
 )
@@ -40,8 +42,13 @@ class FailureClassifierMiddleware:
     Adds nothing on success, so the common path costs one boolean check.
     """
 
-    def __init__(self, classifier: FailureClassifier | None = None) -> None:
+    def __init__(
+        self,
+        classifier: FailureClassifier | None = None,
+        capture_error_detail: bool = True,
+    ) -> None:
         self.classifier = classifier or FailureClassifier()
+        self.capture_error_detail = capture_error_detail
 
     async def __call__(self, ctx: Any, call_next: Any) -> Any:
         result = await call_next(ctx)
@@ -58,6 +65,13 @@ class FailureClassifierMiddleware:
         span = get_current_span()
         if not span.is_recording():
             return
+
+        # Which resource was read. The SDK records nothing for resources/*
+        # because it derives its target from params["name"], and resources are
+        # addressed by `uri` instead.
+        resource_uri = self.classifier.resource_uri(params)
+        if resource_uri:
+            span.set_attribute(RESOURCE_URI_ATTRIBUTE, resource_uri)
 
         # MRTR correlation. A round that ASKS emits requestState; the next round
         # RECEIVES the same blob echoed back. Stamping both sides lets a query
@@ -88,3 +102,12 @@ class FailureClassifierMiddleware:
 
         span.set_attribute(ATTRIBUTE, self.classifier.classify_result(result))
         span.set_attribute(f"{ATTRIBUTE}.version", CLASSIFIER_VERSION)
+
+        # Only reached for a FAILING result -- every early return above has
+        # already fired for success and for MRTR interim rounds. That ordering
+        # is the "errors only" guarantee, and it is why this is the last thing
+        # in the method rather than a branch somewhere in the middle.
+        if self.capture_error_detail:
+            detail = self.classifier.error_detail(result)
+            if detail:
+                span.set_attribute(DETAIL_ATTRIBUTE, detail)

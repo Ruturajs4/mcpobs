@@ -1,0 +1,229 @@
+/* ---------------------------------------------------------------------------
+   Design tokens. Dark-first, in the SigNoz idiom (V2 §14.7): near-black ground,
+   a single blue accent, and status colour reserved for status ONLY -- never
+   decoration. An operator scanning this at 3am must be able to trust that a red
+   pixel means something is wrong.
+--------------------------------------------------------------------------- */
+:root {
+  --bg: #0b0c0e; --panel: #121419; --raised: #171a20;
+  --border: #23262e; --border-lo: #1a1d23;
+  --text: #e6e8ec; --text-dim: #9aa1ad; --text-mute: #6b7280;
+  --accent: #4e74f8; --accent-dim: #2c3f80;
+  --ok: #22c55e; --warn: #f59e0b; --err: #ef4444;
+  --purple: #a855f7; --cyan: #06b6d4; --pink: #ec4899;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+  --r: 6px;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 13px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
+
+/* --------------------------------------------------------------- layout */
+.app { display: grid; grid-template-columns: 208px 1fr; height: 100vh; }
+.side { background: var(--panel); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; overflow: hidden; }
+.brand { padding: 16px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 9px; }
+.brand .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok);
+  box-shadow: 0 0 10px var(--ok); flex: none; }
+.brand h1 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: -0.01em; }
+.brand .sub { font-size: 10px; color: var(--text-mute); font-family: var(--mono); }
+
+nav { padding: 8px; display: flex; flex-direction: column; gap: 1px; overflow-y: auto; }
+nav a { padding: 7px 10px; border-radius: var(--r); color: var(--text-dim);
+  font-size: 12.5px; display: flex; align-items: center; gap: 9px; cursor: pointer;
+  transition: background .12s, color .12s; }
+nav a:hover { background: var(--raised); color: var(--text); }
+nav a.on { background: var(--accent-dim); color: #fff; }
+nav a .ic { width: 14px; text-align: center; opacity: .85; font-size: 12px; }
+nav .grp { padding: 13px 10px 5px; font-size: 10px; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--text-mute); font-weight: 600; }
+
+.side-foot { margin-top: auto; padding: 12px 14px; border-top: 1px solid var(--border);
+  font-size: 10.5px; color: var(--text-mute); font-family: var(--mono);
+  display: flex; flex-direction: column; gap: 3px; }
+
+.main { display: flex; flex-direction: column; overflow: hidden; }
+.top { height: 52px; flex: none; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 14px; padding: 0 20px; background: var(--panel); }
+.top h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.top .spacer { flex: 1; }
+.content { flex: 1; overflow-y: auto; padding: 20px; }
+
+.range { display: flex; background: var(--raised); border: 1px solid var(--border);
+  border-radius: var(--r); overflow: hidden; }
+.range button { background: none; border: 0; color: var(--text-dim); padding: 5px 11px;
+  font: inherit; font-size: 12px; cursor: pointer; border-right: 1px solid var(--border-lo); }
+.range button:last-child { border-right: 0; }
+.range button:hover { color: var(--text); background: #1e2129; }
+.range button.on { background: var(--accent); color: #fff; }
+
+/* ---------------------------------------------------------------- cards */
+.grid { display: grid; gap: 12px; }
+.g4 { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+.card .lbl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text-mute); font-weight: 600; margin-bottom: 7px; }
+.card .big { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.card .sub { font-size: 11.5px; color: var(--text-dim); margin-top: 3px; }
+
+.panel { background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; overflow: hidden; margin-top: 12px; }
+.panel > header { padding: 11px 16px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 10px; }
+.panel > header h3 { margin: 0; font-size: 12.5px; font-weight: 600; }
+.panel > header .note { font-size: 11px; color: var(--text-mute); margin-left: auto; }
+
+.tabs { display: flex; align-items: center; gap: 6px; }
+.tab { background: var(--panel); border: 1px solid var(--border); color: var(--text-dim);
+  padding: 6px 13px; border-radius: var(--r); font: inherit; font-size: 12.5px; cursor: pointer; }
+.tab:hover { color: var(--text); background: var(--raised); }
+.tab.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tabs .note { margin-left: auto; font-size: 11px; color: var(--text-mute); }
+
+/* --------------------------------------------------------------- tables */
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--text-mute); font-weight: 600; padding: 9px 16px;
+  border-bottom: 1px solid var(--border); white-space: nowrap; }
+td { padding: 9px 16px; border-bottom: 1px solid var(--border-lo); font-size: 12.5px; vertical-align: middle; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr.click { cursor: pointer; }
+tbody tr.click:hover { background: var(--raised); }
+tbody tr.sel { background: var(--accent-dim); }
+tbody tr.sel td { border-bottom-color: transparent; }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.mono { font-family: var(--mono); font-size: 11.5px; }
+.dim { color: var(--text-dim); } .mute { color: var(--text-mute); }
+
+/* --------------------------------------------------------------- badges */
+.badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px;
+  border-radius: 20px; font-size: 11px; font-weight: 500; white-space: nowrap;
+  border: 1px solid transparent; }
+.badge::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.b-ok { color: var(--ok); background: #22c55e18; border-color: #22c55e33; }
+.b-tool { color: var(--warn); background: #f59e0b18; border-color: #f59e0b33; }
+.b-server { color: var(--err); background: #ef444418; border-color: #ef444433; }
+.b-unknown { color: var(--purple); background: #a855f718; border-color: #a855f733; }
+.b-args { color: var(--cyan); background: #06b6d418; border-color: #06b6d433; }
+.b-proto { color: var(--pink); background: #ec489918; border-color: #ec489933; }
+.b-pending { color: var(--text-dim); background: #9aa1ad14; border-color: #9aa1ad33; }
+.b-none { color: var(--text-mute); background: transparent; border-color: var(--border); }
+
+.dist { display: flex; height: 5px; border-radius: 3px; overflow: hidden;
+  background: var(--border-lo); min-width: 90px; }
+.dist i { display: block; height: 100%; }
+
+/* ---------------------------------------------------------------- drawer */
+.scrim { position: fixed; inset: 0; background: #0006; opacity: 0; pointer-events: none;
+  transition: opacity .18s; z-index: 40; }
+.drawer.open ~ .scrim, body:has(.drawer.open) .scrim { opacity: 1; pointer-events: auto; }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(62%, 1000px);
+  background: var(--panel); border-left: 1px solid var(--border);
+  box-shadow: -18px 0 40px #0007; transform: translateX(100%);
+  transition: transform .2s cubic-bezier(.4, 0, .2, 1); z-index: 50;
+  display: flex; flex-direction: column; }
+.drawer.open { transform: none; }
+.drawer-body { flex: 1; overflow-y: auto; }
+.dr-close { position: absolute; top: 12px; right: 14px; z-index: 2;
+  background: var(--raised); border: 1px solid var(--border); color: var(--text-dim);
+  width: 26px; height: 26px; border-radius: var(--r); cursor: pointer; font-size: 12px; }
+.dr-close:hover { color: var(--text); background: #22262f; }
+
+.dr-head { padding: 16px 18px 0; border-bottom: 1px solid var(--border); }
+.dr-title { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.dr-title strong { font-size: 14px; }
+.kv { display: flex; gap: 22px; flex-wrap: wrap; padding-bottom: 13px; }
+.kv div { display: flex; flex-direction: column; gap: 3px; }
+.kv .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--text-mute); font-weight: 600; }
+.kv .v { font-size: 13px; font-family: var(--mono); }
+
+/* ------------------------------------------------------------ waterfall */
+.wf-head { display: grid; grid-template-columns: 300px 84px 1fr; gap: 14px;
+  padding: 8px 18px; border-bottom: 1px solid var(--border);
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--text-mute); font-weight: 600; }
+.axis { display: flex; justify-content: space-between; font-family: var(--mono);
+  font-size: 9.5px; text-transform: none; letter-spacing: 0; }
+.wf-row { display: grid; grid-template-columns: 300px 84px 1fr; gap: 14px;
+  align-items: center; padding: 0 18px; border-bottom: 1px solid var(--border-lo);
+  min-height: 34px; cursor: pointer; transition: background .1s; }
+.wf-row:hover { background: var(--raised); }
+.wf-row.sel { background: #1b2136; box-shadow: inset 2px 0 0 var(--accent); }
+.wf-name { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.wf-name .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.wf-name .rail { flex: none; width: 11px; height: 10px; margin: -10px 0 0 -3px;
+  border-left: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  border-bottom-left-radius: 3px; }
+.rootmark { font-size: 9.5px; flex: none; }
+/* Status at a glance: finding the failing span in a deep trace should not
+   require reading every row. */
+.dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.d-ok { background: var(--ok); } .d-err { background: var(--err); }
+.d-none { background: var(--text-mute); opacity: .4; }
+/* What the span actually did, inline -- so "where did the time go" is
+   answerable without opening every span in turn. */
+.fact { font-family: var(--mono); font-size: 10px; color: var(--text-mute);
+  border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; flex: none; }
+
+.wf-kind { font-size: 9.5px; padding: 1px 5px; border-radius: 3px; font-family: var(--mono);
+  text-transform: uppercase; letter-spacing: .04em; border: 1px solid; flex: none; }
+.k-mcp { color: var(--accent); border-color: #4e74f855; background: #4e74f814; }
+.k-http { color: var(--cyan); border-color: #06b6d455; background: #06b6d414; }
+.k-db { color: var(--warn); border-color: #f59e0b55; background: #f59e0b14; }
+.k-llm { color: var(--purple); border-color: #a855f755; background: #a855f714; }
+.k-int { color: var(--text-mute); border-color: var(--border); }
+
+.wf-track { position: relative; height: 18px; background: var(--border-lo); border-radius: 3px; }
+.wf-bar { position: absolute; top: 0; height: 18px; border-radius: 3px; min-width: 2px;
+  display: flex; align-items: center; padding: 0 5px; overflow: hidden; opacity: .55; }
+/* Self-time as a solid inner segment against a faded total: the difference
+   between "this span is slow" and "this span waits on something slow". */
+.wf-bar .self { position: absolute; left: 0; top: 0; bottom: 0;
+  background: inherit; opacity: 1; border-radius: 3px; }
+.wf-bar span { font-size: 10px; font-family: var(--mono); color: #fff;
+  white-space: nowrap; position: relative; z-index: 1; }
+.bar-mcp { background: #4e74f8; } .bar-http { background: #06b6d4; }
+.bar-db { background: #f59e0b; } .bar-llm { background: #a855f7; }
+.bar-int { background: #3f444f; } .bar-err { background: #ef4444; }
+
+/* --------------------------------------------------------- span detail */
+.detail { padding: 16px 18px 40px; border-top: 1px solid var(--border); background: var(--bg); }
+.detail-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.detail-head strong { font-size: 13.5px; }
+
+.err-block { background: #ef444410; border: 1px solid #ef444438; border-radius: var(--r);
+  margin-bottom: 16px; overflow: hidden; }
+.err-head { padding: 8px 12px; border-bottom: 1px solid #ef444430; font-size: 11px;
+  font-weight: 600; color: #fca5a5; display: flex; align-items: center; gap: 10px; }
+.err-head .note { font-weight: 400; color: var(--text-mute); font-size: 10.5px; margin-left: auto; }
+.err-block pre { margin: 0; padding: 11px 12px; font-family: var(--mono); font-size: 11.5px;
+  color: #fecaca; white-space: pre-wrap; word-break: break-word; }
+
+.grp { margin-bottom: 16px; }
+.grp h4 { margin: 0 0 7px; font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--text-mute); font-weight: 600;
+  display: flex; align-items: center; gap: 8px; }
+.grp h4 .note { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 10.5px; }
+.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+  gap: 0 20px; border-top: 1px solid var(--border-lo); }
+/* minmax(0, …) on both tracks: without it a long key like
+   `deployment.environment.name` overflows its column and prints on top of the
+   value. Grid columns do not shrink below min-content unless told to. */
+.f { display: grid; grid-template-columns: minmax(0, 150px) minmax(0, 1fr); gap: 10px;
+  padding: 5px 0; border-bottom: 1px solid var(--border-lo); font-size: 12px; }
+.fk { color: var(--text-mute); font-family: var(--mono); font-size: 11px;
+  overflow-wrap: anywhere; }
+.fv { font-family: var(--mono); font-size: 11.5px; word-break: break-word; }
+.fv.bad { color: var(--err); }
+
+/* ---------------------------------------------------------------- misc */
+.note-bar { display: flex; gap: 9px; align-items: flex-start; background: #f59e0b10;
+  border: 1px solid #f59e0b33; border-radius: var(--r); padding: 10px 13px;
+  margin-bottom: 12px; font-size: 12px; color: #fbbf24; }
+.note-bar b { color: #fcd34d; }
+.empty { padding: 44px; text-align: center; color: var(--text-mute); font-size: 13px; }
+.spin { padding: 44px; text-align: center; color: var(--text-mute); }

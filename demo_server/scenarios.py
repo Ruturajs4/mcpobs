@@ -56,6 +56,33 @@ async def answer_elicitation(*args: Any, **kwargs: Any) -> dict[str, Any]:
     return {"action": "accept", "content": {"approved": True}}
 
 
+async def run_capability_scenarios(client: Client) -> list[str]:
+    """Exercise prompts and resources, not just tools.
+
+    Produces `prompts/get`, `prompts/list`, `resources/read` and
+    `resources/list` spans, so the console's prompt and resource views render
+    real data rather than shipping empty.
+    """
+    out: list[str] = []
+    for label, call in (
+        ("prompts/list", lambda: client.list_prompts()),
+        (
+            "prompts/get triage_error",
+            lambda: client.get_prompt("triage_error", {"tool": "explode"}),
+        ),
+        ("prompts/get summarize_incident", lambda: client.get_prompt("summarize_incident", {})),
+        ("resources/list", lambda: client.list_resources()),
+        ("resources/read config://limits", lambda: client.read_resource("config://limits")),
+        ("resources/read docs://runbook/deploy", lambda: client.read_resource("docs://runbook/deploy")),
+    ):
+        try:
+            await call()
+            out.append(f"  {label:<52} -> ok")
+        except Exception as exc:
+            out.append(f"  {label:<52} -> raised {type(exc).__name__}")
+    return out
+
+
 async def run_scenarios(client: Client) -> list[str]:
     out: list[str] = []
     for tool, args, expected in SCENARIOS:
@@ -66,6 +93,7 @@ async def run_scenarios(client: Client) -> list[str]:
             out.append(f"  {label:<52} -> isError={is_error}  [expect {expected}]")
         except Exception as exc:
             out.append(f"  {label:<52} -> raised {type(exc).__name__}  [expect {expected}]")
+    out += await run_capability_scenarios(client)
     return out
 
 

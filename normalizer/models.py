@@ -114,6 +114,9 @@ class SpanRow(_Row):
     gen_ai_input_tokens: int | None = None
     gen_ai_output_tokens: int | None = None
     downstream_kind: str = ""
+    # Error text from a FAILING result only. Distinct from the payload columns
+    # above, which stay NULL unless payload capture is switched on (DF-8).
+    failure_detail: str = ""
 
 
 class DeadLetterRow(_Row):

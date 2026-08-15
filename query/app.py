@@ -20,8 +20,16 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
-from query.dtos import Overview, Page, ServerSummary, ToolSummary, TraceDetail
+from query.dtos import (
+    CapabilityRow,
+    Overview,
+    Page,
+    ServerSummary,
+    ToolSummary,
+    TraceDetail,
+)
 from query.repository import SpanRepository
 
 app = FastAPI(
@@ -103,6 +111,23 @@ def tools(scope: ScopeDep, repo: RepoDep) -> list[ToolSummary]:
     return repo.tools(scope.tenant, scope.project, scope.since)
 
 
+@app.get("/api/v1/capabilities", response_model=list[CapabilityRow])
+def capabilities(
+    scope: ScopeDep,
+    repo: RepoDep,
+    kind: Annotated[str, Query(pattern="^(tool|prompt|resource|protocol)$")] = "tool",
+    server: str | None = None,
+) -> list[CapabilityRow]:
+    """Tools, prompts, resources, or protocol methods.
+
+    `protocol` is the one that was missing: `tools/list` and `server/discover`
+    are 38% of stored spans and had no home in the console. `tools/list` runs on
+    every client connect, so if it is slow that is a real customer symptom the
+    UI was silent about.
+    """
+    return repo.capabilities(scope.tenant, scope.project, scope.since, kind=kind, server=server)
+
+
 @app.get("/api/v1/traces", response_model=Page)
 def traces(
     scope: ScopeDep,
@@ -161,6 +186,9 @@ def errors(
         failure_category=failure_category,
         failures_only=failure_category is None,
     )
+
+
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
 @app.get("/", include_in_schema=False)

@@ -18,7 +18,9 @@ from typing import Any
 from mcpobs.classifier import (
     ATTRIBUTE,
     CLASSIFIER_VERSION,
+    DETAIL_ATTRIBUTE,
     MRTR_STATE_ATTRIBUTE,
+    RESOURCE_URI_ATTRIBUTE,
     RESULT_TYPE_ATTRIBUTE,
     FailureClassifier,
     FailureKind,
@@ -28,7 +30,9 @@ from mcpobs.middleware import FailureClassifierMiddleware
 __all__ = [
     "ATTRIBUTE",
     "CLASSIFIER_VERSION",
+    "DETAIL_ATTRIBUTE",
     "MRTR_STATE_ATTRIBUTE",
+    "RESOURCE_URI_ATTRIBUTE",
     "RESULT_TYPE_ATTRIBUTE",
     "FailureClassifier",
     "FailureClassifierMiddleware",
@@ -37,8 +41,14 @@ __all__ = [
 ]
 
 
-def instrument(server: Any) -> Any:
+def instrument(server: Any, capture_error_detail: bool = True) -> Any:
     """Attach failure classification to an MCPServer.
+
+    `capture_error_detail` (default True) also records the error text from
+    FAILING tool results, truncated to 512 characters. Without it an operator
+    cannot see why a call failed -- the SDK leaves `status_message` empty. It
+    never reads successful results and never populates the payload columns.
+    Pass False to send only the failure category.
 
     Appends to the server's middleware chain, so it runs inside the SDK's
     built-in OpenTelemetry middleware and can annotate the span the SDK already
@@ -49,5 +59,5 @@ def instrument(server: Any) -> Any:
     chain = server.middleware
     if any(isinstance(m, FailureClassifierMiddleware) for m in chain):
         return server
-    chain.append(FailureClassifierMiddleware())
+    chain.append(FailureClassifierMiddleware(capture_error_detail=capture_error_detail))
     return server
