@@ -40,6 +40,7 @@ contract, which outranks every document where they disagree.
 - [`docs/Architecture.md`](docs/Architecture.md) — system of record, ADR-001…010
 - [`docs/decisions.md`](docs/decisions.md) — decision log, including the Day-1 findings
 - [`docs/observed_attributes.md`](docs/observed_attributes.md) — **generated**, the span contract
+- [`docs/deferred.md`](docs/deferred.md) — everything knowingly postponed, and what forces it back
 
 ## Failure intelligence
 
