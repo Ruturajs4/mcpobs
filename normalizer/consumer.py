@@ -16,6 +16,7 @@ import logging
 import signal
 import sys
 import time
+from datetime import UTC, datetime
 from types import FrameType
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Message, Producer
@@ -26,6 +27,7 @@ from normalizer.config import settings as default_settings
 from normalizer.models import DeadLetterRow, SpanRow
 from normalizer.normalize import SpanNormalizer
 from normalizer.otlp_decode import DecodeError, OtlpDecoder
+from normalizer.telemetry import PipelineMetrics
 
 log = logging.getLogger("normalizer")
 
@@ -106,6 +108,10 @@ class Normalizer:
         # Replay tooling sets this: exit once the topic is drained instead of
         # running forever (Architecture.md §5.4).
         self.stop_when_idle = stop_when_idle
+        self.metrics = PipelineMetrics(
+            endpoint=self.settings.otel_metrics_endpoint,
+            enabled=self.settings.self_telemetry,
+        )
         self.span_count = 0
         self._running = True
         self._consumer: Consumer | None = None
@@ -211,6 +217,7 @@ class Normalizer:
                     self.normalizer.to_row(span, partition=partition, offset=offset)
                 )
                 self.span_count += 1
+                self.metrics.spans_normalized.add(1)
             except Exception as exc:  # noqa: BLE001
                 self.dead_letter(
                     "normalize_error", f"{type(exc).__name__}: {exc}", partition, offset, payload
@@ -222,6 +229,7 @@ class Normalizer:
     ) -> None:
         """Poison message -> DLQ, then the offset advances. Never skip silently."""
         log.warning("DLQ %s p%d@%d: %s", reason, partition, offset, detail)
+        self.metrics.dead_lettered.add(1, {"reason": reason})
         try:
             # Headers carry the reason so the DLQ topic is triageable on its
             # own. Without them the reason exists only in ClickHouse, and DLQ
@@ -252,9 +260,25 @@ class Normalizer:
     def flush(self) -> None:
         if not self.batch.has_pending_offsets:
             return
-        written = self.sink.insert_spans(self.batch.rows, dedup_token=self.batch.dedup_token())
+
+        started = time.monotonic()
+        try:
+            written = self.sink.insert_spans(
+                self.batch.rows, dedup_token=self.batch.dedup_token()
+            )
+        except Exception:
+            # Counted before re-raising: an insert failure that is invisible is
+            # the one that turns into silent data loss.
+            self.metrics.insert_failures.add(1)
+            raise
+        elapsed_ms = (time.monotonic() - started) * 1000
+        self.metrics.insert_duration.record(elapsed_ms)
+        self.metrics.rows_inserted.add(written)
+        self._record_freshness()
+
         # ---- ONLY NOW is it safe to commit ----
         self.consumer.commit(asynchronous=False)
+        self.metrics.batches_committed.add(1)
         if written:
             log.info("inserted %d spans, committed offsets", written)
         else:
@@ -263,6 +287,21 @@ class Normalizer:
                 len(self.batch.offsets),
             )
         self.batch.reset()
+
+    def _record_freshness(self) -> None:
+        """Event time -> write time, per batch.
+
+        THE headline pipeline metric (Architecture.md §9.1). Measured from the
+        spans actually written rather than a synthetic probe, so it reflects the
+        real path -- including the batch interval, which is its floor.
+        """
+        if not self.batch.rows:
+            return
+        now = datetime.now(UTC).replace(tzinfo=None)
+        for row in self.batch.rows:
+            self.metrics.freshness.record(
+                max(0.0, (now - row.timestamp).total_seconds() * 1000)
+            )
 
 
 def main() -> int:

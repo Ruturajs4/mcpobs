@@ -59,6 +59,15 @@ exporters:
   debug:
     verbosity: normal             # raise to `detailed` for T3-style inspection
 
+  # Self-telemetry sink. Prometheus rather than another storage system: these
+  # are OUR operational metrics, and the point of separating them from the
+  # traces pipeline is that an outage which breaks ingestion must not also
+  # blind us to it (V2 §19).
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion:
+      enabled: true
+
 extensions:
   health_check:
     endpoint: 0.0.0.0:13133
@@ -70,6 +79,14 @@ service:
       receivers: [otlp]
       processors: [memory_limiter, resource/tenant, batch]
       exporters: [kafka, debug]
+
+    # SEPARATE from traces on purpose. Our own metrics never touch Kafka, never
+    # touch a customer tenant, and survive a ClickHouse or Kafka outage -- which
+    # is exactly when we need them most.
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]
   telemetry:
     logs:
       level: info

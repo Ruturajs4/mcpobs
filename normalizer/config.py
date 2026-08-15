@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     batch_max_rows: int = 10_000
     batch_max_seconds: float = 5.0
 
+    # Self-telemetry (V2 §19). Goes to the Collector's METRICS pipeline, which
+    # is separate from the traces pipeline feeding Kafka: self-telemetry must
+    # never share a path with customer telemetry, or the outage that breaks
+    # ingestion also blinds us to it.
+    self_telemetry: bool = True
+    otel_metrics_endpoint: str = "http://otel-collector:4318/v1/metrics"
+
     @property
     def clickhouse_dsn(self) -> str:
         return f"http://{self.clickhouse_host}:{self.clickhouse_port}/{self.clickhouse_db}"

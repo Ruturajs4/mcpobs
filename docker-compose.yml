@@ -82,6 +82,7 @@ services:
       - "4317:4317"   # OTLP gRPC
       - "4318:4318"   # OTLP HTTP
       - "13133:13133" # health
+      - "8889:8889"   # prometheus scrape: our own pipeline metrics
     depends_on:
       kafka: { condition: service_healthy }
       kafka-init: { condition: service_completed_successfully }

@@ -20,7 +20,12 @@ import clickhouse_connect
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from demo_server.scenarios import SCENARIOS, http_session, run_scenarios, stdio_session  # noqa: E402
+from demo_server.scenarios import (  # noqa: E402
+    SCENARIOS,
+    http_session,
+    run_scenarios,
+    stdio_session,
+)
 
 PASS, FAIL, WARN = "PASS", "FAIL", "WARN"
 results: list[tuple[str, str, str]] = []

@@ -1,7 +1,7 @@
 PY := .venv/Scripts/python.exe
 COMPOSE := docker compose
 
-.PHONY: help up down demo verify attrs lag logs ps clean test lint typecheck check freshness traces
+.PHONY: help up down demo verify attrs lag logs ps clean test lint typecheck check freshness traces metrics
 
 help:
 	@echo "up        - start clickhouse + kafka + collector + normalizer"
@@ -17,6 +17,7 @@ help:
 	@echo "logs      - tail all service logs"
 	@echo "freshness - end-to-end pipeline freshness (the headline metric)"
 	@echo "traces    - assembled trace summaries"
+	@echo "metrics   - the pipeline's own operational metrics (V2 19)"
 	@echo "clean     - down + remove volumes"
 
 test:
@@ -74,3 +75,6 @@ traces:
 	  dateDiff('millisecond', min(start_time), max(end_time)) AS duration_ms \
 	  FROM mcpobs.trace_summaries GROUP BY tenant_id, project_id, trace_id \
 	  ORDER BY spans DESC, category LIMIT 15"
+
+metrics:
+	$(PY) scripts/metrics.py
