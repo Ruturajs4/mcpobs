@@ -122,6 +122,57 @@ keys and JWTs by shape). That redaction is **incomplete by construction** — it
 will not catch a secret in a field called `note`. It reduces harm; it does not
 make capture safe. Turn it on deliberately.
 
+## Redis, Postgres, and everything else your tools call
+
+Your tool calls a database or a cache; we show it as a child span under the tool
+call, with its own timing, so a slow tool says *where* the time went instead of
+looking like unexplained server time.
+
+We do not patch your clients for you. Adding observability to an MCP server
+should not silently monkey-patch your database driver, so downstream
+instrumentation is something you turn on. There are two ways, and the first is
+better when you can use it.
+
+**1. The OpenTelemetry agent (preferred).** Nothing from us involved:
+
+```bash
+pip install opentelemetry-instrumentation-redis opentelemetry-instrumentation-psycopg
+opentelemetry-instrument python -m your_server
+```
+
+It picks up any instrumentation package the day you install it.
+
+**2. One call, in-process.** For servers you do not launch yourself -- which is
+most MCP servers, because the *client* spawns them over stdio and you do not own
+that command line:
+
+```python
+from mcpobs import instrument, instrument_downstream
+
+instrument(mcp)
+report = instrument_downstream()      # {'httpx': 'instrumented', 'redis': 'instrumented', ...}
+```
+
+It discovers whatever you have installed through OpenTelemetry's own entry-point
+group -- the same mechanism the agent uses -- so `pip install
+opentelemetry-instrumentation-redis` is the entire integration. It returns a
+report rather than nothing, because a call that patches an unknown set of
+libraries should tell you what it touched. It never raises: one package with a
+version conflict is reported and skipped, never allowed to stop your server
+booting. `instrument_downstream(exclude=("sqlite3",))` opts individual ones out.
+
+What you get per span kind:
+
+| Called | Shown as | Fields |
+| --- | --- | --- |
+| Redis, Postgres, MySQL, Mongo, SQLite | `db` | system, operation, collection/table, statement (**redacted before storage**) |
+| HTTP (httpx, requests, aiohttp) | `http` | method, status, host, URL, and request body/headers with `instrument_httpx()` |
+| OpenAI, Anthropic, Bedrock | `llm` | system, model, input/output tokens |
+| Kafka, RabbitMQ, SQS | `messaging` | stored and rendered generically |
+
+SQL statements are redacted at normalize time, never at render: a secret that
+reaches the table cannot be recalled (D62).
+
 **Outbound HTTP calls** are a separate opt-in again, because they instrument a
 different thing — your HTTP client, not your MCP server:
 

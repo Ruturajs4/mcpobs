@@ -282,3 +282,163 @@ class TestArchiveFormat:
                 batch.add("acme", b"x", partition=partition, offset=offset)
         assert len(batch.groups) == 2
         assert batch.groups[("acme", 0)][1:] == (5, 6)
+
+
+class TestDownstreamInstrumentation:
+    """`instrument_downstream()` -- entry-point discovery, opt-in.
+
+    The alternative for customers who cannot use `opentelemetry-instrument`,
+    which is a large share of MCP servers: they are spawned by the client over
+    stdio, so they do not own the command line that starts them.
+    """
+
+    def test_it_discovers_rather_than_lists(self) -> None:
+        """A hardcoded list is a list we would forget to update. Reading the
+        entry-point group means `pip install
+        opentelemetry-instrumentation-redis` is the whole integration."""
+        from mcpobs import available
+
+        names = available()
+        assert "httpx" in names
+        assert "sqlite3" in names
+
+    def test_it_returns_a_report_rather_than_none(self) -> None:
+        """A call that patches an unknown set of libraries and says nothing is
+        not something anyone should put in a production server."""
+        from mcpobs import instrument_downstream
+
+        report = instrument_downstream()
+        assert set(report) == set(__import__("mcpobs").available())
+        assert all(isinstance(v, str) for v in report.values())
+
+    def test_exclusions_are_honoured(self) -> None:
+        from mcpobs import instrument_downstream
+
+        report = instrument_downstream(exclude=("sqlite3",))
+        assert report["sqlite3"] == "skipped: excluded"
+
+    def test_one_broken_instrumentor_cannot_stop_the_others(self) -> None:
+        """An observability library that prevents a server from booting has done
+        more damage than the telemetry was worth."""
+        from mcpobs import downstream
+
+        class Exploding:
+            name = "exploding"
+
+            def load(self) -> Any:
+                raise RuntimeError("no such module")
+
+        real = downstream.entry_points
+        downstream.entry_points = lambda group: [Exploding(), *real(group=group)]  # type: ignore[assignment]
+        try:
+            report = downstream.instrument_downstream()
+        finally:
+            downstream.entry_points = real  # type: ignore[assignment]
+        assert "will not load" in report["exploding"]
+        assert report["sqlite3"] in ("instrumented", "already instrumented")
+
+
+class TestInstrumentationOrderIndependence:
+    """Body capture must survive `instrument_downstream()`, in either order.
+
+    Asserted with a REAL request over a real socket, because the claim is about
+    what the instrumentation actually patched. Checking an internal
+    `is_instrumented_by_opentelemetry` flag would only confirm that our own
+    guard ran -- which is not the question. A customer will pick the wrong order
+    half the time and nothing should depend on it.
+    """
+
+    def _serve(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                self.rfile.read(int(self.headers.get("content-length", 0)))
+                body = b'{"ok":true}'
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_: object) -> None:
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server
+
+    def _spans_for(self, order: str) -> list[Any]:
+        import asyncio
+
+        import httpx
+        from opentelemetry import trace
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+        from opentelemetry.util._once import Once
+
+        from mcpobs import instrument_downstream, instrument_httpx
+
+        HTTPXClientInstrumentor().uninstrument()
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        # Resetting `_TRACER_PROVIDER` alone is not enough: OTel guards
+        # `set_tracer_provider` with a `Once`, so the second call in a process
+        # is silently ignored and the span lands in the FIRST test's exporter.
+        # The symptom is an empty span list here and a passing sibling test,
+        # which reads exactly like a product bug and is not one.
+        # The RAW module global, not `get_tracer_provider()`. When nothing is
+        # set, that call returns the ProxyTracerProvider, and restoring the
+        # proxy INTO `_TRACER_PROVIDER` makes it delegate to itself -- a
+        # RecursionError 900 frames deep inside the MCP SDK, which looks like
+        # anything except a test-teardown bug.
+        previous = trace._TRACER_PROVIDER
+        previous_once = trace._TRACER_PROVIDER_SET_ONCE
+        trace._TRACER_PROVIDER = None
+        trace._TRACER_PROVIDER_SET_ONCE = Once()
+        trace.set_tracer_provider(provider)
+
+        server = self._serve()
+        try:
+            if order == "downstream-first":
+                instrument_downstream()
+                instrument_httpx()
+            else:
+                instrument_httpx()
+                instrument_downstream()
+
+            url = f"http://127.0.0.1:{server.server_address[1]}/x"
+
+            async def call() -> None:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    await client.post(url, json={"q": 1})
+
+            asyncio.run(call())
+            return list(exporter.get_finished_spans())
+        finally:
+            server.shutdown()
+            trace._TRACER_PROVIDER = previous
+            trace._TRACER_PROVIDER_SET_ONCE = previous_once
+
+    def test_body_capture_survives_downstream_first(self) -> None:
+        from mcpobs.http import REQUEST_BODY_ATTRIBUTE
+
+        spans = self._spans_for("downstream-first")
+        assert spans, "no HTTP span emitted at all"
+        assert REQUEST_BODY_ATTRIBUTE in (spans[0].attributes or {})
+
+    def test_body_capture_survives_httpx_first(self) -> None:
+        """The order that would break if `instrument_downstream()` blindly
+        re-instrumented: the second call would replace the hooked
+        instrumentation with an unhooked one and the bodies would vanish."""
+        from mcpobs.http import REQUEST_BODY_ATTRIBUTE
+
+        spans = self._spans_for("httpx-first")
+        assert spans, "no HTTP span emitted at all"
+        assert REQUEST_BODY_ATTRIBUTE in (spans[0].attributes or {})

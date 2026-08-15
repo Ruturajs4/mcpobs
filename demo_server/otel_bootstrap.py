@@ -135,35 +135,23 @@ def init_telemetry(
 
 
 def _instrument_httpx() -> None:
-    """Auto-instrument httpx so downstream calls appear as child spans.
+    """Turn on downstream instrumentation the way a customer would.
 
-    NOTE: the MCP SDK itself ships `httpx2`, which this instrumentor does NOT
-    patch. The demo server therefore makes its downstream calls with plain
-    `httpx` on purpose -- otherwise assertion A4 (downstream span parented to
-    the MCP span) would silently never fire.
+    Uses `mcpobs.instrument_downstream()` rather than naming HTTPXClientInstrumentor
+    and SQLite3Instrumentor by hand, so the demo exercises the code path the
+    README tells customers to use. A demo that integrates differently from the
+    documentation is how the documentation goes stale without anyone noticing.
     """
-    try:
-        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+    from mcpobs import instrument_downstream, instrument_httpx
 
-        HTTPXClientInstrumentor().instrument()
-    except Exception as exc:  # pragma: no cover - instrumentation is best-effort
-        print(f"[otel_bootstrap] httpx instrumentation unavailable: {exc}")
+    for name, outcome in instrument_downstream().items():
+        if outcome != "instrumented":
+            print(f"[otel_bootstrap] {name}: {outcome}")
 
-    # Body capture on top of it (D60). Separate call, and separate from
-    # `instrument(mcp)`, because it captures a different thing: the customer's
-    # OUTBOUND HTTP, not their MCP server. The demo enables it because the demo
-    # already enables payload capture; a real server opts in deliberately.
+    # Body capture on top (D60). Order-independent -- proved by
+    # tests/test_control_plane.py, in both directions.
     if os.getenv("MCPOBS_HTTP_BODIES", "1") == "1":
-        from mcpobs import instrument_httpx
-
         instrument_httpx()
-
-    try:
-        from opentelemetry.instrumentation.sqlite3 import SQLite3Instrumentor
-
-        SQLite3Instrumentor().instrument()
-    except Exception as exc:  # pragma: no cover
-        print(f"[otel_bootstrap] sqlite3 instrumentation unavailable: {exc}")
 
 
 def shutdown() -> None:

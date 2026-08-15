@@ -132,8 +132,13 @@ def echo_fast(message: str = "hello") -> str:
 async def fetch_status(code: int = 200) -> str:
     """Call a downstream HTTP endpoint that returns the given status code.
 
-    Uses plain `httpx` (not the SDK's httpx2) so the OTel httpx instrumentor
-    actually patches it and emits the downstream child span.
+    Uses plain `httpx`, which is what a customer's tool would most often use.
+
+    An earlier version of this docstring said httpx2 was NOT instrumentable and
+    that this used plain httpx to work around it. That was wrong: contrib ships
+    a separate `HTTPX2ClientInstrumentor`, and it emits spans -- verified, not
+    assumed. `instrument_downstream()` turns it on, which means the MCP SDK's
+    OWN transport calls become visible too.
     """
     async with httpx.AsyncClient(timeout=5.0) as client:
         response = await client.get(f"{DOWNSTREAM_BASE}/status/{code}")

@@ -25,6 +25,7 @@ from mcpobs.classifier import (
     FailureClassifier,
     FailureKind,
 )
+from mcpobs.downstream import available, instrument_downstream
 from mcpobs.http import HttpBodyCapture, instrument_httpx
 from mcpobs.middleware import FailureClassifierMiddleware
 from mcpobs.payload import PayloadCapture
@@ -41,7 +42,9 @@ __all__ = [
     "FailureKind",
     "HttpBodyCapture",
     "PayloadCapture",
+    "available",
     "instrument",
+    "instrument_downstream",
     "instrument_httpx",
 ]
 

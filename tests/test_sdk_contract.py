@@ -137,9 +137,17 @@ class TestSpanAnnotation:
         provider.add_span_processor(SimpleSpanProcessor(exporter))
 
         from opentelemetry import trace
+        from opentelemetry.util._once import Once
 
-        previous = trace.get_tracer_provider()
+        # Same care as tests/test_control_plane.py: capture the RAW global.
+        # `get_tracer_provider()` returns the ProxyTracerProvider when none is
+        # set, and restoring the proxy into `_TRACER_PROVIDER` makes it delegate
+        # to itself. This test happened to run first and so never hit it -- a
+        # latent trap that only springs once another test sets a provider.
+        previous = trace._TRACER_PROVIDER
+        previous_once = trace._TRACER_PROVIDER_SET_ONCE
         trace._TRACER_PROVIDER = None
+        trace._TRACER_PROVIDER_SET_ONCE = Once()
         trace.set_tracer_provider(provider)
         try:
             async with Client(build_server()) as client:
@@ -153,6 +161,7 @@ class TestSpanAnnotation:
             assert annotated[0].attributes["mcpobs.failure.kind"] == FailureKind.SERVER_EXCEPTION
         finally:
             trace._TRACER_PROVIDER = previous
+            trace._TRACER_PROVIDER_SET_ONCE = previous_once
 
 
 class TestMrtrCorrelation:
