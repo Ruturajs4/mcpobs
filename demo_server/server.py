@@ -50,8 +50,12 @@ DB_PATH = os.getenv("DEMO_DB_PATH", ":memory:")
 mcp = MCPServer("mcp-demo-server", version=SERVICE_VERSION)
 
 # The entire customer-facing integration. Annotates the SDK's existing span with
-# a derived failure kind; creates no spans and captures no tool content.
-instrument(mcp)
+# a derived failure kind; creates no spans.
+#
+# `capture_payloads` is ON here and OFF in the library default: the demo exists
+# to show what the product can do, and a real server should make that choice
+# deliberately rather than inherit it.
+instrument(mcp, capture_payloads=True)
 
 
 # --------------------------------------------------------------------------

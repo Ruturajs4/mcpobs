@@ -28,10 +28,15 @@ from mcpobs.classifier import (
     CLASSIFIER_VERSION,
     DETAIL_ATTRIBUTE,
     MRTR_STATE_ATTRIBUTE,
+    REQUEST_ATTRIBUTE,
+    REQUEST_SIZE_ATTRIBUTE,
     RESOURCE_URI_ATTRIBUTE,
+    RESPONSE_ATTRIBUTE,
+    RESPONSE_SIZE_ATTRIBUTE,
     RESULT_TYPE_ATTRIBUTE,
     FailureClassifier,
 )
+from mcpobs.payload import PayloadCapture
 
 log = logging.getLogger(__name__)
 
@@ -46,9 +51,13 @@ class FailureClassifierMiddleware:
         self,
         classifier: FailureClassifier | None = None,
         capture_error_detail: bool = True,
+        capture_payloads: bool = False,
+        payload_capture: PayloadCapture | None = None,
     ) -> None:
         self.classifier = classifier or FailureClassifier()
         self.capture_error_detail = capture_error_detail
+        self.capture_payloads = capture_payloads
+        self.payloads = payload_capture or PayloadCapture()
 
     async def __call__(self, ctx: Any, call_next: Any) -> Any:
         result = await call_next(ctx)
@@ -61,10 +70,27 @@ class FailureClassifierMiddleware:
             log.debug("failure classification skipped: %s", exc)
         return result
 
+    def _capture_payload(self, span: Any, params: Any, result: Any) -> None:
+        request, request_size = self.payloads.request(params)
+        if request:
+            span.set_attribute(REQUEST_ATTRIBUTE, request)
+            span.set_attribute(REQUEST_SIZE_ATTRIBUTE, request_size)
+        response, response_size = self.payloads.response(result)
+        if response:
+            span.set_attribute(RESPONSE_ATTRIBUTE, response)
+            span.set_attribute(RESPONSE_SIZE_ATTRIBUTE, response_size)
+
     def _annotate(self, result: Any, params: Any = None) -> None:
         span = get_current_span()
         if not span.is_recording():
             return
+
+        # Tool request/response. OFF by default (mcpobs/payload.py): unlike
+        # error detail this is every argument and every result of every call.
+        # Recorded BEFORE the success/error returns below, because the whole
+        # point is to see what a successful-but-wrong call actually returned.
+        if self.capture_payloads:
+            self._capture_payload(span, params, result)
 
         # Which resource was read. The SDK records nothing for resources/*
         # because it derives its target from params["name"], and resources are

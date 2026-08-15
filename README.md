@@ -72,6 +72,19 @@ data. To send only the category and no text:
 instrument(mcp, capture_error_detail=False)
 ```
 
+**Tool arguments and results** are NOT sent by default. Enable them when you
+need to see what a call actually received and returned:
+
+```python
+instrument(mcp, capture_payloads=True)
+```
+
+They are truncated to 2048 characters and passed through pattern-based
+redaction (fields named `password`/`token`/`api_key`/…, and bearer tokens, API
+keys and JWTs by shape). That redaction is **incomplete by construction** — it
+will not catch a secret in a field called `note`. It reduces harm; it does not
+make capture safe. Turn it on deliberately.
+
 It annotates the span the SDK already opened — it does not wrap the protocol or
 create spans — and **captures no tool input or output**. The distinguishing text
 is SDK-generated boilerplate, read in the customer's process and reduced to a

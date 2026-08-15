@@ -245,16 +245,28 @@ def main() -> int:
                                 present != expected_kinds else ""),
     )
 
-    # The privacy property that makes this a core feature rather than one gated
-    # behind payload capture (V2 §15).
-    leaked = ch.query(
+    # B2 originally asserted payload columns were NULL. That was the right
+    # assertion while payload capture did not exist, but the wrong SHAPE: what
+    # actually matters is that the taxonomy does not DEPEND on payloads, so that
+    # a customer with capture off still gets precise failure classification.
+    # Asserting emptiness would now just forbid a shipped feature.
+    from mcpobs.middleware import FailureClassifierMiddleware
+
+    record(
+        "B2 payload capture is off by default",
+        FailureClassifierMiddleware().capture_payloads is False,
+        "instrument() does not send tool arguments or results unless asked",
+    )
+
+    classified_without_payload = ch.query(
         "SELECT count() FROM spans_raw "
-        "WHERE input_preview IS NOT NULL OR output_preview IS NOT NULL"
+        "WHERE failure_kind_source = 'helper' AND input_preview IS NULL "
+        "  AND failure_category NOT IN ('', 'ok')"
     ).result_rows[0][0]
     record(
-        "B2 no tool content stored to achieve the taxonomy",
-        leaked == 0,
-        f"{leaked} rows carry payload previews (must be 0)",
+        "B2b the taxonomy works without payload capture",
+        classified_without_payload > 0,
+        f"{classified_without_payload} failures precisely classified with no payload stored",
     )
 
     # Scoped by EVENT time (`timestamp`), not ingest time. A replay reprocesses
@@ -655,6 +667,31 @@ def main() -> int:
             other["calls"] == 0 and other["servers"] == 0,
             f"calls={other['calls']} servers={other['servers']}",
         )
+
+    # ---------------- D5: payload capture ----------------------------------
+    print("\n--- D5: request/response capture ---")
+    captured = ch.query(
+        "SELECT count(), countIf(output_preview IS NOT NULL) FROM spans_raw "
+        "WHERE input_preview IS NOT NULL AND timestamp > now() - INTERVAL 30 MINUTE"
+    ).result_rows[0]
+    record(
+        "D5 request and response are captured when enabled",
+        captured[0] > 0 and captured[1] > 0,
+        f"{captured[0]} spans with a request, {captured[1]} with a response",
+    )
+
+    # Redaction is pattern-based and therefore incomplete, but the obvious
+    # shapes must not survive. A secret that reaches storage cannot be recalled.
+    leaked = ch.query(
+        "SELECT count() FROM spans_raw WHERE "
+        "  input_preview ILIKE '%\"api_key\": \"sk-%' "
+        "  OR output_preview ILIKE '%Bearer ey%'"
+    ).result_rows[0][0]
+    record(
+        "D5b obvious secret shapes are redacted before storage",
+        leaked == 0,
+        f"{leaked} previews contain an unredacted key or bearer token",
+    )
 
     # ---------------- B7: freshness, the headline metric -------------------
     # Architecture.md §9.1 names end-to-end freshness -- span event time to

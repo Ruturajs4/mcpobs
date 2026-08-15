@@ -94,6 +94,20 @@ tool name -- not payload. It IS the standard semconv key, so if the SDK starts
 emitting it, this becomes a harmless no-op rather than a conflict.
 """
 
+REQUEST_ATTRIBUTE: Final = "gen_ai.tool.call.arguments"
+RESPONSE_ATTRIBUTE: Final = "gen_ai.tool.call.result"
+"""Tool request/response previews. OFF by default -- see mcpobs/payload.py.
+
+These are the OTel GenAI semantic-convention keys, both marked opt-in there for
+the same reason they are opt-in here. Using the standard names means a customer
+already collecting them sees one set of attributes, not two.
+"""
+
+REQUEST_SIZE_ATTRIBUTE: Final = "mcpobs.request.size"
+RESPONSE_SIZE_ATTRIBUTE: Final = "mcpobs.response.size"
+"""Original byte counts, recorded even when the preview is truncated -- "the
+result was 4 MB" is useful on its own."""
+
 DETAIL_MAX_CHARS: Final = 512
 """Bounded. An unbounded error string is a payload by another name."""
 

@@ -329,6 +329,28 @@ function renderSpanDetail(d) {
       <pre>${esc(d.failure_detail)}</pre>
     </div>` : "";
 
+  // Request and response, high in the panel: it is the first thing anyone
+  // opens a span to read. When capture is off, say so explicitly with the flag
+  // that turns it on -- an empty space just looks broken.
+  const io = (label, text, size) => text
+    ? `<div class="io"><div class="io-head">${label}
+         <span class="note mono">${size ? `${size} chars` : ""}${
+           size && text.length < size ? " · truncated" : ""}</span></div>
+       <pre>${esc(text)}</pre></div>`
+    : "";
+
+  const payloadBlock = (d.input_preview || d.output_preview)
+    ? `<div class="grp"><h4>Request / Response
+         <span class="note">redacted and truncated at capture</span></h4>
+       ${io("Request", d.input_preview, d.input_size)}
+       ${io("Response", d.output_preview, d.output_size)}</div>`
+    : (d.mcp_method === "tools/call"
+      ? `<div class="grp"><h4>Request / Response</h4>
+         <div class="io-off">Not captured. Payload capture is off by default —
+         it records every argument and every result, not just failures.
+         Enable with <code>instrument(mcp, capture_payloads=True)</code>.</div></div>`
+      : "");
+
   el("span-detail").innerHTML = `
     <div class="detail">
       <div class="detail-head">
@@ -337,6 +359,7 @@ function renderSpanDetail(d) {
         <span class="mono mute">${esc(d.span_id)}</span>
       </div>
       ${errorBlock}
+      ${payloadBlock}
       ${group("Timing", [
         row("duration", dur(d.duration_ms)),
         row("self time", dur(d.self_ms)),

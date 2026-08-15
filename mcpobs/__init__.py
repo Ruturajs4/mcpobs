@@ -26,6 +26,7 @@ from mcpobs.classifier import (
     FailureKind,
 )
 from mcpobs.middleware import FailureClassifierMiddleware
+from mcpobs.payload import PayloadCapture
 
 __all__ = [
     "ATTRIBUTE",
@@ -37,11 +38,16 @@ __all__ = [
     "FailureClassifier",
     "FailureClassifierMiddleware",
     "FailureKind",
+    "PayloadCapture",
     "instrument",
 ]
 
 
-def instrument(server: Any, capture_error_detail: bool = True) -> Any:
+def instrument(
+    server: Any,
+    capture_error_detail: bool = True,
+    capture_payloads: bool = False,
+) -> Any:
     """Attach failure classification to an MCPServer.
 
     `capture_error_detail` (default True) also records the error text from
@@ -49,6 +55,11 @@ def instrument(server: Any, capture_error_detail: bool = True) -> Any:
     cannot see why a call failed -- the SDK leaves `status_message` empty. It
     never reads successful results and never populates the payload columns.
     Pass False to send only the failure category.
+
+    `capture_payloads` (default False) additionally records tool arguments and
+    results, truncated and redacted. It is OFF by default because it is every
+    argument and every result of every call, not just failures -- see
+    mcpobs/payload.py for what the redaction does and does not catch.
 
     Appends to the server's middleware chain, so it runs inside the SDK's
     built-in OpenTelemetry middleware and can annotate the span the SDK already
@@ -59,5 +70,10 @@ def instrument(server: Any, capture_error_detail: bool = True) -> Any:
     chain = server.middleware
     if any(isinstance(m, FailureClassifierMiddleware) for m in chain):
         return server
-    chain.append(FailureClassifierMiddleware(capture_error_detail=capture_error_detail))
+    chain.append(
+        FailureClassifierMiddleware(
+            capture_error_detail=capture_error_detail,
+            capture_payloads=capture_payloads,
+        )
+    )
     return server

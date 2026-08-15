@@ -31,7 +31,6 @@ today, will bite at scale) · `CLOSED` (kept for the record).
 | # | Deferred | Why it waits | Status |
 | --- | --- | --- | --- |
 | DF-7 | Rollups (`server_metrics_1m`, `tool_metrics_1m`) | Day 4–5, deliberately **after** Day 3, so they encode query patterns the API actually validated rather than guesses. | OPEN |
-| DF-8 | Payload capture + redaction | Phase 1. Columns exist and stay NULL. Note the failure taxonomy was designed specifically **not** to depend on this (D17). | OPEN |
 | DF-9 | API keys, tenancy, Postgres control plane | Phase 1. Tenant columns exist, hard-coded to `local`. | OPEN |
 | DF-10 | Alerting engine, cross-region query, RBAC/SSO | V2 §20.2 — explicitly out of scope for launch. | OPEN |
 
@@ -66,6 +65,7 @@ today, will bite at scale) · `CLOSED` (kept for the record).
 | DF-C5 | "How is `subscriptions/listen` represented?" | Stored column `is_latency_eligible`, not a query-time filter (D29). |
 | DF-C6 | "Trace-locator shape for trace-by-id" | Built in U2; reads must dedupe explicitly (D25). |
 | DF-C7 | `pending_input` never exercised end to end (was DF-1) | Closed by giving the demo client an elicitation callback. Round 1 is `pending_input` and not latency-eligible; round 2 completes. |
+| DF-C10 | Payload capture + redaction (was DF-8) | Built on Day 5 (D55). Off by default, truncated, redacted. The taxonomy still does not depend on it — B2b asserts 140 failures classified precisely with no payload stored. |
 | DF-C9 | Trace-detail waterfall UI (was DF-6) | Built on Day 4. Surfaced two bugs no test had: freshness measured 19,820s over a wide window because it swept in replayed spans, and the test probe appeared as a second "server". |
 | DF-C8 | Query service and stable DTOs (was DF-5) | Built on Day 3. Found a 500 on the empty-tenant path that no amount of local data would have surfaced (D42). |
 
