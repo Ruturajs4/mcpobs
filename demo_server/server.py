@@ -51,7 +51,12 @@ from opentelemetry.trace import SpanKind
 from pydantic import BaseModel
 
 from demo_server.otel_bootstrap import SERVICE_VERSION, init_telemetry, shutdown
-from mcpobs import instrument
+from mcpobs import (
+    ObservedSubscriptionBus,
+    instrument,
+    instrument_asgi,
+    instrument_progress,
+)
 
 DOWNSTREAM_PORT = int(os.getenv("DOWNSTREAM_PORT", "8899"))
 DOWNSTREAM_BASE = f"http://127.0.0.1:{DOWNSTREAM_PORT}"
@@ -61,7 +66,8 @@ DB_PATH = os.getenv("DEMO_DB_PATH", ":memory:")
 # only reasoned about. The exclusion rule that keeps a stream lifetime out of
 # latency percentiles had been asserted for days against a SYNTHETIC span --
 # which tests the rule and not the pipeline.
-SUBSCRIPTIONS = InMemorySubscriptionBus()
+# Wrapped, so every published event becomes a span of its own (DF-20).
+SUBSCRIPTIONS = ObservedSubscriptionBus(InMemorySubscriptionBus())
 
 
 class DemoTokenVerifier:
@@ -117,6 +123,10 @@ mcp = MCPServer(
 # to show what the product can do, and a real server should make that choice
 # deliberately rather than inherit it.
 instrument(mcp, capture_payloads=True)
+
+# Progress reports become spans of their own (DF-21), so a long-running
+# tool says where it is while it is still running.
+instrument_progress()
 
 
 # --------------------------------------------------------------------------
@@ -408,7 +418,6 @@ def main() -> None:
             # uvicorn configuration.
             import uvicorn
 
-            from mcpobs import instrument_asgi
 
             app = instrument_asgi(mcp.streamable_http_app())
             uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")

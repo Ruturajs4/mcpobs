@@ -1233,6 +1233,60 @@ def main() -> int:
     except Exception as exc:
         record("F6 every user exists because an invite was redeemed", False, f"{exc}")
 
+    # ---------------- H: streaming visibility (DF-20, DF-21) ---------------
+    print()
+    print("--- H: progress and subscription events ---")
+
+    # THE property, not just the presence of spans: progress children must be
+    # parented to the call they report on, so the console can show a job's
+    # position inside the trace that is still running.
+    progress = ch.query(
+        "SELECT count(), countIf(parent_span_id != ''), "
+        "       countIf(span_attributes['mcp.progress.percent'] != '') "
+        "FROM spans_raw WHERE span_name = 'mcp.progress' "
+        "  AND timestamp > now() - INTERVAL 60 MINUTE"
+    ).result_rows[0]
+    record(
+        "H1 progress reports become child spans of the running call",
+        progress[0] > 0 and progress[1] == progress[0],
+        f"{progress[0]} progress span(s), {progress[1]} parented, "
+        f"{progress[2]} carrying a percentage"
+        + ("  -- NONE AT ALL, so this proved nothing" if not progress[0] else ""),
+    )
+
+    # A progress child must reach ClickHouse BEFORE its parent does. That is
+    # the whole fix: `add_event()` would have attached these to the parent,
+    # where they would not be exported until the parent ended -- the moment
+    # that is already too late.
+    ahead = ch.query(
+        "SELECT count() FROM ("
+        "  SELECT trace_id, "
+        "         minIf(ingested_at, span_name = 'mcp.progress') AS child_at, "
+        "         maxIf(ingested_at, span_name LIKE 'tools/call%') AS parent_at, "
+        "         maxIf(duration_ns, span_name LIKE 'tools/call%') AS parent_ns "
+        "  FROM spans_raw WHERE timestamp > now() - INTERVAL 60 MINUTE "
+        "  GROUP BY trace_id "
+        "  HAVING child_at > toDateTime(0) AND parent_at > toDateTime(0) "
+        "     AND parent_ns > 5000000000)"
+    ).result_rows[0][0]
+    record(
+        "H2 a long call reported progress while it was still running",
+        ahead > 0,
+        f"{ahead} trace(s) over 5s with progress children"
+        + ("  -- no long call in the window; run `python /tmp/slowrun.py`"
+           if not ahead else ""),
+    )
+
+    events = ch.query(
+        "SELECT count() FROM spans_raw WHERE span_name = 'mcp.subscription.event' "
+        "  AND timestamp > now() - INTERVAL 60 MINUTE"
+    ).result_rows[0][0]
+    record(
+        "H3 subscription events are individually observable",
+        events > 0,
+        f"{events} event span(s); before DF-20 a stream's events left no record at all",
+    )
+
     # ---------------- G: transport authorization (DF-22) -------------------
     print()
     print("--- G: transport authorization ---")

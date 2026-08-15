@@ -122,6 +122,31 @@ keys and JWTs by shape). That redaction is **incomplete by construction** — it
 will not catch a secret in a field called `note`. It reduces harm; it does not
 make capture safe. Turn it on deliberately.
 
+## Long-running tools and subscriptions
+
+A span is only exported when it **ends**, so a tool that runs for an hour tells
+you nothing for an hour. Two opt-ins fix that:
+
+```python
+from mcpobs import instrument_progress, ObservedSubscriptionBus
+
+instrument_progress()                                    # every report_progress() call
+bus = ObservedSubscriptionBus(InMemorySubscriptionBus())  # every published event
+mcp = MCPServer("srv", subscriptions=bus)
+```
+
+Each `ctx.report_progress()` becomes a child span of the running call carrying
+value, total, percentage and message — exported immediately, so you can see a
+job's position **while it is still running**. A 10-second call produces its
+progress trail in the console before the call itself has landed.
+
+Progress emission is capped at 200 spans per operation; hitting the cap emits a
+marker rather than going quiet, because a stream that just stops looks like the
+tool stopping.
+
+> Span *events* would not work here. They ride on their span and are exported
+> when it ends — which is exactly the moment that is too late.
+
 ## Authorization (401 / 403)
 
 If your server is an OAuth 2.1 resource server, wrap its ASGI app:

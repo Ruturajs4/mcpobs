@@ -442,3 +442,130 @@ class TestInstrumentationOrderIndependence:
         spans = self._spans_for("httpx-first")
         assert spans, "no HTTP span emitted at all"
         assert REQUEST_BODY_ATTRIBUTE in (spans[0].attributes or {})
+
+
+class TestStreamingVisibility:
+    """DF-20 and DF-21: long-running work must report while it is running.
+
+    Both had one root cause -- a span is exported when it ENDS, so anything
+    modelled as one long-lived span says nothing until it is over. Child spans
+    are exported as soon as THEY end, while the parent is still open.
+    """
+
+    def teardown_method(self) -> None:
+        """RESTORE the global provider.
+
+        Without this these tests leaked their exporter into every test that ran
+        afterwards, and `test_span_carries_the_failure_kind` failed while
+        passing in isolation -- which reads as a product bug and is not one.
+        """
+        from opentelemetry import trace
+
+        previous = getattr(self, "_previous_provider", None)
+        if previous is not None:
+            trace._TRACER_PROVIDER, trace._TRACER_PROVIDER_SET_ONCE = previous
+
+    def _recorded(self):
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+        from opentelemetry.util._once import Once
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        if not hasattr(self, "_previous_provider"):
+            self._previous_provider = (
+                trace._TRACER_PROVIDER, trace._TRACER_PROVIDER_SET_ONCE
+            )
+        trace._TRACER_PROVIDER = None
+        trace._TRACER_PROVIDER_SET_ONCE = Once()
+        trace.set_tracer_provider(provider)
+        import mcpobs.streaming as streaming
+
+        streaming._tracer = trace.get_tracer("mcpobs.streaming")
+        return exporter, streaming
+
+    def test_a_progress_report_becomes_its_own_span(self) -> None:
+        exporter, streaming = self._recorded()
+        with streaming._tracer.start_as_current_span("tools/call slow"):
+            streaming._emit_progress(3, 12, "exported 3/12")
+            # Asserted BEFORE the parent closes: that is the entire point.
+            # `add_event()` would have put this on the parent, where it would
+            # not be exported until the parent ended -- the moment that is
+            # already too late.
+            spans = [s for s in exporter.get_finished_spans() if s.name == "mcp.progress"]
+            assert len(spans) == 1
+            assert spans[0].attributes["mcp.progress.percent"] == 25.0
+            assert spans[0].attributes["mcp.progress.message"] == "exported 3/12"
+
+    def test_the_progress_span_is_a_child_of_the_running_call(self) -> None:
+        exporter, streaming = self._recorded()
+        with streaming._tracer.start_as_current_span("tools/call slow") as parent:
+            streaming._emit_progress(1, 2, None)
+            child = next(s for s in exporter.get_finished_spans() if s.name == "mcp.progress")
+            assert child.parent.span_id == parent.get_span_context().span_id
+
+    def test_progress_outside_a_span_is_dropped_rather_than_orphaned(self) -> None:
+        """A parentless progress span would be a trace of one event with no
+        context -- noise that costs storage and answers nothing."""
+        exporter, streaming = self._recorded()
+        streaming._emit_progress(1, 2, None)
+        assert not [s for s in exporter.get_finished_spans() if s.name == "mcp.progress"]
+
+    def test_emission_is_capped_and_says_so(self) -> None:
+        """One span per report is fine at three reports and a denial of service
+        at three million. A stream that just stops looks like the tool
+        stopping, which is a worse lie than admitting the cap."""
+        exporter, streaming = self._recorded()
+        streaming._counter = streaming._ProgressCounter()
+        with streaming._tracer.start_as_current_span("tools/call busy"):
+            for i in range(streaming.MAX_PROGRESS_SPANS + 50):
+                streaming._emit_progress(i, None, None)
+            spans = [s for s in exporter.get_finished_spans() if s.name == "mcp.progress"]
+        assert len(spans) == streaming.MAX_PROGRESS_SPANS + 1
+        assert spans[-1].attributes["mcp.progress.truncated"] is True
+
+    async def test_the_bus_wrapper_publishes_first_and_observes_second(self) -> None:
+        """Delivery is the customer's function; telemetry is ours. Ours must
+        never delay or fail theirs."""
+        exporter, streaming = self._recorded()
+        order: list[str] = []
+
+        class Bus:
+            async def publish(self, event: object) -> str:
+                order.append("delivered")
+                return "ok"
+
+        bus = streaming.ObservedSubscriptionBus(Bus())
+        assert await bus.publish(object()) == "ok"
+        assert order == ["delivered"]
+        assert [s.name for s in exporter.get_finished_spans()] == ["mcp.subscription.event"]
+
+    async def test_a_failing_span_never_breaks_delivery(self) -> None:
+        _, streaming = self._recorded()
+
+        class Bus:
+            async def publish(self, event: object) -> str:
+                return "delivered"
+
+        bus = streaming.ObservedSubscriptionBus(Bus())
+        streaming._tracer = None  # type: ignore[assignment]
+        try:
+            assert await bus.publish(object()) == "delivered"
+        finally:
+            self._recorded()
+
+    def test_unknown_bus_methods_pass_through(self) -> None:
+        """A wrapper that has to enumerate its subject's API breaks on the next
+        SDK release."""
+        _, streaming = self._recorded()
+
+        class Bus:
+            def subscribe(self, fn: object) -> str:
+                return "subscribed"
+
+        assert streaming.ObservedSubscriptionBus(Bus()).subscribe(None) == "subscribed"

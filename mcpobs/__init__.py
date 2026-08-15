@@ -30,6 +30,7 @@ from mcpobs.downstream import available, instrument_downstream
 from mcpobs.http import HttpBodyCapture, instrument_httpx
 from mcpobs.middleware import FailureClassifierMiddleware
 from mcpobs.payload import PayloadCapture
+from mcpobs.streaming import ObservedSubscriptionBus, instrument_progress
 
 __all__ = [
     "ATTRIBUTE",
@@ -42,12 +43,14 @@ __all__ = [
     "FailureClassifierMiddleware",
     "FailureKind",
     "HttpBodyCapture",
+    "ObservedSubscriptionBus",
     "PayloadCapture",
     "available",
     "instrument",
     "instrument_asgi",
     "instrument_downstream",
     "instrument_httpx",
+    "instrument_progress",
 ]
 
 
