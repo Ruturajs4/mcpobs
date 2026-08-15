@@ -798,6 +798,22 @@ def main() -> int:
         "  input_preview ILIKE '%\"api_key\": \"sk-%' "
         "  OR output_preview ILIKE '%Bearer ey%'"
     ).result_rows[0][0]
+    # Every attribute, not just the payload previews. The spec requires
+    # `Authorization: Bearer ...` on EVERY MCP-over-HTTP request, so a customer
+    # capturing request headers captures a token on every span -- and the
+    # redactor used to scrub only six predicted keys.
+    creds = ch.query(
+        "SELECT countIf(position(toString(span_attributes), 'Bearer ey') > 0) "
+        "     + countIf(position(toString(span_attributes), 'Bearer sk-') > 0) "
+        "     + countIf(position(toString(resource_attributes), 'Bearer ') > 0) "
+        "FROM spans_raw"
+    ).result_rows[0][0]
+    record(
+        "D5c no credential shape survives in ANY attribute",
+        creds == 0,
+        f"{creds} span(s) carry a bearer token or key outside the payload columns",
+    )
+
     record(
         "D5b obvious secret shapes are redacted before storage",
         leaked == 0,

@@ -34,6 +34,15 @@ RISKY_KEYS: Final[frozenset[str]] = frozenset({
     "db.statement", "db.query.text",
 })
 
+#: Attribute keys that ARE a credential, replaced whole rather than pattern
+#: matched. Substring match, because instrumentation names vary:
+#: `http.request.header.authorization`, `http.response.header.set_cookie`,
+#: `rpc.request.metadata.authorization`.
+CREDENTIAL_KEYS: Final[tuple[str, ...]] = (
+    "authorization", "proxy-authorization", "cookie", "x-api-key",
+    "api-key", "x-auth-token", "set-cookie",
+)
+
 #: Query/DB parameter names whose values are replaced.
 SENSITIVE_PARAMS: Final[tuple[str, ...]] = (
     "token", "api_key", "apikey", "key", "secret", "password", "passwd",
@@ -58,12 +67,68 @@ class AttributeRedactor:
     """Scrubs known-risky attribute values. Never raises."""
 
     def apply(self, attributes: dict[str, str]) -> dict[str, str]:
+        """Redact every attribute, not only the six we predicted.
+
+        THE BUG THIS FIXES
+            This used to scrub ONLY keys in `RISKY_KEYS`, so a credential in any
+            other attribute was stored verbatim. Measured:
+
+                http.request.header.authorization
+                    -> "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NSJ9.sig"
+
+            stored raw. Nothing had leaked only because nothing in this stack
+            captures inbound headers -- the protection was the absence of a
+            feature, not a decision. Any customer setting the documented
+            one-liner
+
+                OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST=authorization
+
+            would have written OAuth access tokens into ClickHouse in plain text.
+            And per D62 a secret that reaches the table cannot be recalled: it is
+            in backups, in the Kafka replay window, and in the archive.
+
+        SO THE VALUE PATTERNS NOW RUN EVERYWHERE, and the key list narrows to
+        what it always meant -- keys needing STRUCTURAL treatment (URL query
+        strings, SQL literals) rather than keys that might contain a secret.
+        Predicting which key a credential will land in is exactly the bet a
+        deny-list loses (D70).
+        """
         if not attributes:
             return attributes
         return {
-            key: self.value(key, value) if key in RISKY_KEYS else value
-            for key, value in attributes.items()
+            key: self._redact(key, value) for key, value in attributes.items()
         }
+
+    def _redact(self, key: str, value: str) -> str:
+        if not isinstance(value, str) or not value:
+            return value
+        try:
+            lowered = key.lower()
+            # An attribute that IS a credential header is replaced whole. Its
+            # value may be an opaque token no pattern matches -- a session
+            # cookie, a bespoke scheme -- so shape-matching is not enough here.
+            if any(marker in lowered for marker in CREDENTIAL_KEYS):
+                return REDACTED
+            if key in RISKY_KEYS:
+                return self.value(key, value)
+            return self._scrub_shapes(value)
+        except Exception:  # noqa: BLE001 - redaction must never break ingest
+            return REDACTED
+
+    def _scrub_shapes(self, value: str) -> str:
+        """Credential SHAPES, in any attribute.
+
+        Length-guarded before touching a regex: the shortest match is
+        `Bearer ` plus eight characters, so anything under 15 chars cannot
+        contain one. Most attributes are short (`GET`, `200`, a tool name), so
+        this skips the regex pass for the large majority of them and keeps a
+        per-span cost off the normalizer's hot path.
+        """
+        if len(value) < 15:
+            return value
+        for pattern in SENSITIVE_VALUES:
+            value = pattern.sub(REDACTED, value)
+        return value
 
     def value(self, key: str, value: str) -> str:
         if not isinstance(value, str) or not value:

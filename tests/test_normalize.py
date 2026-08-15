@@ -338,3 +338,65 @@ class TestRealDriverAttributes:
             "db.query.text": "SELECT * FROM something_else",
         })
         assert row.db_collection == "authoritative"
+
+
+class TestCredentialRedaction:
+    """No credential may reach the table, in ANY attribute.
+
+    The spec makes this sharp: authorization "MUST be included in every HTTP
+    request from client to server". So a bearer token is not an edge case in
+    MCP-over-HTTP -- it is on every single request, and any instrumentation that
+    captures request headers captures it.
+    """
+
+    def apply(self, attrs: dict) -> dict:
+        from normalizer.redact import AttributeRedactor
+
+        return AttributeRedactor().apply(attrs)
+
+    def test_an_authorization_header_attribute_is_replaced_whole(self) -> None:
+        """Not pattern-matched. The value may be an opaque token no shape
+        matches -- a session cookie, a bespoke scheme -- so the KEY is the
+        signal."""
+        out = self.apply({
+            "http.request.header.authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.abc.sig"
+        })
+        assert out["http.request.header.authorization"] == "[redacted]"
+
+    def test_an_opaque_cookie_is_replaced_even_though_no_pattern_matches(self) -> None:
+        out = self.apply({"http.response.header.set_cookie": "s=zzzzzzzzzzzzzzzzzzzz"})
+        assert out["http.response.header.set_cookie"] == "[redacted]"
+
+    def test_credential_shapes_are_scrubbed_in_unpredicted_keys(self) -> None:
+        """THE regression. This used to scrub only six known keys, so a token in
+        any other attribute was stored verbatim. Nothing had leaked only because
+        nothing in the stack captured headers -- the protection was the absence
+        of a feature, not a decision."""
+        out = self.apply({
+            "vendor.custom.thing": "Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature",
+            "some.log.line": "called with sk-abcdefghijklmnopqrstuvwx",
+        })
+        assert "Bearer eyJ" not in out["vendor.custom.thing"]
+        assert "sk-abcdefghij" not in out["some.log.line"]
+
+    def test_ordinary_attributes_are_untouched(self) -> None:
+        """Over-redaction destroys debugging data as surely as under-redaction
+        leaks (D113)."""
+        attrs = {
+            "gen_ai.tool.name": "echo_fast",
+            "http.request.method": "GET",
+            "mcp.method.name": "tools/call",
+            "db.system": "postgresql",
+        }
+        assert self.apply(attrs) == attrs
+
+    def test_short_values_skip_the_regex_pass(self) -> None:
+        """The shortest credential shape is `Bearer ` plus eight characters, so
+        anything under 15 chars cannot contain one. Most attributes are short,
+        so this keeps a per-span regex cost off the normalizer's hot path."""
+        assert self.apply({"x": "GET"})["x"] == "GET"
+
+    def test_redaction_never_raises(self) -> None:
+        """It runs on every span in the ingest path. An exception here would
+        stop normalization for a whole batch."""
+        assert self.apply({"a": None, "b": 42, "c": ""}) == {"a": None, "b": 42, "c": ""}
