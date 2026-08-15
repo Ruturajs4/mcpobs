@@ -15,6 +15,7 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from mcp.client import Client
 from mcp.client.stdio import StdioServerParameters, stdio_client
@@ -34,13 +35,25 @@ SCENARIOS: list[tuple[str, dict, str]] = [
     # OpenTelemetryMiddleware sets rpc.response.status_code + a numeric error.type.
     ("no_such_tool", {}, "protocol_error"),
     ("echo_fast", {"message": {"not": "a string"}}, "protocol_error"),
-    # MRTR: no elicitation callback on this client, so the call stops at the
-    # interim `input_required` round -- the span U5 must exclude from latency.
+    # MRTR: this client CAN answer (see `answer_elicitation`), so the call runs
+    # to completion across two round-trips. The first round emits a real
+    # `input_required` span -- the one that must never be counted as an error or
+    # a latency sample (DF-1).
     ("confirm_deploy", {"service": "checkout"}, "pending_input"),
     # U6: downstream dimensions beyond HTTP.
     ("query_orders", {"customer": "acme"}, "ok"),
     ("summarize", {"text": "quarterly numbers"}, "ok"),
 ]
+
+
+async def answer_elicitation(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Answer the server's question, so MRTR completes both round-trips.
+
+    Without this the client lacks the elicitation capability and the server
+    returns -32021 MissingRequiredClientCapability instead -- a protocol error,
+    not an interim result, so the `input_required` path never gets exercised.
+    """
+    return {"action": "accept", "content": {"approved": True}}
 
 
 async def run_scenarios(client: Client) -> list[str]:
@@ -70,7 +83,9 @@ async def stdio_session(span_file: Path | None = None) -> AsyncIterator[Client]:
         cwd=str(REPO_ROOT),
         env=env or None,
     )
-    async with Client(stdio_client(params)) as client:
+    async with Client(
+        stdio_client(params), elicitation_callback=answer_elicitation
+    ) as client:
         yield client
 
 
@@ -107,7 +122,9 @@ async def http_session(
         if not _wait_for_port(port):
             err = proc.stderr.read().decode(errors="replace")[-2000:] if proc.stderr else ""
             raise RuntimeError(f"demo server did not open port {port}\n{err}")
-        async with Client(f"http://127.0.0.1:{port}/mcp") as client:
+        async with Client(
+            f"http://127.0.0.1:{port}/mcp", elicitation_callback=answer_elicitation
+        ) as client:
             yield client
         # Grace period: Windows terminate() is a hard kill with no flush, so we
         # let BatchSpanProcessor export on its own schedule first.

@@ -22,7 +22,6 @@ today, will bite at scale) · `CLOSED` (kept for the record).
 
 | # | Deferred | Risk if it stays open | Forced back by | Status |
 | --- | --- | --- | --- | --- |
-| DF-1 | **`pending_input` is not exercised end to end.** The MRTR interim span is unit-tested and excluded from latency by construction, but no real `input_required` span has ever passed through the pipeline — our demo client cannot answer an elicitation, so it gets `-32021` instead. | An MRTR interim round could be miscounted as an error or a latency sample in production. The single most likely way to corrupt an error rate (Day-1 §3.2). | Day 3's API surfacing `pending_input`, or a demo client with an elicitation callback. | OPEN |
 | DF-2 | **Multi-broker Kafka (RF=3, `min.insync.replicas=2`).** Local runs one broker at RF=1. | `acks=all` is exercised, but the ack *semantics under broker loss* are not. ADR-008's durability claim is proven for a healthy cluster only. | First staging deployment, or before any customer data. | OPEN |
 | DF-3 | **`trace_summaries` has no `PARTITION BY` or TTL.** Every candidate date lives in an aggregate column whose value changes as parts merge, and a trace can straddle midnight — so no deterministic partition key was available. | The table grows without bound and cannot be dropped by partition. Fine at laptop scale; not fine at 4.3 TB/day (Architecture §9.3). | Retention policy work, or the first table that will not fit. | OPEN |
 | DF-4 | **Latency percentiles are untrustworthy on this host.** OTel timestamps spans with `time.time_ns()`, whose smallest tick here is 0.749 ms, so ~40% of tool-call spans record `duration_ns = 0`. | Any latency number produced locally is wrong for fast tools. Linux is nanosecond-grade so production is very likely fine — **a customer on Windows is not**. | B8 reports it every run. Closes when measured on Linux, or when we document the customer-facing caveat. | WATCH |
@@ -31,7 +30,6 @@ today, will bite at scale) · `CLOSED` (kept for the record).
 
 | # | Deferred | Why it waits | Status |
 | --- | --- | --- | --- |
-| DF-5 | Query service and stable DTOs | Day 3. Today's tables are what it reads. | OPEN |
 | DF-6 | Trace-detail waterfall UI | Day 4. Needs DF-5. | OPEN |
 | DF-7 | Rollups (`server_metrics_1m`, `tool_metrics_1m`) | Day 4–5, deliberately **after** Day 3, so they encode query patterns the API actually validated rather than guesses. | OPEN |
 | DF-8 | Payload capture + redaction | Phase 1. Columns exist and stay NULL. Note the failure taxonomy was designed specifically **not** to depend on this (D17). | OPEN |
@@ -68,6 +66,8 @@ today, will bite at scale) · `CLOSED` (kept for the record).
 | DF-C4 | "Do we stitch MRTR round-trips?" | Settled by experiment, not argument (D28): 2 spans, no shared trace_id, 135× latency understatement. |
 | DF-C5 | "How is `subscriptions/listen` represented?" | Stored column `is_latency_eligible`, not a query-time filter (D29). |
 | DF-C6 | "Trace-locator shape for trace-by-id" | Built in U2; reads must dedupe explicitly (D25). |
+| DF-1 | `pending_input` never exercised end to end | Closed by giving the demo client an elicitation callback. Round 1 is `pending_input` and not latency-eligible; round 2 completes. |
+| DF-5 | Query service and stable DTOs | Built on Day 3. Found a 500 on the empty-tenant path that no amount of local data would have surfaced (D42). |
 
 ---
 

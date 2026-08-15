@@ -118,6 +118,18 @@ services:
       kafka-init: { condition: service_completed_successfully }
     restart: unless-stopped
 
+  query:
+    build: ./query
+    container_name: mcpobs-query
+    ports: ["8080:8080"]
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      CLICKHOUSE_DB: mcpobs
+    depends_on:
+      clickhouse: { condition: service_healthy }
+    restart: unless-stopped
+
 volumes:
   ch-data:
   kafka-data:

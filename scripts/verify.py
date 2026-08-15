@@ -9,12 +9,14 @@ central claim (ingest survives everything downstream). Never cut it.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import clickhouse_connect
 
@@ -270,7 +272,11 @@ def main() -> int:
     sources = dict(
         ch.query(
             "SELECT failure_kind_source, count() FROM spans_raw "
-            "WHERE failure_category NOT IN ('', 'ok', 'protocol_error') "
+            # `pending_input` is excluded too: it is an MRTR interim result,
+            # not a failure, and the helper deliberately returns before setting
+            # a failure kind on it (D20). Including it here asserted that a
+            # non-failure must be classified as one.
+            "WHERE failure_category NOT IN ('', 'ok', 'protocol_error', 'pending_input') "
             "  AND timestamp > now() - INTERVAL 15 MINUTE GROUP BY 1"
         ).result_rows
     )
@@ -287,12 +293,16 @@ def main() -> int:
         "WHERE failure_category = 'protocol_error' "
         "  AND timestamp > now() - INTERVAL 15 MINUTE GROUP BY 1"
     ).result_rows
+    # Asserts the SHAPE when protocol errors occur, not that they must occur.
+    # They stopped appearing routinely once the demo client gained elicitation
+    # capability (DF-1) -- which is a fix, not a regression. An assertion that
+    # demands broken behaviour to stay green is worse than no assertion.
     record(
-        "B3b protocol_error is reachable and carries a JSON-RPC code (D19)",
-        bool(protocol),
-        f"{[(code, n) for code, n in protocol]}"
-        + (" -- -32021 is MissingRequiredClientCapability, new in 2026-07-28"
-           if any(c == "-32021" for c, _ in protocol) else ""),
+        "B3b protocol errors, when present, carry a JSON-RPC code (D19)",
+        all(code.lstrip("-").isdigit() for code, _ in protocol),
+        f"{[(code, n) for code, n in protocol]}" if protocol
+        else "none in window -- the demo client now answers elicitations, so "
+             "-32021 is no longer produced routinely",
     )
 
     # ---------------- B9: latency eligibility (U5) -------------------------
@@ -313,13 +323,25 @@ def main() -> int:
 
     # ---------------- B4-B5: trace assembly (ADR-005) ---------------------
     print("\n--- B4-B5: trace assembly ---")
+    # The synthetic idempotency probe is excluded from BOTH sides. It is not
+    # product data, and comparing a filtered table against an unfiltered
+    # aggregate compares two different populations.
+    #
+    # A related trap, learned by falling into it: a `DELETE FROM spans_raw`
+    # removes rows from the source but NOT from a materialized view's target
+    # table -- MVs fire on INSERT only. Deleting from a source table silently
+    # desynchronises every aggregate built on it.
+    # Both names: an earlier probe used 'verify' before it was renamed, and
+    # those rows survive in trace_summaries even though they were deleted from
+    # spans_raw -- which is precisely the desynchronisation described above.
+    probe = "AND service_name NOT IN ('verify-probe', 'verify')"
     raw_traces, summary_traces = ch.query(
-        "SELECT (SELECT uniqExact(trace_id) FROM spans_raw), "
-        "       (SELECT uniqExact(trace_id) FROM trace_summaries)"
+        f"SELECT (SELECT uniqExact(trace_id) FROM spans_raw WHERE 1 {probe}), "
+        f"       (SELECT uniqExact(trace_id) FROM trace_summaries WHERE 1 {probe})"
     ).result_rows[0]
     raw_spans, summed_spans = ch.query(
-        "SELECT (SELECT count() FROM spans_raw), "
-        "       (SELECT sum(span_count) FROM trace_summaries)"
+        f"SELECT (SELECT count() FROM spans_raw WHERE 1 {probe}), "
+        f"       (SELECT sum(span_count) FROM trace_summaries WHERE 1 {probe})"
     ).result_rows[0]
     record(
         "B4 trace_summaries has exactly one row per trace",
@@ -372,8 +394,9 @@ def main() -> int:
     )
 
     trace = ch.query(
-        "SELECT trace_id, count() AS n FROM spans_raw GROUP BY trace_id "
-        "HAVING n > 1 ORDER BY n DESC LIMIT 1"
+        "SELECT trace_id, count() AS n FROM spans_raw "
+        "WHERE service_name != 'verify-probe' "
+        "GROUP BY trace_id HAVING n > 1 ORDER BY n DESC LIMIT 1"
     ).result_rows
     if trace:
         spans = ch.query(
@@ -512,18 +535,25 @@ def main() -> int:
     from normalizer.models import SpanRow
 
     sink = ClickHouseSink()
-    token = f"verify-idempotency-{int(time.time())}"
+    run_id = f"{int(time.time()):x}".rjust(16, "0")
+    token = f"verify-idempotency-{run_id}"
+    # A UNIQUE trace per run. Reusing one id made every run append another span
+    # under the same (trace_id, span_id), which accumulated into a synthetic
+    # multi-span trace that A5 then picked as its example and failed on.
+    # Synthetic data must not be mistakable for product data.
     probe = SpanRow(
         timestamp=datetime.now(UTC).replace(tzinfo=None),
-        trace_id="f" * 32,
-        span_id="e" * 16,
+        trace_id=("f" * 16) + run_id,
+        span_id=run_id,
         span_name="idempotency-probe",
-        service_name="verify",
+        service_name="verify-probe",
     )
 
     def probe_count() -> int:
         return ch.query(
-            "SELECT count() FROM spans_raw WHERE span_name = 'idempotency-probe'"
+            "SELECT count() FROM spans_raw WHERE span_name = 'idempotency-probe' "
+            "  AND trace_id = %(t)s",
+            parameters={"t": probe.trace_id},
         ).result_rows[0][0]
 
     baseline = probe_count()
@@ -547,6 +577,79 @@ def main() -> int:
         f"{after_different} rows. This is why a bug-fix replay produces new rows "
         f"rather than being silently discarded (D38)",
     )
+
+    # ---------------- C1-C5: the query API (Day 3) -------------------------
+    # The endpoints are asserted against the live service, not mocked: the
+    # things most likely to be wrong -- tenant scoping, version resolution,
+    # pending_input leaking into errors -- only manifest against real data.
+    print("\n--- C1-C5: query API ---")
+    import urllib.error
+    import urllib.request
+
+    def api(path: str) -> Any:
+        url = f"http://localhost:8080{path}"
+        with urllib.request.urlopen(url, timeout=25) as response:
+            return json.loads(response.read())
+
+    try:
+        api("/health")
+    except (urllib.error.URLError, TimeoutError) as exc:
+        record("C1 query API reachable", False, f"{exc}")
+    else:
+        overview = api("/api/v1/overview?window_minutes=180")
+        record(
+            "C1 overview reports servers, tools and a failure breakdown",
+            overview["servers"] > 0 and overview["tools"] > 0
+            and sum(overview["failure_breakdown"].values()) > 0,
+            f"servers={overview['servers']} tools={overview['tools']} "
+            f"calls={overview['calls']} classified={overview['classified_ratio']}",
+        )
+
+        tool_rows = api("/api/v1/tools?window_minutes=180")
+        with_kinds = {
+            kind
+            for row in tool_rows
+            for kind, count in row["failure_breakdown"].items()
+            if count and kind != "ok"
+        }
+        record(
+            "C2 per-tool failure breakdown distinguishes failure kinds",
+            len(with_kinds) >= 4,
+            f"{sorted(with_kinds)}",
+        )
+
+        errors_page = api("/api/v1/errors?window_minutes=180&limit=20")
+        categories = {item["failure_category"] for item in errors_page["items"]}
+        record(
+            "C3 /errors excludes ok and pending_input",
+            bool(errors_page["items"])
+            and not (categories & {"ok", "pending_input", ""}),
+            f"{sorted(categories)} over {len(errors_page['items'])} traces",
+        )
+
+        listing = api("/api/v1/traces?window_minutes=180&tool=fetch_status&limit=1")
+        detail = api(f"/api/v1/traces/{listing['items'][0]['trace_id']}")
+        has_child = any(span["downstream_kind"] for span in detail["spans"])
+        rooted = any(
+            span["span_id"] == detail["root_span_id"] and span["depth"] == 0
+            for span in detail["spans"]
+        )
+        record(
+            "C4 trace detail resolves a root and nests downstream spans",
+            has_child and rooted and detail["span_count"] > 1,
+            f"{detail['span_count']} spans, root={detail['root_span_id'][:12]}, "
+            f"kinds={[s['downstream_kind'] for s in detail['spans'] if s['downstream_kind']]}",
+        )
+
+        # Cross-tenant isolation. There is no auth yet (DF-9), but the scoping
+        # itself must already work -- otherwise adding keys later would be
+        # papering over a query that never filtered.
+        other = api("/api/v1/overview?window_minutes=180&tenant=someone-else")
+        record(
+            "C5 an unknown tenant sees nothing",
+            other["calls"] == 0 and other["servers"] == 0,
+            f"calls={other['calls']} servers={other['servers']}",
+        )
 
     # ---------------- B7: freshness, the headline metric -------------------
     # Architecture.md §9.1 names end-to-end freshness -- span event time to

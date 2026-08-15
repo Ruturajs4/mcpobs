@@ -25,10 +25,10 @@ test:
 	$(PY) -m pytest
 
 lint:
-	$(PY) -m ruff check normalizer/ mcpobs/ tests/ scripts/ demo_server/
+	$(PY) -m ruff check normalizer/ mcpobs/ query/ tests/ scripts/ demo_server/
 
 typecheck:
-	$(PY) -m mypy normalizer/ mcpobs/
+	$(PY) -m mypy normalizer/ mcpobs/ query/
 
 check: test lint typecheck
 

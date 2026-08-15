@@ -1,0 +1,5 @@
+# Pinned, as everywhere else.
+fastapi==0.121.2
+uvicorn==0.34.0
+clickhouse-connect==1.7.1
+pydantic==2.13.4
