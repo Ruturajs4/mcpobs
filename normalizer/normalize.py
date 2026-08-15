@@ -20,7 +20,7 @@ from normalizer.taxonomy import FailureTaxonomy
 class SpanNormalizer:
     """Extracts MCP fields and derives the failure category."""
 
-    normalization_version: Final[int] = 11
+    normalization_version: Final[int] = 12
 
     # span attributes
     MCP_METHOD: Final = "mcp.method.name"

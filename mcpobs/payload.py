@@ -44,6 +44,27 @@ SENSITIVE_KEYS: Final[tuple[str, ...]] = (
     "requeststate",
 )
 
+#: Keys that must NEVER be redacted, checked BEFORE the sensitive list.
+#:
+#: Pattern redaction is documented as incomplete (D56), but that was only ever
+#: stated in one direction -- that it might MISS a secret. It also OVER-matches,
+#: and that failure is quieter: `progressToken` contains "token", so the field
+#: that correlates a progress notification to its request was being destroyed in
+#: every captured payload. A missed secret is a risk you can reason about; a
+#: silently deleted protocol field looks like the server never sent it.
+#:
+#: Deliberately an explicit list of PROTOCOL field names rather than a cleverer
+#: matcher. Segment-aware matching would fix `author` (contains "auth") and not
+#: `progressToken`, because "token" genuinely is a whole segment there -- the
+#: distinction is what the field MEANS, which no string rule recovers.
+#:
+#: Known remaining false positives, stated rather than hidden: any key containing
+#: `auth` (`author`), `session` (`sessionCount`) or `token` that is not listed
+#: here is still redacted.
+NEVER_REDACT: Final[frozenset[str]] = frozenset({
+    "progresstoken",   # correlates progress notifications to their request
+})
+
 #: Value shapes that are secrets regardless of the field they sit in.
 SENSITIVE_VALUES: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}", re.I),
@@ -179,4 +200,6 @@ class PayloadCapture:
     @staticmethod
     def _is_sensitive_key(key: Any) -> bool:
         lowered = str(key).lower()
+        if lowered in NEVER_REDACT:
+            return False
         return any(marker in lowered for marker in SENSITIVE_KEYS)

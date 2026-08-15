@@ -44,6 +44,8 @@ class Category:
     SERVER_EXCEPTION: Final = "server_exception"
     PROTOCOL_ERROR: Final = "protocol_error"
     PENDING_INPUT: Final = "pending_input"
+    #: The client gave up before the tool finished. NOT a server failure.
+    CANCELLED: Final = "cancelled"
     UNCLASSIFIED: Final = "unclassified"
 
 
@@ -73,6 +75,7 @@ class FailureTaxonomy:
     # the coarse classification rather than inventing one.
     HELPER_KIND: Final = "mcpobs.failure.kind"
     HELPER_RESULT_TYPE: Final = "mcpobs.result.type"
+    CANCELLED_ATTR: Final = "mcpobs.cancelled"
     HELPER_VERSION: Final = "mcpobs.failure.kind.version"
 
     SOURCE_HELPER: Final = "helper"
@@ -113,14 +116,32 @@ class FailureTaxonomy:
         method = str(attrs.get(self.MCP_METHOD, ""))
         if any(method.startswith(prefix) for prefix in self.NON_LATENCY_METHODS):
             return False
+        # A cancelled call's duration is HOW LONG THE CLIENT WAITED before
+        # giving up, not how long the tool takes. Including it makes a tool that
+        # is cancelled BECAUSE it is slow look fast -- an error running in the
+        # most misleading possible direction.
+        if attrs.get(self.CANCELLED_ATTR):
+            return False
         result_type = attrs.get(self.RESULT_TYPE) or attrs.get(self.HELPER_RESULT_TYPE)
         return result_type != "input_required"
 
+    #: Any of these means the helper middleware was attached and contributed
+    #: the category. `mcpobs.failure.kind` was the only one when this was
+    #: written, and a cancelled call -- classified from `mcpobs.cancelled` --
+    #: was therefore reported as span-derived, i.e. as evidence the helper was
+    #: MISSING from a server it was demonstrably running in.
+    HELPER_MARKERS: Final[tuple[str, ...]] = (
+        "mcpobs.failure.kind",
+        "mcpobs.cancelled",
+        "mcpobs.result.type",
+    )
+
     def source(self, span: DecodedSpan) -> str:
         """Where the category came from -- helper middleware or the bare span."""
+        attrs = span.span_attributes
         return (
             self.SOURCE_HELPER
-            if self.HELPER_KIND in span.span_attributes
+            if any(marker in attrs for marker in self.HELPER_MARKERS)
             else self.SOURCE_SPAN
         )
 
@@ -143,10 +164,18 @@ class FailureTaxonomy:
             attrs.get(self.HELPER_RESULT_TYPE)
         )
 
-        # MRTR interim results are NOT failures. Checked before anything else so
-        # an `input_required` can never be counted into an error rate.
+        # Neither of these is a failure, and both are checked BEFORE anything
+        # else so neither can ever be counted into an error rate.
+        #
+        # MRTR interim results: the round asked a question and is waiting.
         if result_type == "input_required":
             return Category.PENDING_INPUT
+
+        # Cancellation: the CLIENT gave up. Measured to land as `ok` before
+        # this existed, so a cancelled call inflated the success count while its
+        # truncated duration deflated the latency percentiles.
+        if attrs.get(self.CANCELLED_ATTR):
+            return Category.CANCELLED
 
         # The helper's classification wins when present: it saw the failure
         # before the SDK erased the distinction. It is never *less* precise than
@@ -172,8 +201,15 @@ class FailureTaxonomy:
 
         return Category.UNCLASSIFIED if failed else Category.OK
 
+    #: Categories that are NOT failures. Both are outcomes the client chose:
+    #: one is waiting for an answer, the other stopped asking. Counting either
+    #: as a server error would corrupt the single number a customer judges the
+    #: product by.
+    NOT_A_FAILURE: Final[tuple[str, ...]] = (Category.OK, Category.PENDING_INPUT,
+                                             Category.CANCELLED)
+
     def is_error(self, category: str) -> bool:
-        return bool(category) and category not in (Category.OK, Category.PENDING_INPUT)
+        return bool(category) and category not in self.NOT_A_FAILURE
 
     @staticmethod
     def _str(value: object) -> str:

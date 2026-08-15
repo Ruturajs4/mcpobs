@@ -201,3 +201,51 @@ class TestResultTypeReachesTheColumn:
             },
         ))
         assert row.result_type == "complete"
+
+
+class TestCancellation:
+    """A cancelled call is neither a success nor a server failure.
+
+    Measured before this existed: a cancelled `tools/call` produced
+    `status_code=UNSET`, `failure_category=ok`, `is_latency_eligible=1`. So it
+    inflated the success count AND deflated the latency percentiles, because its
+    duration measures how long the client waited before giving up.
+    """
+
+    def span(self, **attrs: object):
+        from normalizer.models import DecodedSpan
+
+        return DecodedSpan(
+            trace_id="a" * 32, span_id="b" * 16,
+            span_attributes={"mcp.method.name": "tools/call", **attrs},
+        )
+
+    def setup_method(self) -> None:
+        from normalizer.taxonomy import FailureTaxonomy
+
+        self.taxonomy = FailureTaxonomy()
+
+    def test_a_cancelled_call_is_its_own_category(self) -> None:
+        assert self.taxonomy.classify(self.span(**{"mcpobs.cancelled": True})) == "cancelled"
+
+    def test_a_cancelled_call_is_not_an_error(self) -> None:
+        """The client stopping is not the server failing. Counting it would
+        corrupt the one number a customer judges the product by."""
+        assert not self.taxonomy.is_error("cancelled")
+
+    def test_a_cancelled_call_is_not_a_latency_sample(self) -> None:
+        """Its duration is how long the CLIENT waited, not how long the tool
+        takes -- so a tool cancelled because it is slow would look fast."""
+        assert not self.taxonomy.is_latency_eligible(self.span(**{"mcpobs.cancelled": True}))
+
+    def test_an_ordinary_call_is_unaffected(self) -> None:
+        assert self.taxonomy.classify(self.span()) == "ok"
+        assert self.taxonomy.is_latency_eligible(self.span())
+
+    def test_cancellation_outranks_an_error_status(self) -> None:
+        """A cancelled handler often leaves an ERROR status behind it. The
+        cancellation is the true cause and must win, or every cancellation
+        reappears as a server_exception."""
+        span = self.span(**{"mcpobs.cancelled": True, "error.type": "tool_error"})
+        span.status_code = "ERROR"
+        assert self.taxonomy.classify(span) == "cancelled"

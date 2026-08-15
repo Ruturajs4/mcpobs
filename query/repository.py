@@ -164,6 +164,7 @@ CATEGORIES = (
     "invalid_arguments",
     "protocol_error",
     "pending_input",
+    "cancelled",
     "unclassified",
 )
 

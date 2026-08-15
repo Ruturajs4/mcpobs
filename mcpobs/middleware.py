@@ -18,6 +18,7 @@ DESIGN CONSTRAINT (V2 §18.1 / Architecture.md ADR-001)
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -25,6 +26,7 @@ from opentelemetry.trace import get_current_span
 
 from mcpobs.classifier import (
     ATTRIBUTE,
+    CANCELLED_ATTRIBUTE,
     CLASSIFIER_VERSION,
     CLIENT_NAME_ATTRIBUTE,
     CLIENT_VERSION_ATTRIBUTE,
@@ -62,7 +64,21 @@ class FailureClassifierMiddleware:
         self.payloads = payload_capture or PayloadCapture()
 
     async def __call__(self, ctx: Any, call_next: Any) -> Any:
-        result = await call_next(ctx)
+        try:
+            result = await call_next(ctx)
+        except asyncio.CancelledError:
+            # The client sent `notifications/cancelled`, or its deadline passed.
+            # The SDK records nothing for this -- the handler's task is simply
+            # cancelled -- so without this branch the span reads as a fast
+            # success (measured: category `ok`, latency-eligible, duration
+            # truncated at the moment the client gave up).
+            #
+            # RE-RAISED IMMEDIATELY. Swallowing CancelledError would leave the
+            # task running after asyncio has been told to stop it, which breaks
+            # shutdown and cooperative cancellation everywhere downstream. The
+            # annotation is the only thing added.
+            self._mark_cancelled()
+            raise
         try:
             self._annotate(result, getattr(ctx, "params", None), ctx)
         except Exception as exc:  # noqa: BLE001
@@ -71,6 +87,20 @@ class FailureClassifierMiddleware:
             # is not.
             log.debug("failure classification skipped: %s", exc)
         return result
+
+    def _mark_cancelled(self) -> None:
+        """Flag the SDK's still-open span, best-effort.
+
+        Wrapped in its own try/except because it runs on the cancellation path,
+        where a second exception would replace the CancelledError and turn a
+        clean cancellation into a crash.
+        """
+        try:
+            span = get_current_span()
+            if span.is_recording():
+                span.set_attribute(CANCELLED_ATTRIBUTE, True)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("cancellation annotation skipped: %s", exc)
 
     def _capture_payload(self, span: Any, ctx: Any, params: Any, result: Any) -> None:
         method = getattr(ctx, "method", "") or ""

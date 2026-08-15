@@ -103,6 +103,25 @@ the same reason they are opt-in here. Using the standard names means a customer
 already collecting them sees one set of attributes, not two.
 """
 
+CANCELLED_ATTRIBUTE: Final = "mcpobs.cancelled"
+"""Set when the client gave up before the tool finished.
+
+MEASURED, not assumed. A cancelled `tools/call` produced a span with
+`status_code=UNSET`, `failure_category=ok` and `is_latency_eligible=1` -- so it
+counted as a FAST SUCCESS. Nothing in the span said otherwise, because the SDK
+records nothing for a cancellation: the handler's task is simply cancelled.
+
+Two distortions followed, in opposite directions and both invisible:
+  * the success count included calls that never produced a result;
+  * the latency percentiles included durations that measure HOW LONG THE CLIENT
+    WAITED BEFORE GIVING UP, not how long the tool takes. A tool cancelled
+    because it is too slow therefore looked fast -- the worst possible direction
+    for the error to run.
+
+Same shape as the MRTR interim round (D28), and handled the same way: its own
+category, never an error, never a latency sample.
+"""
+
 CLIENT_NAME_ATTRIBUTE: Final = "mcpobs.client.name"
 CLIENT_VERSION_ATTRIBUTE: Final = "mcpobs.client.version"
 """Which client made the call.

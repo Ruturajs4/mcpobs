@@ -110,6 +110,7 @@ const CAT = {
   invalid_arguments: { c: "b-args",    l: "bad args",       h: "#06b6d4" },
   protocol_error:    { c: "b-proto",   l: "protocol",       h: "#ec4899" },
   pending_input:     { c: "b-pending", l: "awaiting input", h: "#9aa1ad" },
+  cancelled:         { c: "b-pending", l: "cancelled",      h: "#78716c" },
   unclassified:      { c: "b-none",    l: "unclassified",   h: "#6b7280" },
 };
 const badge = (cat) => {

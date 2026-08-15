@@ -159,6 +159,13 @@ def wait_for_dlq(ch, timeout: float = 45.0):
     return None
 
 
+def _not_a_failure_sql() -> str:
+    """The taxonomy's non-failure categories, as a SQL list literal."""
+    from normalizer.taxonomy import FailureTaxonomy
+
+    return ", ".join(f"'{c}'" for c in FailureTaxonomy.NOT_A_FAILURE)
+
+
 def _dev_key(name: str) -> str:
     """A local dev key from the gitignored file `make devkeys` writes.
 
@@ -307,7 +314,13 @@ def main() -> int:
             # not a failure, and the helper deliberately returns before setting
             # a failure kind on it (D20). Including it here asserted that a
             # non-failure must be classified as one.
-            "WHERE failure_category NOT IN ('', 'ok', 'protocol_error', 'pending_input') "
+            # Excludes the taxonomy's OWN non-failures rather than a list
+            # written by hand here. `cancelled` was added and B3 immediately
+            # failed, because a hand-maintained copy of "what counts as a
+            # failure" drifts from the definition the moment the definition
+            # moves -- exactly the trap D57 called out.
+            f"WHERE failure_category NOT IN ('', 'protocol_error', "
+            f"                              {_not_a_failure_sql()}) "
             "  AND timestamp > now() - INTERVAL 15 MINUTE GROUP BY 1"
         ).result_rows
     )
@@ -358,6 +371,23 @@ def main() -> int:
         f"{total_streams} subscriptions/listen span(s), {wrongly_eligible} wrongly eligible; "
         f"excluded so far: {ineligible or 'none seen yet'}"
         + ("  -- NO STREAM SPAN AT ALL, so this proved nothing" if not total_streams else ""),
+    )
+
+    # Cancellation. Measured before it was handled: a cancelled call landed as
+    # category `ok`, latency-eligible, with its duration truncated at the moment
+    # the client gave up -- so it inflated the success count AND deflated the
+    # percentiles. A tool cancelled BECAUSE it was slow made the p95 look
+    # better, which is the most misleading direction an error can run.
+    cancelled = ch.query(
+        "SELECT count(), countIf(is_latency_eligible = 1), countIf(mcp_is_error = 1) "
+        "FROM spans_raw WHERE failure_category = 'cancelled'"
+    ).result_rows[0]
+    record(
+        "B9b cancelled calls exist, are not errors, and are not latency samples",
+        cancelled[0] > 0 and cancelled[1] == 0 and cancelled[2] == 0,
+        f"{cancelled[0]} cancelled, {cancelled[1]} wrongly eligible, "
+        f"{cancelled[2]} wrongly counted as errors"
+        + ("  -- NO CANCELLED SPAN AT ALL, so this proved nothing" if not cancelled[0] else ""),
     )
 
     # ---------------- B4-B5: trace assembly (ADR-005) ---------------------

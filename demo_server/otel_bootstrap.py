@@ -18,6 +18,7 @@ Modes:
 from __future__ import annotations
 
 import os
+import sys
 
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
@@ -144,9 +145,16 @@ def _instrument_httpx() -> None:
     """
     from mcpobs import instrument_downstream, instrument_httpx
 
+    # STDERR, never stdout. On the stdio transport stdout IS the JSON-RPC
+    # channel, so a single stray line makes the client fail to parse the next
+    # message. This printed to stdout and stayed silent for weeks because the
+    # only branch that printed was the failure branch -- which nothing had
+    # triggered until `opentelemetry-instrumentation-pymysql` was installed
+    # without the `pymysql` driver beside it. A diagnostic that corrupts the
+    # protocol it is diagnosing is worse than no diagnostic.
     for name, outcome in instrument_downstream().items():
         if outcome != "instrumented":
-            print(f"[otel_bootstrap] {name}: {outcome}")
+            print(f"[otel_bootstrap] {name}: {outcome}", file=sys.stderr)
 
     # Body capture on top (D60). Order-independent -- proved by
     # tests/test_control_plane.py, in both directions.

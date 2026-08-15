@@ -23,6 +23,7 @@ Run:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import atexit
 import os
 import signal
@@ -34,6 +35,7 @@ from typing import Annotated
 
 import httpx
 from mcp.server import MCPServer
+from mcp.server.mcpserver.context import Context
 from mcp.server.mcpserver.resolve import Elicit, Resolve
 from mcp.server.subscriptions import (
     InMemorySubscriptionBus,
@@ -173,6 +175,22 @@ async def submit_order(customer: str = "acme", sku: str = "widget-1") -> str:
             headers={"authorization": "Bearer demo-token-must-not-be-captured"},
         )
         return f"downstream accepted with {response.status_code}"
+
+
+@mcp.tool()
+async def slow_export(ctx: Context, rows: int = 3) -> str:
+    """A long-running tool that reports progress -- the case progress exists for.
+
+    Without one of these, "do we support progress?" is unanswerable: a tool that
+    finishes in a millisecond has no progress to report, so the question never
+    comes up and the gap never shows.
+    """
+    for step in range(1, rows + 1):
+        await asyncio.sleep(0.05)
+        await ctx.report_progress(
+            progress=step, total=rows, message=f"exported {step}/{rows}"
+        )
+    return f"exported {rows} rows"
 
 
 @mcp.tool()

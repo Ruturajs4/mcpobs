@@ -51,7 +51,7 @@ SCENARIOS: list[tuple[str, dict, str]] = [
 #: subscription flow rather than the failure taxonomy, so they are not scenarios
 #: -- but assertion B6 derives its expected tool set from the demo rather than
 #: hardcoding one, and it can only do that if the demo declares them.
-SUBSCRIPTION_TOOLS: frozenset[str] = frozenset({"publish_change"})
+SUBSCRIPTION_TOOLS: frozenset[str] = frozenset({"publish_change", "slow_export"})
 
 
 async def answer_elicitation(*args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -103,6 +103,48 @@ async def run_scenarios(client: Client) -> list[str]:
             out.append(f"  {label:<52} -> raised {type(exc).__name__}  [expect {expected}]")
     out += await run_capability_scenarios(client)
     out += await run_subscription_scenario(client)
+    out += await run_progress_scenario(client)
+    out += await run_cancellation_scenario(client)
+    return out
+
+
+async def run_cancellation_scenario(client: Client) -> list[str]:
+    """Cancel a call in flight, by giving the client a deadline it will miss.
+
+    Measured before this existed: the resulting span read as a fast SUCCESS --
+    category `ok`, latency-eligible, duration truncated at the moment the client
+    gave up. So a tool cancelled BECAUSE it is slow made the p95 look better.
+    """
+    out: list[str] = []
+    try:
+        await client.call_tool("slow_export", {"rows": 8}, read_timeout_seconds=0.05)
+        out.append(f"  {'slow_export (cancelled)':<52} -> completed (NOT cancelled)")
+    except Exception as exc:
+        out.append(f"  {'slow_export (cancelled)':<52} -> {type(exc).__name__} as expected")
+    return out
+
+
+async def run_progress_scenario(client: Client) -> list[str]:
+    """Call a long-running tool WITH a progress callback, and count the updates.
+
+    The callback is the whole point. Progress notifications only flow when the
+    client supplies a `progressToken`, so a client that does not ask receives
+    none -- which means "we saw no progress" is ambiguous between "the server
+    reported none" and "nobody asked". This asks.
+    """
+    received: list[str] = []
+
+    async def on_progress(progress: float, total: float | None, message: str | None) -> None:
+        received.append(f"{progress}/{total} {message or ''}".strip())
+
+    out: list[str] = []
+    try:
+        await client.call_tool("slow_export", {"rows": 3}, progress_callback=on_progress)
+        out.append(f"  {'slow_export (with progress_callback)':<52} -> {len(received)} updates")
+        for update in received:
+            out.append(f"  {'  progress: ' + update:<52} -> received")
+    except Exception as exc:
+        out.append(f"  {'slow_export':<52} -> {type(exc).__name__}: {exc}")
     return out
 
 

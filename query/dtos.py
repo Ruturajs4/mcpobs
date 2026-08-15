@@ -25,6 +25,10 @@ class FailureBreakdown(BaseModel):
     invalid_arguments: int = 0
     protocol_error: int = 0
     pending_input: int = 0
+    #: The client gave up. Counted separately from `ok` because it is not a
+    #: success, and separately from the failures because it is not a server
+    #: fault -- `failures` below deliberately excludes it.
+    cancelled: int = 0
     unclassified: int = 0
 
     @property
