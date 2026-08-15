@@ -2,11 +2,17 @@
 
 The read plane over the tables Days 1-2 built. Endpoints follow V2 §13.2.
 
-Tenant and project arrive as query parameters TODAY because there is no auth
-yet (DF-9). They are still applied by the repository rather than by any
-endpoint, so when API keys land the only change is where the values come from --
-not whether the filter is applied. An endpoint cannot forget to scope a query,
-because an endpoint never writes one.
+TENANCY COMES FROM THE KEY, NEVER FROM A PARAMETER.
+    Until DF-9 landed, `?tenant=` was a query parameter, and the docstring here
+    promised that "when API keys land the only change is where the values come
+    from -- not whether the filter is applied". That promise is now cashed: the
+    repository is unchanged, and `Scope` reads the values off an authenticated
+    `Principal` instead of off the query string.
+
+    The parameters are GONE, not deprecated. Leaving them in as an override
+    "for admins" is how a tenancy boundary becomes optional, and an optional
+    boundary is not one. Assertion F4 sends `?tenant=` for another org and
+    checks it changes nothing.
 """
 
 # NO `from __future__ import annotations` here, deliberately. It turns every
@@ -18,10 +24,13 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from control import ControlPlane
+from control.keys import READ
+from control.models import Principal
 from query.dtos import (
     CapabilityRow,
     Overview,
@@ -62,19 +71,58 @@ def repository() -> SpanRepository:
     return _repository
 
 
+_control: ControlPlane | None = None
+
+
+def control_plane() -> ControlPlane:
+    global _control
+    if _control is None:
+        _control = ControlPlane()
+    return _control
+
+
 class Scope:
-    """Tenant, project and time window -- resolved once, for every endpoint."""
+    """Tenant, project and time window -- resolved once, for every endpoint.
+
+    Tenant and project are taken from the API key and are NOT parameters. An
+    endpoint cannot scope a query to the wrong tenant, because an endpoint
+    never chooses one.
+    """
 
     def __init__(
         self,
-        tenant: Annotated[str, Query(description="Tenant id")] = "local",
-        project: Annotated[str, Query(description="Project id")] = "local",
+        request: Request,
         window_minutes: Annotated[int, Query(ge=1, le=MAX_WINDOW_MINUTES)] = 60,
     ) -> None:
-        self.tenant = tenant
-        self.project = project
+        principal = authenticate(request)
+        self.principal = principal
+        self.tenant = principal.tenant
+        self.project = principal.project
         self.window_minutes = window_minutes
         self.since = (datetime.now(UTC) - timedelta(minutes=window_minutes)).replace(tzinfo=None)
+
+
+def authenticate(request: Request) -> Principal:
+    """Resolve the caller's key, or refuse.
+
+    Read keys only. An ingest key is deliberately not accepted here even though
+    it identifies the same org: the two live in different places -- an ingest key
+    sits in a customer's server process and deployment config, a read key in a
+    browser -- so one being compromised must not imply the other (control/
+    schema/001).
+    """
+    header = request.headers.get("authorization", "")
+    token = request.headers.get("x-api-key") or (
+        header[7:] if header.lower().startswith("bearer ") else None
+    )
+    principal = control_plane().authenticate(token)
+    if principal is None or not principal.can(READ):
+        raise HTTPException(
+            status_code=401,
+            detail="invalid or insufficient API key",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return principal
 
 
 ScopeDep = Annotated[Scope, Depends()]

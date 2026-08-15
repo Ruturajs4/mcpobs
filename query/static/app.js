@@ -11,11 +11,62 @@
 
 const S = { view: "overview", window: 60, trace: null, span: null, kind: "tool", tool: null };
 
+/* The API key, held in localStorage. A cookie would ride along automatically on
+   every request the browser makes to this origin, which is what makes CSRF
+   possible; an explicit header cannot be sent by a form on someone else's
+   page. */
+const KEY_STORAGE = "mcpobs.key";
+const readKey = () => localStorage.getItem(KEY_STORAGE) || "";
+
 async function api(path) {
   const sep = path.includes("?") ? "&" : "?";
-  const r = await fetch(`/api/v1${path}${sep}window_minutes=${S.window}`);
+  const r = await fetch(`/api/v1${path}${sep}window_minutes=${S.window}`, {
+    headers: readKey() ? { "x-api-key": readKey() } : {},
+  });
+  if (r.status === 401) {
+    // Not an error to render in a panel: it means we are not signed in, and
+    // the whole console is unusable until that changes.
+    signIn(true);
+    throw new Error("unauthorized");
+  }
   if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 200)}`);
   return r.json();
+}
+
+function signIn(rejected) {
+  const existing = readKey();
+  document.body.innerHTML = `
+    <div class="signin">
+      <div class="signin-card">
+        <h1>MCP Observability</h1>
+        <p>${rejected && existing
+          ? "That key was rejected. It may have been revoked, or it may be an ingest key — the console needs a <code>read</code> key."
+          : "Sign in with a read-scoped API key."}</p>
+        <input id="key-input" type="password" placeholder="mcpo_..." autocomplete="off"
+               spellcheck="false" value="">
+        <button id="key-go">Continue</button>
+        <p class="signin-hint">Invite-only. An operator issues keys with
+          <code>python scripts/admin.py key --org &lt;org&gt; --scopes read</code>.
+          Locally, <code>make devkeys</code> writes one to
+          <code>.mcpobs-keys.env</code>.</p>
+      </div>
+    </div>`;
+  const submit = () => {
+    const value = document.getElementById("key-input").value.trim();
+    if (!value) return;
+    localStorage.setItem(KEY_STORAGE, value);
+    location.reload();
+  };
+  document.getElementById("key-go").onclick = submit;
+  document.getElementById("key-input").onkeydown = (e) => {
+    if (e.key === "Enter") submit();
+  };
+  document.getElementById("key-input").focus();
+}
+
+function signOut() {
+  localStorage.removeItem(KEY_STORAGE);
+  location.reload();
 }
 
 const el = (id) => document.getElementById(id);
@@ -545,6 +596,11 @@ el("scrim").onclick = closeDrawer;
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
 
 (function boot() {
+  // No key, no console. Checked before anything renders, so a signed-out user
+  // sees the sign-in form rather than a dashboard that flashes empty panels and
+  // then replaces itself.
+  if (!readKey()) { signIn(false); return; }
+
   const p = new URLSearchParams(location.search);
   S.view = p.get("view") || "overview";
   S.kind = p.get("kind") || "tool";
@@ -560,4 +616,7 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawe
   // only makes the page flicker with identical numbers. Never while a drawer is
   // open -- redrawing under someone mid-investigation is hostile.
   setInterval(() => { if (!S.trace) render(); }, 15000);
+
+  const out = document.getElementById("sign-out");
+  if (out) out.onclick = signOut;
 })();

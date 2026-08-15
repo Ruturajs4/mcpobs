@@ -16,20 +16,19 @@ processors:
     limit_percentage: 75
     spike_limit_percentage: 15
 
-  # Production resolves these from the authenticated API key and OVERWRITES
-  # whatever the customer sent, so a tenant cannot write into another tenant.
-  # Locally they are hard-coded.
+  # NO tenant stamping here any more. The ingest gateway does it, from the
+  # authenticated API key, before the payload ever reaches this process
+  # (ingest/app.py).
   #
-  # MUST be `resource`, not `attributes`: the attributes processor writes SPAN
-  # attributes, so tenant.id never reached the Resource and the normalizer --
-  # which reads tenancy from the Resource per V2 §8.3 -- silently fell back to
-  # its "local" default. With real tenants that collapses every customer into
-  # one. Caught by tests/test_otlp_decode.py.
-  resource/tenant:
-    attributes:
-      - { key: tenant.id, value: local, action: upsert }
-      - { key: project.id, value: local, action: upsert }
-      - { key: data.region, value: local, action: upsert }
+  # Two processes writing the same attribute is a race with a silent winner:
+  # this one used to `upsert` tenant.id = local, which would now OVERWRITE the
+  # authenticated tenant and collapse every customer back into one. Deleting it
+  # is the fix -- a "fallback" default would do exactly the same damage whenever
+  # the gateway was bypassed, which is precisely when you least want it.
+  #
+  # A payload arriving here with no tenant is therefore UNTENANTED and stays
+  # that way. That is intended: it is what an unauthenticated bypass looks like,
+  # and it should be visible rather than papered over with a default.
 
   batch:
     timeout: 1s
@@ -77,7 +76,7 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, resource/tenant, batch]
+      processors: [memory_limiter, batch]
       exporters: [kafka, debug]
 
     # SEPARATE from traces on purpose. Our own metrics never touch Kafka, never

@@ -33,7 +33,32 @@ SERVICE_NAME = "mcp-demo-server"
 SERVICE_VERSION = "0.1.0"
 ENVIRONMENT = "local"
 
-DEFAULT_OTLP_ENDPOINT = "http://localhost:4318/v1/traces"
+# 4319 -- the AUTHENTICATING GATEWAY, not the Collector on 4318. The demo
+# server is a stand-in for a customer's server, and a customer has no route to
+# the Collector at all: its OTLP ports are not published (docker-compose.yml).
+DEFAULT_OTLP_ENDPOINT = "http://localhost:4319/v1/traces"
+
+KEYS_FILE = "/.mcpobs-keys.env"
+
+
+def _dev_key() -> str:
+    """The local ingest key, from the gitignored env file `make devkeys` writes.
+
+    Read here rather than required as an environment variable because the demo
+    is run by hand constantly, and a step that must be remembered every time is
+    a step that will be forgotten. A real customer sets
+    OTEL_EXPORTER_OTLP_HEADERS themselves; that still wins if it is set.
+    """
+    import pathlib
+
+    path = pathlib.Path(__file__).resolve().parent.parent / ".mcpobs-keys.env"
+    if not path.exists():
+        return ""
+    for line in path.read_text(encoding="utf-8").splitlines():
+        name, _, value = line.partition("=")
+        if name.strip() == "MCPOBS_INGEST_KEY":
+            return value.strip()
+    return ""
 
 _provider: TracerProvider | None = None
 _memory_exporter: InMemorySpanExporter | None = None
@@ -85,11 +110,18 @@ def init_telemetry(
         # atexit, no flush -- so a demo server's last spans are lost unless the
         # processor has already exported them on its own schedule. Production
         # servers are long-lived and would use the default.
+        headers = {}
+        if not os.getenv("OTEL_EXPORTER_OTLP_HEADERS"):
+            key = _dev_key()
+            if key:
+                headers["x-api-key"] = key
+
         provider.add_span_processor(
             BatchSpanProcessor(
                 OTLPSpanExporter(
                     endpoint=endpoint
-                    or os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", DEFAULT_OTLP_ENDPOINT)
+                    or os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", DEFAULT_OTLP_ENDPOINT),
+                    headers=headers or None,
                 ),
                 schedule_delay_millis=int(os.getenv("OTEL_BSP_SCHEDULE_DELAY", "1000")),
             )

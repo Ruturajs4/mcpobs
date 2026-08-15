@@ -1,7 +1,7 @@
 PY := .venv/Scripts/python.exe
 COMPOSE := docker compose
 
-.PHONY: help up down demo verify attrs lag logs ps clean test lint typecheck check freshness traces metrics deferred rollups
+.PHONY: help up down demo verify attrs lag logs ps clean test lint typecheck check freshness traces metrics deferred rollups devkeys invite archive
 
 help:
 	@echo "up        - start clickhouse + kafka + collector + normalizer"
@@ -18,6 +18,9 @@ help:
 	@echo "freshness - end-to-end pipeline freshness (the headline metric)"
 	@echo "traces    - assembled trace summaries"
 	@echo "metrics   - the pipeline's own operational metrics (V2 19)"
+	@echo "devkeys   - ensure local dev org + API keys (.mcpobs-keys.env)"
+	@echo "invite    - ORG=acme EMAIL=x@y.com invite a user (invite-only)"
+	@echo "archive   - list what the archiver has written to S3"
 	@echo "rollups   - rebuild tool_metrics_1m from spans_raw (run after a replay)"
 	@echo "deferred  - open deferral register (what we postponed and why)"
 	@echo "clean     - down + remove volumes"
@@ -26,10 +29,10 @@ test:
 	$(PY) -m pytest
 
 lint:
-	$(PY) -m ruff check normalizer/ mcpobs/ query/ tests/ scripts/ demo_server/
+	$(PY) -m ruff check normalizer/ mcpobs/ query/ control/ ingest/ archiver/ tests/ scripts/ demo_server/
 
 typecheck:
-	$(PY) -m mypy normalizer/ mcpobs/ query/
+	$(PY) -m mypy normalizer/ mcpobs/ query/ control/ ingest/ archiver/
 
 check: test lint typecheck
 
@@ -41,11 +44,22 @@ up:
 down:
 	$(COMPOSE) down
 
-demo:
+# Both targets provision their own keys first. Ingest is authenticated now,
+# so a demo run without a key is a wall of 401s -- and `devkeys` is
+# idempotent, so calling it every time costs one authentication.
+demo: devkeys
 	$(PY) -m demo_server.scenarios both
 
-verify:
+verify: devkeys
 	$(PY) scripts/verify.py
+
+devkeys:
+	@$(PY) scripts/admin.py devkeys
+
+# Invite someone into an org. There is no self-service signup: an account
+# exists only because somebody already inside issued one of these.
+invite:
+	@$(PY) scripts/admin.py invite --org $(ORG) --email $(EMAIL)
 
 attrs:
 	$(PY) scripts/dump_observed_attrs.py
@@ -80,6 +94,9 @@ traces:
 
 metrics:
 	$(PY) scripts/metrics.py
+
+archive:
+	$(PY) scripts/archive_ls.py
 
 rollups:
 	$(PY) scripts/recompute_rollups.py

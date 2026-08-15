@@ -105,12 +105,20 @@ def _python() -> str:
 @asynccontextmanager
 async def stdio_session(span_file: Path | None = None) -> AsyncIterator[Client]:
     """Spawn the demo server as a stdio subprocess and connect to it."""
-    env = {"OTEL_MODE": "file", "OTEL_SPAN_FILE": str(span_file)} if span_file else {}
+    # INHERIT the environment, as the HTTP path already does. `env=None` makes
+    # the SDK hand the subprocess a minimal, sanitised environment, so
+    # OTEL_EXPORTER_OTLP_* never reached it -- pointing the demo at the
+    # authenticated gateway silently kept exporting to the old endpoint, and the
+    # only symptom was an ingest log with no requests in it.
+    env = dict(os.environ)
+    if span_file:
+        env["OTEL_MODE"] = "file"
+        env["OTEL_SPAN_FILE"] = str(span_file)
     params = StdioServerParameters(
         command=_python(),
         args=["-m", "demo_server.server"],
         cwd=str(REPO_ROOT),
-        env=env or None,
+        env=env,
     )
     async with Client(
         stdio_client(params), elicitation_callback=answer_elicitation

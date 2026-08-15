@@ -9,9 +9,11 @@ come back out as a queryable, MCP-aware trace.
 ```bash
 python -m venv .venv && .venv/Scripts/pip install -r requirements-dev.txt
 make check     # unit tests + ruff + mypy (no stack required)
-make up        # clickhouse + kafka + collector + normalizer + query API
+make up        # clickhouse, kafka, collector, postgres, minio, ingest,
+               # normalizer, archiver, query API
+make devkeys   # provision a local org + API keys (invite-only; see below)
 make demo      # run the tool scenarios over stdio and streamable HTTP
-make verify    # A/B/C acceptance assertions
+make verify    # A-F acceptance assertions
 
 open http://localhost:8080     # the console
 ```
@@ -43,6 +45,41 @@ contract, which outranks every document where they disagree.
 - [`docs/decisions.md`](docs/decisions.md) — decision log, including the Day-1 findings
 - [`docs/observed_attributes.md`](docs/observed_attributes.md) — **generated**, the span contract
 - [`docs/deferred.md`](docs/deferred.md) — everything knowingly postponed, and what forces it back
+
+## Getting a key
+
+The platform is **invite-only**. There is no signup page, and there is no
+endpoint that creates an organisation -- an operator does it from the database
+side, and every account after the first exists because someone already inside
+issued an invite:
+
+```bash
+python scripts/admin.py bootstrap --org acme --email you@acme.com   # once
+python scripts/admin.py accept --code <code> --name "You"
+python scripts/admin.py key --org acme --scopes ingest              # for servers
+python scripts/admin.py key --org acme --scopes read                # for the console
+```
+
+Keys are shown **once**. The database stores only a hash, so there is no command
+that can print one again -- if you lose it, revoke it and issue another.
+
+`ingest` and `read` are separate scopes on purpose: an ingest key lives in your
+server process and your deployment config, a read key in a browser, and one
+being compromised should not imply the other.
+
+Point your exporter at the gateway, not at a Collector:
+
+```bash
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:4319/v1/traces
+OTEL_EXPORTER_OTLP_HEADERS=x-api-key=mcpo_production_...
+```
+
+Your `tenant.id`, `project.id` and `data.region` resource attributes are
+**overwritten** from the key. That is not a limitation -- it is what stops
+anyone writing telemetry into someone else's account by setting an attribute.
+
+Locally, `make devkeys` provisions an org and both keys into a gitignored
+`.mcpobs-keys.env`, and `make demo` uses them automatically.
 
 ## Failure intelligence
 
@@ -124,16 +161,31 @@ depends on.
 
 ## Known gaps
 
-**Idempotency is untestable locally.** `insert_deduplication_token` requires
-`ReplicatedMergeTree`; the local schema is plain `MergeTree`, so a replayed batch
-*will* duplicate rows here. Test it in staging.
+See [`docs/deferred.md`](docs/deferred.md) for the full register with the trigger
+that forces each one back.
+
+The one worth knowing before you read a dashboard: **`otlp.spans.raw` is not
+actually keyed by tenant** (DF-19). ADR-004 says it is; measurement says every
+message carries a null key, because the Collector's Kafka exporter cannot key
+traces by a resource attribute. Partitioning is therefore by batch, not by
+tenant, so there is no per-tenant ordering and no whale isolation yet.
+
+(The older note here said idempotency was untestable locally and had to be
+checked in staging. That stopped being true when the local stack gained embedded
+Keeper: `ReplicatedMergeTree` runs here, and assertion B11 exercises
+`insert_deduplication_token` for real.)
 
 ## Layout
 
 ```
 demo_server/   MCP SDK v2 server + OTel bootstrap + scenarios
-normalizer/    Kafka consumer -> MCP field extraction -> ClickHouse
+mcpobs/        the customer-side helper (failure taxonomy, payload capture)
+control/       Postgres control plane: orgs, users, invites, projects, keys
+ingest/        authenticating gateway -- resolves the key, stamps the tenant
 collector/     OTel Collector gateway config (otlp in, kafka out)
+normalizer/    Kafka consumer -> MCP field extraction -> ClickHouse
+archiver/      Kafka consumer -> raw OTLP to object storage
+query/         read API + console
 kafka/         explicit topic creation -- never auto-create
-scripts/       verification and the T3 attribute capture
+scripts/       admin CLI, verification, and the T3 attribute capture
 ```

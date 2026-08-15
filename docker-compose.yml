@@ -1,6 +1,10 @@
-# Day-1 local slice. Same SHAPE as production (Architecture.md §3), one rung
-# down the environment ladder (Architecture.md §10): single broker, RF=1,
-# no auth, no replication.
+# Local slice. Same SHAPE as production (Architecture.md §3), one rung down
+# the environment ladder (§10): single broker, RF=1, no replication.
+#
+# Auth, tenancy and the archive are NO LONGER absent from this rung. Postgres
+# and MinIO run here because the local rung's job is to run the real engines
+# (D40) -- a stubbed object store or a hard-coded tenant would push every bug
+# in credentials, key layout and isolation into staging to be found there.
 name: mcp-observability
 
 services:
@@ -90,9 +94,18 @@ services:
     command: ["--config=/etc/otel/config.yaml"]
     volumes:
       - ./collector/config.yaml:/etc/otel/config.yaml:ro
+    # 4317/4318 are NOT published. The only way into the pipeline from the
+    # host is the ingest gateway on 4319, which authenticates. Leaving the
+    # Collector's OTLP ports exposed would leave an unauthenticated bypass
+    # beside the front door -- and every byte of the auth work pointless,
+    # because an attacker would simply use the other port.
+    #
+    # Container-to-container access still works: `ingest` reaches
+    # otel-collector:4318 over the compose network.
+    expose:
+      - "4317"
+      - "4318"
     ports:
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
       - "13133:13133" # health
       - "8889:8889"   # prometheus scrape: our own pipeline metrics
     depends_on:
@@ -118,18 +131,99 @@ services:
       kafka-init: { condition: service_completed_successfully }
     restart: unless-stopped
 
+  postgres:
+    image: postgres:16-alpine
+    container_name: mcpobs-postgres
+    # 5433 on the host: 5432 is very often already taken by a locally
+    # installed Postgres, and a port clash at `compose up` is a worse first
+    # experience than a non-default number. Containers still use 5432.
+    ports: ["5433:5432"]
+    environment:
+      POSTGRES_USER: mcpobs
+      POSTGRES_PASSWORD: mcpobs
+      POSTGRES_DB: mcpobs_control
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mcpobs -d mcpobs_control"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # The S3 mock. MinIO speaks the real S3 API, so the archiver exercises real
+  # credentials, real bucket semantics and real key layout -- the same reason
+  # ClickHouse runs with embedded Keeper rather than plain MergeTree locally.
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    container_name: mcpobs-minio
+    command: server /data --console-address ":9001"
+    ports: ["9002:9000", "9001:9001"]
+    environment:
+      MINIO_ROOT_USER: mcpobs
+      MINIO_ROOT_PASSWORD: mcpobs-secret
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Authenticates, stamps trusted tenant attributes, forwards to the Collector.
+  # Customers point their exporter HERE; nothing else is publicly reachable.
+  ingest:
+    build:
+      context: .
+      dockerfile: ingest/Dockerfile
+    container_name: mcpobs-ingest
+    ports: ["4319:4319"]
+    environment:
+      CONTROL_PLANE_DSN: postgresql://mcpobs:mcpobs@postgres:5432/mcpobs_control
+      COLLECTOR_ENDPOINT: http://otel-collector:4318/v1/traces
+      DATA_REGION: local
+    depends_on:
+      postgres: { condition: service_healthy }
+      otel-collector: { condition: service_started }
+    restart: unless-stopped
+
+  archiver:
+    build:
+      context: .
+      dockerfile: archiver/Dockerfile
+    container_name: mcpobs-archiver
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC: otlp.spans.raw
+      KAFKA_GROUP_ID: archiver
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: mcpobs
+      S3_SECRET_KEY: mcpobs-secret
+      ARCHIVE_BUCKET: mcpobs-archive
+      ARCHIVE_MAX_SECONDS: "10"
+    depends_on:
+      kafka: { condition: service_healthy }
+      kafka-init: { condition: service_completed_successfully }
+      minio: { condition: service_healthy }
+    restart: unless-stopped
+
   query:
-    build: ./query
+    build:
+      context: .
+      dockerfile: query/Dockerfile
     container_name: mcpobs-query
     ports: ["8080:8080"]
     environment:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: "8123"
       CLICKHOUSE_DB: mcpobs
+      CONTROL_PLANE_DSN: postgresql://mcpobs:mcpobs@postgres:5432/mcpobs_control
     depends_on:
       clickhouse: { condition: service_healthy }
+      postgres: { condition: service_healthy }
     restart: unless-stopped
 
 volumes:
   ch-data:
   kafka-data:
+  pg-data:
+  minio-data:

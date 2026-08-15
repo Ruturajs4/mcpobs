@@ -158,6 +158,24 @@ def wait_for_dlq(ch, timeout: float = 45.0):
     return None
 
 
+def _dev_key(name: str) -> str:
+    """A local dev key from the gitignored file `make devkeys` writes.
+
+    `make verify` depends on `devkeys`, so the file exists by the time this
+    runs. Read rather than passed as an argument because the whole point of the
+    F-series is to exercise the same path a customer uses, and a customer holds
+    a key in a file too.
+    """
+    path = Path(__file__).resolve().parent.parent / ".mcpobs-keys.env"
+    if not path.exists():
+        return ""
+    for line in path.read_text(encoding="utf-8").splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() == name:
+            return value.strip()
+    return ""
+
+
 def main() -> int:
     ch = client()
 
@@ -363,10 +381,23 @@ def main() -> int:
         f"           GROUP BY tenant_id, project_id, trace_id, span_id)), "
         f"       (SELECT sum(span_count) FROM trace_summaries WHERE 1 {probe})"
     ).result_rows[0]
+    # Traces EXACTLY; spans at-least. That asymmetry is not a fudge -- it is the
+    # difference between the two failure modes.
+    #
+    # A missing span means the aggregate lost data, which is a defect. An EXTRA
+    # span means the materialized view counted a replayed one twice, which is
+    # DF-7's known and documented MV limitation (D75) -- and this script replays
+    # a span itself, in B11b, before reaching here. Demanding equality made B4
+    # fail for the pipeline working exactly as designed.
+    #
+    # Exact reconciliation is asserted by E4, AFTER `make rollups` has run. What
+    # B4 owns is its own claim: one row per trace.
     record(
         "B4 trace_summaries accounts for every distinct trace and span",
-        raw_traces == summary_traces and raw_spans == summed_spans,
-        f"{summary_traces}/{raw_traces} traces, {summed_spans}/{raw_spans} spans accounted for",
+        raw_traces == summary_traces and summed_spans >= raw_spans,
+        f"{summary_traces}/{raw_traces} traces, {summed_spans}/{raw_spans} spans accounted for"
+        + (f" (+{summed_spans - raw_spans} from B11b's replay, reconciled by E4)"
+           if summed_spans > raw_spans else ""),
     )
 
     # A trace assembled from more than one span is the case that matters: it
@@ -610,9 +641,20 @@ def main() -> int:
     import urllib.error
     import urllib.request
 
-    def api(path: str) -> Any:
+    read_key = _dev_key("MCPOBS_READ_KEY")
+
+    def api(path: str, key: str | None = "") -> Any:
+        """Call the query API. Authenticated by default (DF-9).
+
+        `key=""` means the dev read key; `key=None` means send NO credential,
+        which is how F1 checks the API refuses anonymous callers.
+        """
         url = f"http://localhost:8080{path}"
-        with urllib.request.urlopen(url, timeout=25) as response:
+        request = urllib.request.Request(url)
+        token = read_key if key == "" else key
+        if token:
+            request.add_header("x-api-key", token)
+        with urllib.request.urlopen(request, timeout=25) as response:
             return json.loads(response.read())
 
     try:
@@ -665,15 +707,38 @@ def main() -> int:
             f"kinds={[s['downstream_kind'] for s in detail['spans'] if s['downstream_kind']]}",
         )
 
-        # Cross-tenant isolation. There is no auth yet (DF-9), but the scoping
-        # itself must already work -- otherwise adding keys later would be
-        # papering over a query that never filtered.
-        other = api("/api/v1/overview?window_minutes=180&tenant=someone-else")
-        record(
-            "C5 an unknown tenant sees nothing",
-            other["calls"] == 0 and other["servers"] == 0,
-            f"calls={other['calls']} servers={other['servers']}",
-        )
+        # Cross-tenant isolation, now proved the only way that means anything:
+        # with a SECOND ORG'S KEY.
+        #
+        # This used to send `?tenant=someone-else` and check the answer was
+        # empty. That assertion died with DF-9 -- and it is worth being precise
+        # about why, because it looked like it was testing isolation. It was
+        # testing that an unknown STRING matched no rows. Now that tenancy comes
+        # from the key, the parameter is inert, so the old form passed a real
+        # tenant's data back and "failed" while the boundary it named was
+        # working perfectly. An assertion that cannot fail for the right reason
+        # cannot pass for one either.
+        from control.repository import ControlPlane as ControlPlaneClient
+
+        try:
+            cp = ControlPlaneClient(os.getenv(
+                "CONTROL_PLANE_DSN",
+                "postgresql://mcpobs:mcpobs@localhost:5433/mcpobs_control",
+            ))
+            other = cp.create_org("verify-isolation")
+            other_project = cp.create_project(other.id, "default", environment="local")
+            other_key = cp.issue_key(
+                other.id, other_project.id, scopes=("read",), name="verify isolation"
+            )
+            isolated = api("/api/v1/overview?window_minutes=10080", key=other_key.token)
+            record(
+                "C5 a different org's key sees none of this org's data",
+                isolated["calls"] == 0 and isolated["servers"] == 0,
+                f"calls={isolated['calls']} servers={isolated['servers']} "
+                f"for org {other.slug}, against {overview['calls']} for local",
+            )
+        except Exception as exc:
+            record("C5 a different org's key sees none of this org's data", False, f"{exc}")
 
     # ---------------- D5: payload capture ----------------------------------
     print("\n--- D5: request/response capture ---")
@@ -836,10 +901,15 @@ def main() -> int:
     # the endpoint against the raw table closes the loop: a rollup nobody reads
     # is what `trace_summaries` was for four days.
     api_overview = api("/api/v1/overview?window_minutes=10080")
+    # SCOPED TO THE KEY'S TENANT. The API answers for one tenant; counting raw
+    # rows across all of them compares two different populations -- the same
+    # class of mistake B4 made. It only became visible once a second tenant
+    # existed, which is its own argument for having one locally.
     raw_calls = ch.query(
         "SELECT count() FROM ("
         "  SELECT argMax(mcp_method, normalization_version) AS m "
-        "  FROM spans_raw GROUP BY tenant_id, project_id, span_id) "
+        "  FROM spans_raw WHERE tenant_id = 'local' "
+        "  GROUP BY tenant_id, project_id, span_id) "
         "WHERE m = 'tools/call'"
     ).result_rows[0][0]
     record(
@@ -910,6 +980,203 @@ def main() -> int:
         (not coarse) or bool(latency["clock_warning"]),
         latency["clock_warning"] or "clock is fine; no caveat needed",
     )
+
+    # ---------------- F: auth, tenancy and the archive (DF-9) --------------
+    print()
+    print("--- F: auth, tenancy and the archive ---")
+
+    import urllib.error as _urlerr
+
+    # F1. The read plane refuses anonymous callers. Until DF-9 landed, `?tenant=`
+    # was a query parameter and every endpoint was world-readable.
+    try:
+        api("/api/v1/overview", key=None)
+        anonymous_allowed = True
+    except _urlerr.HTTPError as exc:
+        anonymous_allowed = exc.code != 401
+    record(
+        "F1 the query API refuses an unauthenticated caller",
+        not anonymous_allowed,
+        "401 without a key" if not anonymous_allowed else "ANONYMOUS READ IS OPEN",
+    )
+
+    # F2. Scopes are real. An ingest key identifies the same org but must not
+    # read: the two live in different places -- a server process and a browser --
+    # so one being compromised must not imply the other.
+    try:
+        api("/api/v1/overview", key=_dev_key("MCPOBS_INGEST_KEY"))
+        ingest_can_read = True
+    except _urlerr.HTTPError as exc:
+        ingest_can_read = exc.code != 401
+    record(
+        "F2 an ingest key cannot read",
+        not ingest_can_read,
+        "ingest scope refused at the read plane" if not ingest_can_read
+        else "AN INGEST KEY CAN READ THE CONSOLE",
+    )
+
+    # F3. THE write-side boundary (Architecture.md §5.1): a customer must not be
+    # able to write into another tenant by setting a resource attribute. Fired
+    # as a real OTLP payload against the real gateway, not a unit test -- the
+    # unit test in tests/test_control_plane.py checks the function; this checks
+    # that the function is actually on the path.
+    from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+        ExportTraceServiceRequest,
+    )
+    from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
+    from opentelemetry.proto.trace.v1.trace_pb2 import ResourceSpans, ScopeSpans, Span
+
+    forged = ExportTraceServiceRequest()
+    rs = ResourceSpans()
+    for key, value in (("tenant.id", "somebody-else"), ("service.name", "impostor")):
+        rs.resource.attributes.append(
+            KeyValue(key=key, value=AnyValue(string_value=value))
+        )
+    scope_spans = ScopeSpans()
+    # A FRESH trace id per run. The first version used a constant one, so every
+    # verify run added another span to the same synthetic trace -- which then
+    # became the largest trace in the database and got picked up by A5, whose
+    # parent links naturally do not resolve because the spans are unrelated. A
+    # probe must not accumulate into a fixture other assertions read.
+    import secrets as _secrets
+
+    span = Span(
+        name="forged", trace_id=_secrets.token_bytes(16), span_id=_secrets.token_bytes(8),
+        start_time_unix_nano=int(time.time() * 1e9),
+        end_time_unix_nano=int(time.time() * 1e9) + 1_000_000,
+    )
+    scope_spans.spans.append(span)
+    rs.scope_spans.append(scope_spans)
+    forged.resource_spans.append(rs)
+
+    gateway = urllib.request.Request(
+        "http://localhost:4319/v1/traces",
+        data=forged.SerializeToString(),
+        headers={
+            "content-type": "application/x-protobuf",
+            "x-api-key": _dev_key("MCPOBS_INGEST_KEY"),
+        },
+    )
+    try:
+        with urllib.request.urlopen(gateway, timeout=20) as response:
+            accepted = response.status < 300
+    except Exception as exc:
+        accepted = False
+        print(f"      gateway rejected the probe: {exc}")
+
+    if accepted:
+        deadline = time.time() + 45
+        landed = 0
+        while time.time() < deadline:
+            landed = ch.query(
+                "SELECT count() FROM spans_raw WHERE span_name = 'forged'"
+            ).result_rows[0][0]
+            if landed:
+                break
+            time.sleep(2)
+        stolen = ch.query(
+            "SELECT count() FROM spans_raw "
+            "WHERE span_name = 'forged' AND tenant_id = 'somebody-else'"
+        ).result_rows[0][0]
+        record(
+            "F3 a forged tenant.id is overwritten by the authenticated one",
+            landed > 0 and stolen == 0,
+            f"{landed} forged span(s) stored, {stolen} under the claimed tenant"
+            + ("" if landed else "  -- span never arrived, so this proved nothing"),
+        )
+    else:
+        record("F3 a forged tenant.id is overwritten", False, "gateway did not accept")
+
+    # F4. The read side of the same boundary. `?tenant=` used to select tenancy;
+    # it must now be inert rather than deprecated -- an optional boundary is not
+    # one.
+    honest = api("/api/v1/overview?window_minutes=1440")
+    attempted = api("/api/v1/overview?window_minutes=1440&tenant=somebody-else&project=x")
+    record(
+        "F4 a tenant query parameter cannot change what a key sees",
+        honest["calls"] == attempted["calls"],
+        f"{honest['calls']} calls with and without ?tenant= override",
+    )
+
+    # F5. The archive exists, is per-tenant, and can be READ BACK. An archive
+    # nobody has restored is a backup nobody has restored.
+    try:
+        import boto3
+
+        from archiver.archiver import unframe
+
+        s3 = boto3.client(
+            "s3", endpoint_url=os.getenv("S3_ENDPOINT", "http://localhost:9002"),
+            aws_access_key_id="mcpobs", aws_secret_access_key="mcpobs-secret",
+            region_name="us-east-1",
+        )
+        contents = s3.list_objects_v2(Bucket="mcpobs-archive").get("Contents", [])
+        prefixes = {o["Key"].split("/", 1)[0] for o in contents}
+        # `unknown/` is EXPECTED here and is not a failure: A9 deliberately
+        # produces an undecodable message, and the archiver files those verbatim
+        # rather than dropping them -- losing bytes is worse than filing them
+        # awkwardly. What must hold is that decodable traffic is filed under its
+        # real tenant, so the assertion is on the presence of `local`, not the
+        # absence of `unknown`.
+        record(
+            "F5 the archive files decodable traffic under its tenant prefix",
+            bool(contents) and "local" in prefixes,
+            f"{len(contents)} object(s) under {sorted(prefixes)}"
+            + ("  (`unknown` is A9's deliberate poison message)"
+               if "unknown" in prefixes else ""),
+        )
+        real = [o for o in contents if not o["Key"].startswith("unknown/")]
+        if real:
+            # Deliberately not "whichever is newest": the newest may be A9's
+            # poison message, and asserting that garbage fails to parse would
+            # prove nothing about the archive format.
+            newest = max(real, key=lambda o: o["LastModified"])
+            blob = s3.get_object(Bucket="mcpobs-archive", Key=newest["Key"])["Body"].read()
+            messages = unframe(blob)
+            parsed = ExportTraceServiceRequest()
+            parsed.ParseFromString(messages[0])
+            record(
+                "F5b an archived object parses back into OTLP",
+                bool(messages) and len(parsed.resource_spans) > 0,
+                f"{len(messages)} message(s), "
+                f"{len(parsed.resource_spans)} ResourceSpans in the first",
+            )
+    except Exception as exc:
+        record("F5 the archive holds objects", False, f"{exc}")
+
+    # F6. Invite-only, checked as a property rather than a policy. A user row
+    # can only exist because an invite was redeemed.
+    try:
+        from control import ControlPlane
+
+        cp = ControlPlane(
+            os.getenv("CONTROL_PLANE_DSN",
+                      "postgresql://mcpobs:mcpobs@localhost:5433/mcpobs_control")
+        )
+        orphans = cp._one(
+            "SELECT count(*) AS n FROM users u "
+            "WHERE NOT EXISTS (SELECT 1 FROM invites i "
+            "                  WHERE i.accepted_by = u.id AND i.accepted_at IS NOT NULL)"
+        )
+        record(
+            "F6 every user exists because an invite was redeemed",
+            orphans is not None and orphans["n"] == 0,
+            f"{orphans['n'] if orphans else '?'} user(s) with no redeemed invite",
+        )
+
+        # A redeemed invite is single use. Redeeming twice would let one leaked
+        # code seed an organisation indefinitely.
+        reused = cp._one(
+            "SELECT count(*) AS n FROM invites "
+            "WHERE accepted_at IS NOT NULL AND accepted_by IS NULL"
+        )
+        record(
+            "F6b no invite was consumed without producing a user",
+            reused is not None and reused["n"] == 0,
+            f"{reused['n'] if reused else '?'} invite(s) accepted with no user",
+        )
+    except Exception as exc:
+        record("F6 every user exists because an invite was redeemed", False, f"{exc}")
 
     # ---------------- B7: freshness, the headline metric -------------------
     # Architecture.md §9.1 names end-to-end freshness -- span event time to
