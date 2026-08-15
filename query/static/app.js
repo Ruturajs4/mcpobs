@@ -111,6 +111,8 @@ const CAT = {
   protocol_error:    { c: "b-proto",   l: "protocol",       h: "#ec4899" },
   pending_input:     { c: "b-pending", l: "awaiting input", h: "#9aa1ad" },
   cancelled:         { c: "b-pending", l: "cancelled",      h: "#78716c" },
+  unauthorized:      { c: "b-proto",   l: "401 auth",       h: "#f97316" },
+  forbidden:         { c: "b-proto",   l: "403 scope",      h: "#eab308" },
   unclassified:      { c: "b-none",    l: "unclassified",   h: "#6b7280" },
 };
 const badge = (cat) => {

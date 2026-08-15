@@ -122,6 +122,33 @@ keys and JWTs by shape). That redaction is **incomplete by construction** — it
 will not catch a secret in a field called `note`. It reduces harm; it does not
 make capture safe. Turn it on deliberately.
 
+## Authorization (401 / 403)
+
+If your server is an OAuth 2.1 resource server, wrap its ASGI app:
+
+```python
+from mcpobs import instrument_asgi
+
+app = instrument_asgi(mcp.streamable_http_app())
+uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+Authorization is a **transport-level** concern in MCP, so a client without a
+valid token is refused before any method runs and produces no MCP span at all.
+Without this wrapper, "my clients cannot connect" is not an error in the
+console -- it is simply absent.
+
+`401` and `403` are shown as their own categories and are deliberately **not**
+counted as failures. The spec's flow opens with an unauthenticated request
+answered by a 401 -- that is how a client discovers where to authenticate -- and
+`403 insufficient_scope` drives the routine step-up flow. A *persistent* 401
+rate is the real signal, and you can see it because these are separate
+categories rather than errors.
+
+> Do not rely on `StarletteInstrumentor().instrument()` for this. It patches the
+> `Starlette` class, and the MCP SDK binds that name at import time, so whether
+> it works depends on your import order -- and it reports success either way.
+
 ## Redis, Postgres, and everything else your tools call
 
 Your tool calls a database or a cache; we show it as a child span under the tool

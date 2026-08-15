@@ -1233,6 +1233,62 @@ def main() -> int:
     except Exception as exc:
         record("F6 every user exists because an invite was redeemed", False, f"{exc}")
 
+    # ---------------- G: transport authorization (DF-22) -------------------
+    print()
+    print("--- G: transport authorization ---")
+
+    # Spawns its OWN auth-enabled server and provokes a 401. Asserting over
+    # whatever happens to be in the table would go vacuous the moment nobody
+    # ran an auth demo -- the same way B9 sat green for days with no
+    # subscription span in existence.
+    auth_port = 8021
+    auth_proc = subprocess.Popen(
+        [sys.executable, "-m", "demo_server.server", "--http", "--port", str(auth_port)],
+        cwd=REPO_ROOT,
+        env={**os.environ, "DEMO_AUTH": "1", "DEMO_HTTP_PORT": str(auth_port)},
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    try:
+        from demo_server.scenarios import _wait_for_port, run_auth_scenario
+
+        if _wait_for_port(auth_port, timeout=30):
+            for line in asyncio.run(run_auth_scenario(auth_port)):
+                print(f"     {line.strip()}")
+            time.sleep(12)  # let the batch reach ClickHouse
+
+        current = ch.query("SELECT max(normalization_version) FROM spans_raw").result_rows[0][0]
+        rows = ch.query(
+            "SELECT count(), countIf(failure_category = 'unauthorized'), "
+            "       countIf(mcp_is_error = 1) "
+            "FROM spans_raw WHERE span_kind = 'SERVER' AND http_status_code = 401 "
+            f"  AND normalization_version = {int(current)}"
+        ).result_rows[0]
+        record(
+            "G1 a 401 that never reached an MCP method is visible and classified",
+            rows[0] > 0 and rows[1] == rows[0],
+            f"{rows[0]} transport 401(s), {rows[1]} classified as unauthorized"
+            + ("  -- NO 401 AT ALL, so this proved nothing" if not rows[0] else ""),
+        )
+        record(
+            "G1b a 401 is NOT counted as a server failure",
+            rows[2] == 0,
+            "the spec's own flow opens with an unauthenticated request answered by a 401"
+            if rows[2] == 0 else f"{rows[2]} 401(s) wrongly counted as errors",
+        )
+
+        # The HTTP layer must be present at all -- this is what DF-22 lacked.
+        transport = ch.query(
+            "SELECT count() FROM spans_raw WHERE span_kind = 'SERVER' "
+            "  AND span_name LIKE 'POST /%' AND timestamp > now() - INTERVAL 30 MINUTE"
+        ).result_rows[0][0]
+        record(
+            "G2 the HTTP layer beneath MCP is observed",
+            transport > 0,
+            f"{transport} transport span(s); before DF-22 there were none at all",
+        )
+    finally:
+        auth_proc.terminate()
+
     # ---------------- B7: freshness, the headline metric -------------------
     # Architecture.md §9.1 names end-to-end freshness -- span event time to
     # queryable time -- as the one number that says whether the pipeline is

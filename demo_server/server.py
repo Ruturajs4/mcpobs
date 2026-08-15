@@ -31,7 +31,10 @@ import sqlite3
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated, Any, Final
+
+if TYPE_CHECKING:
+    from mcp.server.auth.settings import AuthSettings
 
 import httpx
 from mcp.server import MCPServer
@@ -60,8 +63,51 @@ DB_PATH = os.getenv("DEMO_DB_PATH", ":memory:")
 # which tests the rule and not the pipeline.
 SUBSCRIPTIONS = InMemorySubscriptionBus()
 
+
+class DemoTokenVerifier:
+    """Accepts one token, rejects everything else -- so real 401s happen.
+
+    The point is not the auth scheme; it is that a REJECTED request produces
+    only an HTTP span and never an MCP one. Without a server that can say no,
+    the 401 path cannot be exercised at all, and DF-22 was filed precisely
+    because nobody had ever seen one in this pipeline.
+    """
+
+    VALID: Final = "demo-valid-token"
+
+    async def verify_token(self, token: str) -> Any:
+        from mcp.server.auth.provider import AccessToken
+
+        if token != self.VALID:
+            return None
+        return AccessToken(
+            token=token, client_id="demo-client", scopes=["mcp:read"], expires_at=None
+        )
+
+# Auth is enabled only for the HTTP transport, and only when asked for. The
+# spec is explicit that STDIO servers "SHOULD NOT" follow the authorization
+# spec -- they take credentials from the environment -- so enabling it there
+# would be demonstrating something the spec tells servers not to do.
+def _auth_settings() -> AuthSettings | None:
+    if os.getenv("DEMO_AUTH", "") != "1":
+        return None
+    from mcp.server.auth.settings import AuthSettings
+
+    return AuthSettings(
+        issuer_url="https://auth.example.com",  # type: ignore[arg-type]
+        resource_server_url=f"http://127.0.0.1:{os.getenv('DEMO_HTTP_PORT', '8000')}/mcp",  # type: ignore[arg-type]
+        required_scopes=["mcp:read"],
+    )
+
+
+_AUTH = _auth_settings()
+
 mcp = MCPServer(
-    "mcp-demo-server", version=SERVICE_VERSION, subscriptions=SUBSCRIPTIONS
+    "mcp-demo-server",
+    version=SERVICE_VERSION,
+    subscriptions=SUBSCRIPTIONS,
+    auth=_AUTH,
+    token_verifier=DemoTokenVerifier() if _AUTH else None,
 )
 
 # The entire customer-facing integration. Annotates the SDK's existing span with
@@ -354,7 +400,18 @@ def main() -> None:
 
     try:
         if args.http:
-            mcp.run("streamable-http", host="127.0.0.1", port=args.port)
+            # Build the app, WRAP it, then serve -- rather than `mcp.run(...)`.
+            # Class-patching instrumentation cannot help here: the SDK binds
+            # `Starlette` at import time, so patching it afterwards is a no-op
+            # (mcpobs/asgi.py). Wrapping the instance is order-independent, and
+            # it is also what a real deployment does, because it wants its own
+            # uvicorn configuration.
+            import uvicorn
+
+            from mcpobs import instrument_asgi
+
+            app = instrument_asgi(mcp.streamable_http_app())
+            uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
         else:
             mcp.run("stdio")
     finally:

@@ -29,6 +29,11 @@ class FailureBreakdown(BaseModel):
     #: success, and separately from the failures because it is not a server
     #: fault -- `failures` below deliberately excludes it.
     cancelled: int = 0
+    #: Transport-level authorization outcomes. Neither is a failure: the
+    #: spec's own flow OPENS with an unauthenticated request answered by a
+    #: 401, and `403 insufficient_scope` drives the routine step-up flow.
+    unauthorized: int = 0
+    forbidden: int = 0
     unclassified: int = 0
 
     @property

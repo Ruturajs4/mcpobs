@@ -165,6 +165,8 @@ CATEGORIES = (
     "protocol_error",
     "pending_input",
     "cancelled",
+    "unauthorized",
+    "forbidden",
     "unclassified",
 )
 

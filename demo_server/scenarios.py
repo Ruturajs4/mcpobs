@@ -205,6 +205,33 @@ async def stdio_session(span_file: Path | None = None) -> AsyncIterator[Client]:
         yield client
 
 
+async def run_auth_scenario(port: int) -> list[str]:
+    """Hit an auth-enabled server with no token, a bad token, and a good one.
+
+    Produces the spans DF-22 was filed for. None of this reaches an MCP method:
+    a 401 is answered by the transport, so the HTTP span is the ONLY record the
+    request happened -- which is exactly why the console showed nothing.
+    """
+    import httpx
+
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+    out: list[str] = []
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for label, headers in (
+            ("no token", {}),
+            ("bad token", {"authorization": "Bearer not-the-token"}),
+            ("valid token", {"authorization": "Bearer demo-valid-token"}),
+        ):
+            try:
+                r = await client.post(
+                    f"http://127.0.0.1:{port}/mcp", json=body, headers=headers
+                )
+                out.append(f"  {'auth: ' + label:<52} -> HTTP {r.status_code}")
+            except Exception as exc:
+                out.append(f"  {'auth: ' + label:<52} -> {type(exc).__name__}")
+    return out
+
+
 def _wait_for_port(port: int, timeout: float = 25.0) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:

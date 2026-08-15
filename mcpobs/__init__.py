@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from mcpobs.asgi import instrument_asgi
 from mcpobs.classifier import (
     ATTRIBUTE,
     CLASSIFIER_VERSION,
@@ -44,6 +45,7 @@ __all__ = [
     "PayloadCapture",
     "available",
     "instrument",
+    "instrument_asgi",
     "instrument_downstream",
     "instrument_httpx",
 ]

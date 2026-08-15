@@ -249,3 +249,73 @@ class TestCancellation:
         span = self.span(**{"mcpobs.cancelled": True, "error.type": "tool_error"})
         span.status_code = "ERROR"
         assert self.taxonomy.classify(span) == "cancelled"
+
+
+class TestTransportAuthorization:
+    """401/403 seen at the HTTP layer, beneath MCP (DF-22).
+
+    Authorization is transport-level in 2026-07-28, so a client that cannot
+    authenticate never reaches a method and produces no MCP span. Before this,
+    the whole class of "my clients cannot connect" was absent from the console
+    rather than shown.
+    """
+
+    def span(self, status: str, kind: str = "SERVER", **attrs: object):
+        from normalizer.models import DecodedSpan
+
+        return DecodedSpan(
+            trace_id="a" * 32, span_id="b" * 16, span_name="POST /mcp",
+            span_kind=kind,
+            span_attributes={"http.response.status_code": status, **attrs},
+        )
+
+    def setup_method(self) -> None:
+        from normalizer.taxonomy import FailureTaxonomy
+
+        self.taxonomy = FailureTaxonomy()
+
+    def test_a_401_is_classified(self) -> None:
+        assert self.taxonomy.classify(self.span("401")) == "unauthorized"
+
+    def test_a_403_is_classified(self) -> None:
+        assert self.taxonomy.classify(self.span("403")) == "forbidden"
+
+    def test_neither_is_counted_as_a_failure(self) -> None:
+        """The spec's own flow diagram OPENS with an unauthenticated request
+        answered by a 401 -- it is how a client discovers where to authenticate.
+        Counting those would make every successful OAuth handshake register as a
+        failure. `403 insufficient_scope` drives the routine step-up flow."""
+        assert not self.taxonomy.is_error("unauthorized")
+        assert not self.taxonomy.is_error("forbidden")
+
+    def test_an_outbound_401_is_not_an_mcp_auth_event(self) -> None:
+        """A CLIENT-kind 401 is OUR call to somebody else's API failing, which
+        is a completely different event from a client failing to authenticate to
+        the customer's MCP server."""
+        assert self.taxonomy.classify(self.span("401", kind="CLIENT")) == ""
+
+    def test_a_successful_transport_span_gets_no_category(self) -> None:
+        """A 200 on the HTTP layer says nothing about the MCP call inside it;
+        the MCP span carries that. Categorising it would double-count."""
+        assert self.taxonomy.classify(self.span("200")) == ""
+
+    def test_legacy_status_attribute_is_read_too(self) -> None:
+        from normalizer.models import DecodedSpan
+
+        span = DecodedSpan(
+            trace_id="a" * 32, span_id="b" * 16, span_kind="SERVER",
+            span_attributes={"http.status_code": "401"},
+        )
+        assert self.taxonomy.classify(span) == "unauthorized"
+
+    def test_an_mcp_span_is_unaffected(self) -> None:
+        """A method-level span keeps its own classification -- transport auth is
+        only consulted when there is no MCP method at all."""
+        from normalizer.models import DecodedSpan
+
+        span = DecodedSpan(
+            trace_id="a" * 32, span_id="b" * 16, span_kind="SERVER",
+            span_attributes={"mcp.method.name": "tools/call",
+                             "http.response.status_code": "401"},
+        )
+        assert self.taxonomy.classify(span) == "ok"

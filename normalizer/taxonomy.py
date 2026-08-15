@@ -46,6 +46,10 @@ class Category:
     PENDING_INPUT: Final = "pending_input"
     #: The client gave up before the tool finished. NOT a server failure.
     CANCELLED: Final = "cancelled"
+    #: Transport-level authorization outcomes (DF-22). NOT failures -- see
+    #: NOT_A_FAILURE below for why a 401 is a normal thing to see.
+    UNAUTHORIZED: Final = "unauthorized"
+    FORBIDDEN: Final = "forbidden"
     UNCLASSIFIED: Final = "unclassified"
 
 
@@ -104,6 +108,25 @@ class FailureTaxonomy:
         "roots/list",
     )
 
+    #: An inbound HTTP span, i.e. someone calling US. Only these are classified
+    #: as authorization outcomes: a CLIENT-kind 401 is our own outbound call to
+    #: somebody else's API failing, which is a completely different event.
+    SERVER_KIND: Final = "SERVER"
+
+    def _transport_auth(self, span: DecodedSpan) -> str:
+        """401/403 on an inbound request, before any MCP method ran."""
+        if span.span_kind != self.SERVER_KIND:
+            return ""
+        status = self._str(
+            span.span_attributes.get("http.response.status_code")
+            or span.span_attributes.get("http.status_code")
+        )
+        if status == "401":
+            return Category.UNAUTHORIZED
+        if status == "403":
+            return Category.FORBIDDEN
+        return ""
+
     def is_latency_eligible(self, span: DecodedSpan) -> bool:
         """False when a span's duration must never enter a latency aggregate.
 
@@ -154,7 +177,13 @@ class FailureTaxonomy:
         """
         attrs = span.span_attributes
         if self.MCP_METHOD not in attrs:
-            return ""
+            # No MCP method -- but it may still be an MCP request that never
+            # REACHED one. Authorization is transport-level (2026-07-28
+            # basic/authorization), so a client without a valid token gets a 401
+            # before dispatch and produces only this HTTP span. Classifying it
+            # here is what makes "my clients cannot connect" visible at all;
+            # before this the entire class was absent rather than shown.
+            return self._transport_auth(span)
 
         error_type = self._str(attrs.get(self.ERROR_TYPE))
         rpc_status = self._str(attrs.get(self.RPC_STATUS))
@@ -205,8 +234,20 @@ class FailureTaxonomy:
     #: one is waiting for an answer, the other stopped asking. Counting either
     #: as a server error would corrupt the single number a customer judges the
     #: product by.
-    NOT_A_FAILURE: Final[tuple[str, ...]] = (Category.OK, Category.PENDING_INPUT,
-                                             Category.CANCELLED)
+    #: `unauthorized` and `forbidden` are here for a reason that is easy to get
+    #: wrong. The spec's own flow diagram OPENS with an unauthenticated request
+    #: answered by a 401 -- it is how a client discovers where to authenticate.
+    #: Counting those as errors would make every successful OAuth handshake
+    #: register as a failure. `403 insufficient_scope` is the same: the step-up
+    #: authorization flow makes it a routine runtime event, not a fault.
+    #:
+    #: They are surfaced, and not counted. A PERSISTENT 401 is a real problem,
+    #: but that is a question about a rate over time, which the console can ask
+    #: precisely because these are their own categories rather than errors.
+    NOT_A_FAILURE: Final[tuple[str, ...]] = (
+        Category.OK, Category.PENDING_INPUT, Category.CANCELLED,
+        Category.UNAUTHORIZED, Category.FORBIDDEN,
+    )
 
     def is_error(self, category: str) -> bool:
         return bool(category) and category not in self.NOT_A_FAILURE
