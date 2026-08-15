@@ -37,6 +37,11 @@ SENSITIVE_KEYS: Final[tuple[str, ...]] = (
     "password", "passwd", "secret", "token", "api_key", "apikey",
     "authorization", "auth", "credential", "private_key", "session",
     "cookie", "signature", "access_key",
+    # `requestState` carries RECORDED ELICITATION OUTCOMES -- the user's actual
+    # answers (D28). It is hashed for MRTR correlation precisely because it must
+    # not be stored; now that the whole params object is captured it would
+    # otherwise ride along in plain text.
+    "requeststate",
 )
 
 #: Value shapes that are secrets regardless of the field they sit in.
@@ -57,33 +62,61 @@ class PayloadCapture:
         self.redact = redact
 
     # -- public ------------------------------------------------------------
-    def request(self, params: Any) -> tuple[str, int]:
-        """The arguments a tool was called with, as (preview, original size)."""
-        args = params.get("arguments") if isinstance(params, dict) else None
-        return self._render(args)
+    def request(self, method: str, request_id: Any, params: Any) -> tuple[str, int]:
+        """The JSON-RPC request, as (preview, original size).
 
-    def response(self, result: Any) -> tuple[str, int]:
-        """The content a tool returned, as (preview, original size).
+        THE ACTUAL WIRE MESSAGE, not just `arguments`. This is an MCP
+        observability product: the useful artefact is the protocol message you
+        can compare against the spec or paste into a bug report, and the first
+        version threw away everything except the arguments.
 
-        Reads the same `content` blocks the classifier already reads, so a
-        result is never serialised twice.
+        What that discarded, all of it debugging-relevant:
+          * `_meta.io.modelcontextprotocol/clientInfo` -- WHICH CLIENT called.
+            The SDK sets no client attribute on the span, so this is the only
+            place client identity appears at all, and V2 6.1 asks for exactly
+            that ("which clients are calling which tools").
+          * `_meta` clientCapabilities -- what the client claimed to support,
+            the first thing to check on a capability error.
+          * `_meta` protocolVersion and traceparent.
+          * `name`, so a prompt or resource call is self-describing.
         """
-        content = (
-            result.get("content") if isinstance(result, dict) else getattr(result, "content", None)
-        )
-        if not content:
+        envelope = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+            "params": params if isinstance(params, dict) else {},
+        }
+        return self._render(envelope)
+
+    def response(self, request_id: Any, result: Any) -> tuple[str, int]:
+        """The JSON-RPC response, as (preview, original size).
+
+        Also the whole message, so `resultType`, `isError` and especially
+        `structuredContent` -- the typed result, previously invisible -- survive.
+
+        Works for EVERY method. The first version looked for `content` blocks
+        and therefore returned nothing for prompts/get (which returns
+        `messages`) or resources/read (which returns `contents`).
+        """
+        body = result if isinstance(result, dict) else self._as_dict(result)
+        if not body:
             return "", 0
-        texts = []
-        for block in content:
-            text = block.get("text") if isinstance(block, dict) else getattr(block, "text", None)
-            if isinstance(text, str):
-                texts.append(text)
-            elif isinstance(block, dict):
-                # Non-text blocks (image, audio, resource) are summarised by
-                # TYPE rather than dumped: a base64 image is megabytes of noise
-                # that tells an operator nothing.
-                texts.append(f"[{block.get('type', 'block')}]")
-        return self._render("\n".join(texts))
+        return self._render({"jsonrpc": "2.0", "id": request_id, "result": body})
+
+    @staticmethod
+    def _as_dict(result: Any) -> dict[str, Any]:
+        """Best-effort for a model rather than the sealed wire form."""
+        for attr in ("model_dump", "dict"):
+            dumper = getattr(result, attr, None)
+            if callable(dumper):
+                try:
+                    return dumper(by_alias=True, exclude_none=True)
+                except Exception:  # noqa: BLE001
+                    try:
+                        return dumper()
+                    except Exception:  # noqa: BLE001
+                        return {}
+        return {}
 
     # -- internals ---------------------------------------------------------
     def _render(self, value: Any) -> tuple[str, int]:
@@ -92,7 +125,10 @@ class PayloadCapture:
         if not isinstance(value, str):
             cleaned = self._scrub(value) if self.redact else value
             try:
-                text = json.dumps(cleaned, ensure_ascii=False, default=str)
+                # indent=2 deliberately: this is read by a human in a panel, not
+                # parsed by a machine, and a one-line JSON-RPC envelope with
+                # _meta inside it is unreadable.
+                text = json.dumps(cleaned, ensure_ascii=False, default=str, indent=2)
             except (TypeError, ValueError):
                 text = str(cleaned)
         else:
@@ -111,7 +147,9 @@ class PayloadCapture:
                 for k, v in value.items()
             }
         if isinstance(value, list):
-            return [self._scrub(v) for v in value]
+            # Non-text content blocks are summarised by TYPE, never dumped: a
+            # base64 image is megabytes of noise telling an operator nothing.
+            return [self._scrub(self._summarise_block(v)) for v in value]
         if isinstance(value, str):
             return self._scrub_text(value)
         return value
@@ -120,6 +158,14 @@ class PayloadCapture:
         for pattern in SENSITIVE_VALUES:
             text = pattern.sub(REDACTED, text)
         return text
+
+    @staticmethod
+    def _summarise_block(value: Any) -> Any:
+        if isinstance(value, dict) and value.get("type") in ("image", "audio", "blob"):
+            kept = {k: v for k, v in value.items() if k not in ("data", "blob")}
+            kept["data"] = f"[{value.get('type')} omitted]"
+            return kept
+        return value
 
     @staticmethod
     def _is_sensitive_key(key: Any) -> bool:

@@ -185,3 +185,76 @@ class TestMrtrCorrelation:
         assert self.classifier.outgoing_state({"requestState": blob}) == (
             self.classifier.incoming_state({"requestState": blob})
         )
+
+
+class TestJsonRpcEnvelope:
+    """Payloads are captured as the MCP wire message, not a fragment.
+
+    The first version captured only `params["arguments"]` and the first text
+    block, which is not a protocol message and threw away `_meta` entirely --
+    including the ONLY place client identity appears.
+    """
+
+    def setup_method(self) -> None:
+        from mcpobs.payload import PayloadCapture
+
+        self.p = PayloadCapture()
+
+    def test_request_is_a_jsonrpc_message(self) -> None:
+        import json
+
+        text, _ = self.p.request("tools/call", 7, {"name": "echo", "arguments": {"a": 1}})
+        msg = json.loads(text)
+        assert msg["jsonrpc"] == "2.0"
+        assert msg["id"] == 7
+        assert msg["method"] == "tools/call"
+        assert msg["params"]["name"] == "echo"
+
+    def test_meta_survives_because_it_carries_client_identity(self) -> None:
+        """The SDK sets no client attribute on the span, so `_meta` is the only
+        place `clientInfo` exists (V2 §6.1 asks which clients call which tools)."""
+        import json
+
+        text, _ = self.p.request("tools/call", 1, {
+            "name": "echo",
+            "_meta": {"io.modelcontextprotocol/clientInfo": {"name": "claude-code"}},
+        })
+        assert "claude-code" in json.loads(text)["params"]["_meta"][
+            "io.modelcontextprotocol/clientInfo"]["name"]
+
+    def test_request_state_is_redacted(self) -> None:
+        """It carries recorded elicitation outcomes -- the user's answers (D28).
+        Hashing it for correlation while dumping it verbatim here would be
+        pointless."""
+        text, _ = self.p.request("tools/call", 1, {
+            "name": "confirm", "requestState": '{"outcomes":{"ask":{"approved":true}}}',
+        })
+        assert "approved" not in text
+        assert "[redacted]" in text
+
+    def test_response_keeps_structured_content(self) -> None:
+        import json
+
+        text, _ = self.p.response(3, {
+            "content": [{"type": "text", "text": "hi"}],
+            "isError": False, "resultType": "complete",
+            "structuredContent": {"result": "hi"},
+        })
+        result = json.loads(text)["result"]
+        assert result["structuredContent"] == {"result": "hi"}
+        assert result["resultType"] == "complete"
+
+    def test_works_for_non_tool_methods(self) -> None:
+        """The first version looked for `content` blocks, so prompts/get
+        (`messages`) and resources/read (`contents`) captured nothing."""
+        import json
+
+        text, _ = self.p.response(9, {"messages": [{"role": "user", "content": "x"}]})
+        assert json.loads(text)["result"]["messages"]
+
+    def test_binary_blocks_are_summarised_not_dumped(self) -> None:
+        text, _ = self.p.response(1, {
+            "content": [{"type": "image", "data": "iVBORw0KGgo" * 500, "mimeType": "image/png"}],
+        })
+        assert "iVBORw0KGgo" not in text
+        assert "image omitted" in text

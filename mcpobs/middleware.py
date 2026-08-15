@@ -62,7 +62,7 @@ class FailureClassifierMiddleware:
     async def __call__(self, ctx: Any, call_next: Any) -> Any:
         result = await call_next(ctx)
         try:
-            self._annotate(result, getattr(ctx, "params", None))
+            self._annotate(result, getattr(ctx, "params", None), ctx)
         except Exception as exc:  # noqa: BLE001
             # Telemetry enrichment must never break a customer's tool call.
             # Losing an attribute is an acceptable failure; losing the request
@@ -70,17 +70,19 @@ class FailureClassifierMiddleware:
             log.debug("failure classification skipped: %s", exc)
         return result
 
-    def _capture_payload(self, span: Any, params: Any, result: Any) -> None:
-        request, request_size = self.payloads.request(params)
+    def _capture_payload(self, span: Any, ctx: Any, params: Any, result: Any) -> None:
+        method = getattr(ctx, "method", "") or ""
+        request_id = getattr(ctx, "request_id", None)
+        request, request_size = self.payloads.request(method, request_id, params)
         if request:
             span.set_attribute(REQUEST_ATTRIBUTE, request)
             span.set_attribute(REQUEST_SIZE_ATTRIBUTE, request_size)
-        response, response_size = self.payloads.response(result)
+        response, response_size = self.payloads.response(request_id, result)
         if response:
             span.set_attribute(RESPONSE_ATTRIBUTE, response)
             span.set_attribute(RESPONSE_SIZE_ATTRIBUTE, response_size)
 
-    def _annotate(self, result: Any, params: Any = None) -> None:
+    def _annotate(self, result: Any, params: Any = None, ctx: Any = None) -> None:
         span = get_current_span()
         if not span.is_recording():
             return
@@ -90,7 +92,7 @@ class FailureClassifierMiddleware:
         # Recorded BEFORE the success/error returns below, because the whole
         # point is to see what a successful-but-wrong call actually returned.
         if self.capture_payloads:
-            self._capture_payload(span, params, result)
+            self._capture_payload(span, ctx, params, result)
 
         # Which resource was read. The SDK records nothing for resources/*
         # because it derives its target from params["name"], and resources are
