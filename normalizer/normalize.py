@@ -20,7 +20,7 @@ from normalizer.taxonomy import FailureTaxonomy
 class SpanNormalizer:
     """Extracts MCP fields and derives the failure category."""
 
-    normalization_version: Final[int] = 9
+    normalization_version: Final[int] = 10
 
     # span attributes
     MCP_METHOD: Final = "mcp.method.name"
@@ -54,7 +54,18 @@ class SpanNormalizer:
     # pinned version decides which they emit.
     DB_SYSTEM: Final = ("db.system.name", "db.system")
     DB_OPERATION: Final = ("db.operation.name", "db.operation")
-    DB_COLLECTION: Final = ("db.collection.name", "db.sql.table", "db.name")
+    # `db.name` is DELIBERATELY absent. It is the DATABASE (renamed
+    # `db.namespace` in current semconv), not a table, and having it here meant
+    # a real Postgres query reported `db_collection = "mcpobs_control"` -- the
+    # database -- while the table `orders` sat parsed and discarded. "Which
+    # table is slow" answered with the database name for every DBAPI driver
+    # (psycopg, pymysql, and anything else on the shared dbapi integration),
+    # which is a wrong answer rather than a missing one. Caught by running a
+    # real query against a real Postgres rather than a synthetic span.
+    #
+    # The database name is still in `span_attributes`, unpromoted: it is a
+    # different dimension, not a substitute for this one.
+    DB_COLLECTION: Final = ("db.collection.name", "db.sql.table")
     GEN_AI_SYSTEM: Final = ("gen_ai.system",)
     GEN_AI_MODEL: Final = ("gen_ai.request.model", "gen_ai.response.model")
     GEN_AI_IN_TOKENS: Final = ("gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens")

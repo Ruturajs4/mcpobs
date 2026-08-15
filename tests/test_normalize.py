@@ -267,3 +267,74 @@ class TestHttpDownstreamColumns:
         from normalizer.models import SpanRow
 
         assert "http_response_body" not in SpanRow.model_fields
+
+
+class TestRealDriverAttributes:
+    """Attribute shapes taken from REAL instrumentation, not invented.
+
+    The postgres case below is a verbatim copy of what
+    `opentelemetry-instrumentation-psycopg` emitted for an actual query against
+    an actual Postgres. That distinction matters: a synthetic span written from
+    the semconv spec passed happily while the real one was mis-parsed, because
+    the spec is what SHOULD be emitted and this is what IS.
+    """
+
+    def row(self, attrs: dict) -> object:
+        from normalizer.models import DecodedSpan
+        from normalizer.normalize import SpanNormalizer
+
+        return SpanNormalizer().to_row(
+            DecodedSpan(trace_id="a" * 32, span_id="b" * 16, span_attributes=attrs)
+        )
+
+    POSTGRES = {
+        "db.system": "postgresql",
+        "db.name": "mcpobs_control",
+        "db.statement": "SELECT slug, plan FROM orgs WHERE slug = %s",
+        "db.user": "mcpobs",
+        "net.peer.name": "localhost",
+        "net.peer.port": 5433,
+    }
+
+    def test_db_name_is_not_treated_as_the_table(self) -> None:
+        """`db.name` is the DATABASE -- renamed `db.namespace` in current
+        semconv. Having it among the collection candidates made "which table is
+        slow" answer `mcpobs_control` for every DBAPI driver, while the real
+        table sat parsed and discarded. A wrong answer, not a missing one."""
+        row = self.row(self.POSTGRES)
+        assert row.db_collection == "orgs"
+        assert row.db_collection != "mcpobs_control"
+
+    def test_postgres_is_fully_attributed(self) -> None:
+        row = self.row(self.POSTGRES)
+        assert row.downstream_kind == "db"
+        assert row.db_system == "postgresql"
+        assert row.db_operation == "SELECT"
+
+    def test_mysql_shares_the_dbapi_shape(self) -> None:
+        """pymysql and psycopg both sit on the shared `dbapi` integration, so
+        the attributes are the same and so is the handling."""
+        row = self.row({
+            "db.system": "mysql",
+            "db.name": "shop",
+            "db.statement": "UPDATE inventory SET qty = %s WHERE sku = %s",
+        })
+        assert (row.db_system, row.db_operation, row.db_collection) == (
+            "mysql", "UPDATE", "inventory",
+        )
+
+    def test_the_database_name_is_still_recoverable(self) -> None:
+        """Removed from the collection candidates, not thrown away. It is a
+        different dimension, and an operator with several databases needs it."""
+        row = self.row(self.POSTGRES)
+        assert row.span_attributes["db.name"] == "mcpobs_control"
+
+    def test_a_new_semconv_collection_still_wins(self) -> None:
+        """When the instrumentation names the table properly, it knows better
+        than a regex over the statement (D72)."""
+        row = self.row({
+            "db.system.name": "postgresql",
+            "db.collection.name": "authoritative",
+            "db.query.text": "SELECT * FROM something_else",
+        })
+        assert row.db_collection == "authoritative"
