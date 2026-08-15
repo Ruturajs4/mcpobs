@@ -47,6 +47,13 @@ SCENARIOS: list[tuple[str, dict, str]] = [
 ]
 
 
+#: Tools the demo calls OUTSIDE the `SCENARIOS` table. They belong to the
+#: subscription flow rather than the failure taxonomy, so they are not scenarios
+#: -- but assertion B6 derives its expected tool set from the demo rather than
+#: hardcoding one, and it can only do that if the demo declares them.
+SUBSCRIPTION_TOOLS: frozenset[str] = frozenset({"publish_change"})
+
+
 async def answer_elicitation(*args: Any, **kwargs: Any) -> dict[str, Any]:
     """Answer the server's question, so MRTR completes both round-trips.
 
@@ -95,6 +102,36 @@ async def run_scenarios(client: Client) -> list[str]:
         except Exception as exc:
             out.append(f"  {label:<52} -> raised {type(exc).__name__}  [expect {expected}]")
     out += await run_capability_scenarios(client)
+    out += await run_subscription_scenario(client)
+    return out
+
+
+async def run_subscription_scenario(client: Client) -> list[str]:
+    """Open a real `subscriptions/listen` stream, carry an event, close it.
+
+    The point is the SPAN this produces. Its duration is a stream lifetime, and
+    the rule that keeps such a span out of latency percentiles had been asserted
+    since Day 2 against a synthetic span -- which tests the rule and not the
+    pipeline. Assertion B8 can only be honest once a real one exists.
+
+    Bounded by a timeout on purpose. A subscription that never yields would hang
+    the scenario runner forever, and a demo that can hang is a demo nobody runs.
+    """
+    out: list[str] = []
+    try:
+        async with asyncio.timeout(20):
+            async with client.listen(tools_list_changed=True) as subscription:
+                out.append(f"  {'subscriptions/listen opened':<52} -> honored")
+                await client.call_tool("publish_change", {"kind": "tools"})
+                async for _event in subscription:
+                    out.append(f"  {'  change event received':<52} -> ok")
+                    break
+    except TimeoutError:
+        out.append(f"  {'subscriptions/listen':<52} -> TIMED OUT (no event arrived)")
+    except Exception as exc:
+        # Reported, never raised. A transport that cannot listen must not stop
+        # the rest of the scenarios from producing telemetry.
+        out.append(f"  {'subscriptions/listen':<52} -> {type(exc).__name__}: {exc}")
     return out
 
 

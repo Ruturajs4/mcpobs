@@ -25,6 +25,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from demo_server.scenarios import (  # noqa: E402
     SCENARIOS,
+    SUBSCRIPTION_TOOLS,
     http_session,
     run_scenarios,
     stdio_session,
@@ -341,14 +342,22 @@ def main() -> int:
         "SELECT mcp_method, count() FROM spans_raw "
         "WHERE is_latency_eligible = 0 GROUP BY 1"
     ).result_rows
-    streams = ch.query(
-        "SELECT count() FROM spans_raw "
-        "WHERE mcp_method LIKE 'subscriptions/listen%' AND is_latency_eligible = 1"
-    ).result_rows[0][0]
+    # Counts BOTH sides. `wrongly_eligible == 0` was the whole assertion until
+    # now, and it passed for days without a single subscription span existing --
+    # a vacuous green, satisfied by the absence of the thing it claimed to
+    # check. The demo now opens a real `subscriptions/listen` stream, so the
+    # assertion can require the span to EXIST before congratulating itself on
+    # its eligibility flag.
+    total_streams, wrongly_eligible = ch.query(
+        "SELECT count(), countIf(is_latency_eligible = 1) FROM spans_raw "
+        "WHERE mcp_method LIKE 'subscriptions/listen%'"
+    ).result_rows[0]
     record(
-        "B9 no stream or interim span is latency-eligible",
-        streams == 0,
-        f"{streams} stream spans wrongly eligible; excluded so far: {ineligible or 'none seen yet'}",
+        "B9 real stream spans exist and none is latency-eligible",
+        total_streams > 0 and wrongly_eligible == 0,
+        f"{total_streams} subscriptions/listen span(s), {wrongly_eligible} wrongly eligible; "
+        f"excluded so far: {ineligible or 'none seen yet'}"
+        + ("  -- NO STREAM SPAN AT ALL, so this proved nothing" if not total_streams else ""),
     )
 
     # ---------------- B4-B5: trace assembly (ADR-005) ---------------------
@@ -496,7 +505,7 @@ def main() -> int:
     # Derived from the scenarios, not hardcoded: a hardcoded list goes stale the
     # moment a demo tool is added, and a stale assertion is worse than none --
     # it fails for the wrong reason and trains you to ignore it.
-    expected_tools = {tool for tool, _, _ in SCENARIOS}
+    expected_tools = {tool for tool, _, _ in SCENARIOS} | SUBSCRIPTION_TOOLS
     record(
         "B6 version-resolved read returns the correct tool set",
         resolved == expected_tools,

@@ -35,6 +35,11 @@ from typing import Annotated
 import httpx
 from mcp.server import MCPServer
 from mcp.server.mcpserver.resolve import Elicit, Resolve
+from mcp.server.subscriptions import (
+    InMemorySubscriptionBus,
+    ResourcesListChanged,
+    ToolsListChanged,
+)
 from mcp_types import CallToolResult, TextContent
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
@@ -47,7 +52,15 @@ DOWNSTREAM_PORT = int(os.getenv("DOWNSTREAM_PORT", "8899"))
 DOWNSTREAM_BASE = f"http://127.0.0.1:{DOWNSTREAM_PORT}"
 DB_PATH = os.getenv("DEMO_DB_PATH", ":memory:")
 
-mcp = MCPServer("mcp-demo-server", version=SERVICE_VERSION)
+# A real subscription bus, so `subscriptions/listen` is exercised rather than
+# only reasoned about. The exclusion rule that keeps a stream lifetime out of
+# latency percentiles had been asserted for days against a SYNTHETIC span --
+# which tests the rule and not the pipeline.
+SUBSCRIPTIONS = InMemorySubscriptionBus()
+
+mcp = MCPServer(
+    "mcp-demo-server", version=SERVICE_VERSION, subscriptions=SUBSCRIPTIONS
+)
 
 # The entire customer-facing integration. Annotates the SDK's existing span with
 # a derived failure kind; creates no spans.
@@ -160,6 +173,19 @@ async def submit_order(customer: str = "acme", sku: str = "widget-1") -> str:
             headers={"authorization": "Bearer demo-token-must-not-be-captured"},
         )
         return f"downstream accepted with {response.status_code}"
+
+
+@mcp.tool()
+async def publish_change(kind: str = "tools") -> str:
+    """Publish a change event to every open `subscriptions/listen` stream.
+
+    Exists so a subscription has something to carry. Without it the listen span
+    would be an empty stream, which proves the span opens and closes and nothing
+    about what happens on it.
+    """
+    event = ToolsListChanged() if kind == "tools" else ResourcesListChanged()
+    await SUBSCRIPTIONS.publish(event)
+    return f"published {type(event).__name__}"
 
 
 @mcp.tool()
