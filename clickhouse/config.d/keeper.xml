@@ -1,0 +1,52 @@
+<clickhouse>
+    <!--
+         Embedded ClickHouse Keeper.
+
+         This exists so the LOCAL stack runs the same table engine as
+         production. `insert_deduplication_token`, the mechanism behind
+         ADR-006's idempotency, only works on ReplicatedMergeTree, and
+         replicated tables keep their deduplication blocks in Keeper. Without
+         it, a replayed batch silently duplicates rows locally while appearing
+         to work, and the property goes untested until staging.
+
+         One node, one replica. Not high availability; it does not need to be.
+         The point is that the ENGINE and its deduplication semantics are real.
+
+         (Note for editors: XML comments may not contain a double hyphen, so
+         this file avoids the dash style used elsewhere in the repo.)
+    -->
+    <keeper_server>
+        <tcp_port>9181</tcp_port>
+        <server_id>1</server_id>
+        <log_storage_path>/var/lib/clickhouse/coordination/log</log_storage_path>
+        <snapshot_storage_path>/var/lib/clickhouse/coordination/snapshots</snapshot_storage_path>
+        <coordination_settings>
+            <operation_timeout_ms>10000</operation_timeout_ms>
+            <session_timeout_ms>30000</session_timeout_ms>
+            <raft_logs_level>warning</raft_logs_level>
+        </coordination_settings>
+        <raft_configuration>
+            <server>
+                <id>1</id>
+                <hostname>localhost</hostname>
+                <port>9234</port>
+            </server>
+        </raft_configuration>
+    </keeper_server>
+
+    <zookeeper>
+        <node>
+            <host>localhost</host>
+            <port>9181</port>
+        </node>
+    </zookeeper>
+
+    <!--
+         Substituted into ReplicatedMergeTree paths, so the same DDL works
+         unchanged from this single node up to a real cluster.
+    -->
+    <macros>
+        <shard>01</shard>
+        <replica>local-1</replica>
+    </macros>
+</clickhouse>

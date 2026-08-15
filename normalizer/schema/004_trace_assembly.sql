@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS mcpobs.trace_summaries
     -- over spans_raw, where the whole trace is visible. (D22)
     first_span_name  AggregateFunction(argMin, String, DateTime64(9))
 )
-ENGINE = AggregatingMergeTree
+ENGINE = ReplicatedAggregatingMergeTree('/clickhouse/tables/{shard}/trace_summaries', '{replica}')
 ORDER BY (tenant_id, project_id, trace_id);
 -- No PARTITION BY: every candidate date lives in an aggregate column, whose
 -- value changes as parts merge, and a partition key must be deterministic. A
@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS mcpobs.trace_locator
     trace_date Date,
     first_seen DateTime DEFAULT now()
 )
-ENGINE = ReplacingMergeTree(first_seen)
+ENGINE = ReplicatedReplacingMergeTree('/clickhouse/tables/{shard}/trace_locator', '{replica}', first_seen)
 ORDER BY (trace_id, trace_date);
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS mcpobs.trace_locator_mv

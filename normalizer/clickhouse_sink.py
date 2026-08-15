@@ -39,12 +39,20 @@ class ClickHouseSink:
     def insert_spans(self, rows: list[SpanRow], dedup_token: str | None = None) -> int:
         if not rows:
             return 0
-        settings = {}
+        settings: dict[str, str | int] = {}
         if dedup_token:
-            # ADR-006. NOTE: a no-op on the local MergeTree table -- dedup needs
-            # ReplicatedMergeTree. Sent anyway so the production path is
-            # exercised and the token format stays validated.
+            # ADR-006. Verified working on ReplicatedMergeTree (assertion B11);
+            # the local stack runs embedded Keeper so this is a real mechanism
+            # here, not a production-only one.
             settings["insert_deduplication_token"] = dedup_token
+            # WITHOUT THIS, DEDUPLICATION IS HALF-APPLIED. ClickHouse dedupes
+            # the block written to spans_raw but, by default, still propagates
+            # it to every dependent materialized view -- so a replayed batch
+            # left spans_raw correct while trace_summaries counted the spans
+            # TWICE. Aggregates silently disagreeing with the table they are
+            # built from is the worst possible failure mode: nothing errors and
+            # every dashboard is wrong. Caught by assertion B4 (D39).
+            settings["deduplicate_blocks_in_dependent_materialized_views"] = 1
         self.client.insert(
             self.SPANS_TABLE,
             [row.values() for row in rows],
@@ -68,7 +76,7 @@ class ClickHouseSink:
             log.info("schema up to date")
         return applied
 
-    def wait_ready(self, timeout: float = 90.0) -> None:
+    def wait_ready(self, timeout: float = 240.0) -> None:
         deadline = time.time() + timeout
         last: Exception | None = None
         while time.time() < deadline:

@@ -11,6 +11,6 @@ CREATE TABLE IF NOT EXISTS mcpobs.ingest_dead_letter
     kafka_offset    Int64,
     raw_body        String
 )
-ENGINE = MergeTree
+ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/ingest_dead_letter', '{replica}')
 ORDER BY received_at
 TTL received_at + INTERVAL 3 DAY;

@@ -1,11 +1,18 @@
 -- Day-1 span table.
 --
--- !! LOCAL-ONLY CAVEAT !!
--- This is MergeTree. Production is ReplicatedMergeTree, and
--- `insert_deduplication_token` -- the mechanism behind ADR-006's idempotency --
--- ONLY works on replicated tables. A replayed batch WILL duplicate rows here.
--- Idempotency must be tested in staging, not on a laptop. Do not read Day-1
--- behaviour as production behaviour.
+-- ReplicatedMergeTree EVERYWHERE, including locally.
+--
+-- The original version of this file was MergeTree with a caveat saying
+-- idempotency "must be tested in staging, not on a laptop". That caveat was the
+-- problem: `insert_deduplication_token` (ADR-006) is inert on an unreplicated
+-- table, so a replayed batch silently duplicated rows while appearing to work,
+-- and the single most important correctness property in the pipeline went
+-- untested for two days.
+--
+-- Replicated tables keep their deduplication blocks in Keeper, and that works
+-- with ONE replica -- so the local stack runs embedded Keeper
+-- (clickhouse/config.d/keeper.xml) and exercises the real engine. The macros
+-- mean this DDL is unchanged from here up to a real cluster.
 --
 -- Column set is justified by docs/observed_attributes.md (T3), not by guesswork.
 -- Columns marked NOT EMITTED exist so the schema is stable when the SDK or the
@@ -78,7 +85,7 @@ CREATE TABLE IF NOT EXISTS mcpobs.spans_raw
     kafka_offset           Int64,
     ingested_at            DateTime DEFAULT now()
 )
-ENGINE = MergeTree
+ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/spans_raw', '{replica}')
 PARTITION BY toDate(timestamp)
 ORDER BY (tenant_id, project_id, toStartOfHour(timestamp), service_name, mcp_tool_name)
 TTL toDate(timestamp) + INTERVAL 7 DAY;

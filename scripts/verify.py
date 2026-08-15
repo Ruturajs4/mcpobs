@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import clickhouse_connect
@@ -499,6 +500,52 @@ def main() -> int:
         "B10b each downstream call is attributable to its tool",
         len({kind for _, kind in waterfall}) >= 3,
         f"{sorted({(tool, kind) for tool, kind in waterfall})}",
+    )
+
+    # ---------------- B11: insert idempotency (ADR-006) --------------------
+    # Was untestable for two days because the local table was MergeTree, where
+    # `insert_deduplication_token` is inert. The local stack now runs embedded
+    # Keeper and ReplicatedMergeTree, so the real mechanism is exercised here
+    # rather than deferred to an environment that does not exist.
+    print("\n--- B11: insert idempotency ---")
+    from normalizer.clickhouse_sink import ClickHouseSink
+    from normalizer.models import SpanRow
+
+    sink = ClickHouseSink()
+    token = f"verify-idempotency-{int(time.time())}"
+    probe = SpanRow(
+        timestamp=datetime.now(UTC).replace(tzinfo=None),
+        trace_id="f" * 32,
+        span_id="e" * 16,
+        span_name="idempotency-probe",
+        service_name="verify",
+    )
+
+    def probe_count() -> int:
+        return ch.query(
+            "SELECT count() FROM spans_raw WHERE span_name = 'idempotency-probe'"
+        ).result_rows[0][0]
+
+    baseline = probe_count()
+    sink.insert_spans([probe], dedup_token=token)
+    sink.insert_spans([probe], dedup_token=token)  # identical block, same token
+    time.sleep(2)
+    after_same = probe_count() - baseline
+    record(
+        "B11 an identical batch replayed with the same token is deduplicated",
+        after_same == 1,
+        f"two inserts of one row produced {after_same} row(s) -- ReplicatedMergeTree "
+        f"+ insert_deduplication_token",
+    )
+
+    sink.insert_spans([probe], dedup_token=f"{token}-different")
+    time.sleep(2)
+    after_different = probe_count() - baseline
+    record(
+        "B11b a DIFFERENT token inserts again, by design",
+        after_different == 2,
+        f"{after_different} rows. This is why a bug-fix replay produces new rows "
+        f"rather than being silently discarded (D38)",
     )
 
     # ---------------- B7: freshness, the headline metric -------------------

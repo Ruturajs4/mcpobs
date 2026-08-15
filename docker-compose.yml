@@ -19,12 +19,24 @@ services:
     # directory, so new schema files silently never applied. The normalizer runs
     # MigrationRunner at startup instead -- one mechanism, idempotent, recorded.
     volumes:
+      # Embedded Keeper so the LOCAL engine matches production. Without it
+      # insert_deduplication_token is inert and ADR-006 goes untested.
+      #
+      # Mount the FILE, not the directory. Mounting ./clickhouse/config.d over
+      # /etc/clickhouse-server/config.d shadows the image's own
+      # docker_related_config.xml, which is what sets `listen_host` -- so the
+      # server silently binds to 127.0.0.1 only and every in-network client gets
+      # "connection refused" while `docker exec` still works.
+      - ./clickhouse/config.d/keeper.xml:/etc/clickhouse-server/config.d/keeper.xml:ro
       - ch-data:/var/lib/clickhouse
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
       interval: 5s
       timeout: 3s
-      retries: 30
+      # Generous: embedded Keeper runs a Raft election before the server accepts
+      # connections, which takes appreciably longer than a bare MergeTree boot.
+      retries: 60
+      start_period: 30s
 
   kafka:
     image: apache/kafka:3.9.0

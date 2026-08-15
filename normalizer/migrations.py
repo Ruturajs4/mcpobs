@@ -101,7 +101,9 @@ class MigrationRunner:
                 checksum   String,
                 applied_at DateTime DEFAULT now()
             )
-            ENGINE = MergeTree
+            ENGINE = ReplicatedMergeTree(
+                '/clickhouse/tables/{{shard}}/schema_migrations', '{{replica}}'
+            )
             ORDER BY version
             """
         )
