@@ -9,9 +9,11 @@ come back out as a queryable, MCP-aware trace.
 ```bash
 python -m venv .venv && .venv/Scripts/pip install -r requirements-dev.txt
 make check     # unit tests + ruff + mypy (no stack required)
-make up        # clickhouse + kafka + collector + normalizer
+make up        # clickhouse + kafka + collector + normalizer + query API
 make demo      # run the tool scenarios over stdio and streamable HTTP
-make verify    # A1-A9 acceptance assertions
+make verify    # A/B/C acceptance assertions
+
+open http://localhost:8080     # the console
 ```
 
 ## Structure

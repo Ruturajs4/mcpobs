@@ -334,7 +334,7 @@ def main() -> int:
     # Both names: an earlier probe used 'verify' before it was renamed, and
     # those rows survive in trace_summaries even though they were deleted from
     # spans_raw -- which is precisely the desynchronisation described above.
-    probe = "AND service_name NOT IN ('verify-probe', 'verify')"
+    probe = "AND tenant_id = 'local'"
     raw_traces, summary_traces = ch.query(
         f"SELECT (SELECT uniqExact(trace_id) FROM spans_raw WHERE 1 {probe}), "
         f"       (SELECT uniqExact(trace_id) FROM trace_summaries WHERE 1 {probe})"
@@ -541,7 +541,12 @@ def main() -> int:
     # under the same (trace_id, span_id), which accumulated into a synthetic
     # multi-span trace that A5 then picked as its example and failed on.
     # Synthetic data must not be mistakable for product data.
+    # Its OWN tenant, not `local`. Synthetic test data must be invisible to
+    # product queries -- it was showing up as a second "server" in the console --
+    # and putting it in a separate tenant exercises the scoping at the same time.
     probe = SpanRow(
+        tenant_id="_verify",
+        project_id="_verify",
         timestamp=datetime.now(UTC).replace(tzinfo=None),
         trace_id=("f" * 16) + run_id,
         span_id=run_id,

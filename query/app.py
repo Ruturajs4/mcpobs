@@ -15,9 +15,11 @@ because an endpoint never writes one.
 # time rather than at import. Python 3.11 handles `X | None` natively anyway.
 import os
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
 
 from query.dtos import Overview, Page, ServerSummary, ToolSummary, TraceDetail
 from query.repository import SpanRepository
@@ -27,6 +29,8 @@ app = FastAPI(
     version="0.1.0",
     description="MCP-native observability: servers, tools, failures and traces.",
 )
+
+STATIC = Path(__file__).parent / "static"
 
 _repository: SpanRepository | None = None
 
@@ -157,3 +161,14 @@ def errors(
         failure_category=failure_category,
         failures_only=failure_category is None,
     )
+
+
+@app.get("/", include_in_schema=False)
+def ui() -> FileResponse:
+    """The console.
+
+    Served by the API rather than a separate origin: one process, no build step,
+    no CORS. A Phase-0 proof does not need a frontend toolchain, and adding one
+    would be the largest thing in the repo by a wide margin.
+    """
+    return FileResponse(STATIC / "index.html")

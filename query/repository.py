@@ -95,6 +95,9 @@ def _number(value: Any) -> float:
     return number if math.isfinite(number) else 0.0
 
 
+FRESHNESS_WINDOW_MINUTES = 15
+"""Freshness is a "right now" health signal, never a historical aggregate."""
+
 CATEGORIES = (
     "ok",
     "tool_error",
@@ -192,11 +195,17 @@ class SpanRepository:
         )
         helper, total = classified[0] if classified else (0, 0)
 
+        # Freshness uses a FIXED recent window, deliberately ignoring the
+        # user's selected range. It answers "is the pipeline healthy right
+        # now?", not "what was it historically" -- and a wide range sweeps in
+        # REPLAYED spans, whose event time precedes their ingest time by hours
+        # by design (D26). Over 24h that reported 19,820s of "latency", which
+        # was measuring a replay, not the pipeline.
         freshness = self._rows(
-            """SELECT quantile(0.95)(dateDiff('millisecond', timestamp, ingested_at))
-               FROM spans_raw
-               WHERE tenant_id = {tenant:String} AND project_id = {project:String}
-                 AND timestamp >= {since:DateTime}""",
+            f"""SELECT quantile(0.95)(dateDiff('millisecond', timestamp, ingested_at))
+                FROM spans_raw
+                WHERE tenant_id = {{tenant:String}} AND project_id = {{project:String}}
+                  AND timestamp >= now() - INTERVAL {FRESHNESS_WINDOW_MINUTES} MINUTE""",
             params,
         )
 

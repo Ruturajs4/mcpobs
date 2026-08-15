@@ -1,0 +1,640 @@
+<!doctype html>
+<html lang="en" data-view="overview">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP Observability</title>
+<style>
+/* ---------------------------------------------------------------------------
+   Design tokens. Dark-first, in the SigNoz idiom (V2 §14.7): near-black ground,
+   a single blue accent, and status colour reserved for status ONLY -- never
+   decoration. An operator scanning this at 3am must be able to trust that a red
+   pixel means something is wrong.
+--------------------------------------------------------------------------- */
+:root {
+  --bg:        #0b0c0e;
+  --panel:     #121419;
+  --raised:    #171a20;
+  --border:    #23262e;
+  --border-lo: #1a1d23;
+
+  --text:      #e6e8ec;
+  --text-dim:  #9aa1ad;
+  --text-mute: #6b7280;
+
+  --accent:    #4e74f8;
+  --accent-dim:#2c3f80;
+
+  --ok:        #22c55e;
+  --warn:      #f59e0b;
+  --err:       #ef4444;
+  --purple:    #a855f7;
+  --cyan:      #06b6d4;
+  --pink:      #ec4899;
+
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+  --r: 6px;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: inherit; text-decoration: none; }
+
+/* --------------------------------------------------------------- layout */
+.app { display: grid; grid-template-columns: 208px 1fr; height: 100vh; }
+
+.side {
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.brand {
+  padding: 16px 16px 14px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 9px;
+}
+.brand .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--ok); box-shadow: 0 0 10px var(--ok);
+  flex: none;
+}
+.brand h1 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: -0.01em; }
+.brand .sub { font-size: 10px; color: var(--text-mute); font-family: var(--mono); }
+
+nav { padding: 8px; display: flex; flex-direction: column; gap: 1px; }
+nav a {
+  padding: 7px 10px; border-radius: var(--r);
+  color: var(--text-dim); font-size: 12.5px;
+  display: flex; align-items: center; gap: 9px;
+  cursor: pointer; transition: background .12s, color .12s;
+}
+nav a:hover { background: var(--raised); color: var(--text); }
+nav a.on { background: var(--accent-dim); color: #fff; }
+nav a .ic { width: 14px; text-align: center; opacity: .85; font-size: 12px; }
+nav .grp {
+  padding: 14px 10px 5px; font-size: 10px; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--text-mute); font-weight: 600;
+}
+
+.side-foot {
+  margin-top: auto; padding: 12px 14px;
+  border-top: 1px solid var(--border);
+  font-size: 10.5px; color: var(--text-mute); font-family: var(--mono);
+  display: flex; flex-direction: column; gap: 3px;
+}
+
+.main { display: flex; flex-direction: column; overflow: hidden; }
+.top {
+  height: 52px; flex: none;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 20px; background: var(--panel);
+}
+.top h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.top .spacer { flex: 1; }
+
+.range { display: flex; background: var(--raised); border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; }
+.range button {
+  background: none; border: 0; color: var(--text-dim);
+  padding: 5px 11px; font: inherit; font-size: 12px; cursor: pointer;
+  border-right: 1px solid var(--border-lo);
+}
+.range button:last-child { border-right: 0; }
+.range button:hover { color: var(--text); background: #1e2129; }
+.range button.on { background: var(--accent); color: #fff; }
+
+.content { flex: 1; overflow-y: auto; padding: 20px; }
+
+/* ---------------------------------------------------------------- cards */
+.grid { display: grid; gap: 12px; }
+.g4 { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+
+.card {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; padding: 14px 16px;
+}
+.card .lbl {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text-mute); font-weight: 600; margin-bottom: 7px;
+}
+.card .big { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.card .sub { font-size: 11.5px; color: var(--text-dim); margin-top: 3px; }
+
+.panel {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; overflow: hidden; margin-top: 12px;
+}
+.panel > header {
+  padding: 11px 16px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 10px;
+}
+.panel > header h3 { margin: 0; font-size: 12.5px; font-weight: 600; }
+.panel > header .note { font-size: 11px; color: var(--text-mute); margin-left: auto; }
+
+/* --------------------------------------------------------------- tables */
+table { width: 100%; border-collapse: collapse; }
+th {
+  text-align: left; font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--text-mute); font-weight: 600;
+  padding: 9px 16px; border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+td {
+  padding: 9px 16px; border-bottom: 1px solid var(--border-lo);
+  font-size: 12.5px; vertical-align: middle;
+}
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr.click { cursor: pointer; }
+tbody tr.click:hover { background: var(--raised); }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.mono { font-family: var(--mono); font-size: 11.5px; }
+.dim { color: var(--text-dim); }
+.mute { color: var(--text-mute); }
+
+/* --------------------------------------------------------------- badges */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 8px; border-radius: 20px;
+  font-size: 11px; font-weight: 500; white-space: nowrap;
+  border: 1px solid transparent;
+}
+.badge::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.b-ok      { color: var(--ok);     background: #22c55e18; border-color: #22c55e33; }
+.b-tool    { color: var(--warn);   background: #f59e0b18; border-color: #f59e0b33; }
+.b-server  { color: var(--err);    background: #ef444418; border-color: #ef444433; }
+.b-unknown { color: var(--purple); background: #a855f718; border-color: #a855f733; }
+.b-args    { color: var(--cyan);   background: #06b6d418; border-color: #06b6d433; }
+.b-proto   { color: var(--pink);   background: #ec489918; border-color: #ec489933; }
+.b-pending { color: var(--text-dim); background: #9aa1ad14; border-color: #9aa1ad33; }
+.b-none    { color: var(--text-mute); background: transparent; border-color: var(--border); }
+
+/* --------------------------------------------------------- distribution */
+.dist { display: flex; height: 5px; border-radius: 3px; overflow: hidden; background: var(--border-lo); min-width: 90px; }
+.dist i { display: block; height: 100%; }
+
+/* ------------------------------------------------------------ waterfall */
+.wf-head {
+  display: grid; grid-template-columns: 320px 96px 1fr; gap: 16px;
+  padding: 8px 16px; border-bottom: 1px solid var(--border);
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--text-mute); font-weight: 600;
+}
+.wf-row {
+  display: grid; grid-template-columns: 320px 96px 1fr; gap: 16px;
+  align-items: center; padding: 0 16px;
+  border-bottom: 1px solid var(--border-lo); min-height: 34px;
+  transition: background .1s;
+}
+.wf-row:hover { background: var(--raised); }
+.wf-name { display: flex; align-items: center; gap: 7px; min-width: 0; position: relative; }
+.wf-name .rail {
+  flex: none; width: 11px; height: 100%; margin-left: -3px;
+  border-left: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  height: 10px; margin-top: -10px; border-bottom-left-radius: 3px;
+}
+.wf-name .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.wf-kind {
+  font-size: 9.5px; padding: 1px 5px; border-radius: 3px;
+  font-family: var(--mono); text-transform: uppercase; letter-spacing: .04em;
+  border: 1px solid; flex: none;
+}
+.k-mcp  { color: var(--accent); border-color: #4e74f855; background: #4e74f814; }
+.k-http { color: var(--cyan);   border-color: #06b6d455; background: #06b6d414; }
+.k-db   { color: var(--warn);   border-color: #f59e0b55; background: #f59e0b14; }
+.k-llm  { color: var(--purple); border-color: #a855f755; background: #a855f714; }
+.k-int  { color: var(--text-mute); border-color: var(--border); }
+
+.axis { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 9.5px; text-transform: none; letter-spacing: 0; }
+.wf-track { position: relative; height: 18px; background: var(--border-lo); border-radius: 3px; }
+.wf-bar {
+  position: absolute; top: 0; height: 18px; border-radius: 3px;
+  min-width: 2px; display: flex; align-items: center;
+  padding: 0 5px; overflow: hidden;
+}
+.wf-bar span { font-size: 10px; font-family: var(--mono); color: #fff; opacity: .92; white-space: nowrap; }
+.bar-mcp  { background: linear-gradient(90deg, #4e74f8, #3d5fd9); }
+.bar-http { background: linear-gradient(90deg, #06b6d4, #0891b2); }
+.bar-db   { background: linear-gradient(90deg, #f59e0b, #d97706); }
+.bar-llm  { background: linear-gradient(90deg, #a855f7, #9333ea); }
+.bar-int  { background: #3f444f; }
+.bar-err  { background: linear-gradient(90deg, #ef4444, #dc2626); }
+
+/* --------------------------------------------------------------- misc */
+.note-bar {
+  display: flex; gap: 9px; align-items: flex-start;
+  background: #f59e0b10; border: 1px solid #f59e0b33;
+  border-radius: var(--r); padding: 10px 13px; margin-bottom: 12px;
+  font-size: 12px; color: #fbbf24;
+}
+.note-bar b { color: #fcd34d; }
+.empty { padding: 44px; text-align: center; color: var(--text-mute); font-size: 13px; }
+.back {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--text-dim); font-size: 12px; cursor: pointer; margin-bottom: 12px;
+}
+.back:hover { color: var(--text); }
+.kv { display: flex; gap: 22px; flex-wrap: wrap; padding: 13px 16px; border-bottom: 1px solid var(--border); }
+.kv div { display: flex; flex-direction: column; gap: 3px; }
+.kv .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-mute); font-weight: 600; }
+.kv .v { font-size: 13px; font-family: var(--mono); }
+.spin { padding: 44px; text-align: center; color: var(--text-mute); }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="dot" id="health-dot"></div>
+      <div>
+        <h1>MCP Observability</h1>
+        <div class="sub">local · 2026-07-28</div>
+      </div>
+    </div>
+    <nav id="nav">
+      <div class="grp">Monitor</div>
+      <a data-view="overview" class="on"><span class="ic">◧</span> Overview</a>
+      <a data-view="servers"><span class="ic">▤</span> Servers</a>
+      <a data-view="tools"><span class="ic">⬡</span> Tools</a>
+      <div class="grp">Investigate</div>
+      <a data-view="traces"><span class="ic">≡</span> Traces</a>
+      <a data-view="errors"><span class="ic">▲</span> Errors</a>
+    </nav>
+    <div class="side-foot">
+      <div id="foot-fresh">freshness —</div>
+      <div id="foot-class">classified —</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="top">
+      <h2 id="title">Overview</h2>
+      <div class="spacer"></div>
+      <div class="range" id="range">
+        <button data-m="15">15m</button>
+        <button data-m="60" class="on">1h</button>
+        <button data-m="360">6h</button>
+        <button data-m="1440">24h</button>
+        <button data-m="10080">7d</button>
+      </div>
+    </header>
+    <div class="content" id="content"><div class="spin">Loading…</div></div>
+  </main>
+</div>
+
+<script>
+/* ===========================================================================
+   State + API
+   =========================================================================== */
+const S = { view: "overview", window: 60, trace: null };
+
+async function api(path) {
+  const sep = path.includes("?") ? "&" : "?";
+  const r = await fetch(`/api/v1${path}${sep}window_minutes=${S.window}`);
+  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+const el = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+/* Duration formatting. Sub-millisecond values are shown as "<1ms" rather than
+   "0.00ms": on a coarse clock those really are unmeasured, and printing a
+   precise-looking zero would assert a precision we do not have (D27). */
+function dur(ms) {
+  if (ms === 0) return "0";
+  if (ms < 1) return "<1ms";
+  if (ms < 1000) return `${ms.toFixed(ms < 10 ? 2 : 1)}ms`;
+  return `${(ms / 1000).toFixed(2)}s`;
+}
+const num = (n) => (n ?? 0).toLocaleString();
+const ago = (iso) => {
+  if (!iso) return "—";
+  const s = Math.max(0, (Date.now() - new Date(iso + "Z").getTime()) / 1000);
+  if (s < 60) return `${Math.floor(s)}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  return `${Math.floor(s / 3600)}h ago`;
+};
+
+/* Category presentation lives in ONE place: the class, the label and the chart
+   colour must agree, and three separate lookups would eventually disagree. */
+const CAT = {
+  ok:                { c: "b-ok",      l: "ok",           h: "#22c55e" },
+  tool_error:        { c: "b-tool",    l: "tool error",   h: "#f59e0b" },
+  server_exception:  { c: "b-server",  l: "exception",    h: "#ef4444" },
+  unknown_tool:      { c: "b-unknown", l: "unknown tool", h: "#a855f7" },
+  invalid_arguments: { c: "b-args",    l: "bad args",     h: "#06b6d4" },
+  protocol_error:    { c: "b-proto",   l: "protocol",     h: "#ec4899" },
+  pending_input:     { c: "b-pending", l: "awaiting input", h: "#9aa1ad" },
+  unclassified:      { c: "b-none",    l: "unclassified", h: "#6b7280" },
+};
+const badge = (cat) => {
+  const m = CAT[cat] || CAT.unclassified;
+  return `<span class="badge ${m.c}">${m.l}</span>`;
+};
+
+function distBar(bd) {
+  const total = Object.values(bd).reduce((a, b) => a + b, 0) || 1;
+  const parts = Object.entries(bd)
+    .filter(([, v]) => v > 0)
+    .map(([k, v]) => `<i style="width:${(v / total) * 100}%;background:${(CAT[k] || CAT.unclassified).h}" title="${k}: ${v}"></i>`)
+    .join("");
+  return `<div class="dist">${parts}</div>`;
+}
+
+/* Kind of downstream call -> waterfall colour + tag. */
+function kind(span) {
+  if (span.mcp_method) return { k: "mcp", cls: "k-mcp", bar: "bar-mcp", tag: "MCP" };
+  const map = {
+    http: ["k-http", "bar-http", "HTTP"],
+    db:   ["k-db",   "bar-db",   "DB"],
+    llm:  ["k-llm",  "bar-llm",  "LLM"],
+  };
+  const [cls, bar, tag] = map[span.downstream_kind] || ["k-int", "bar-int", (span.downstream_kind || "int").toUpperCase()];
+  return { k: span.downstream_kind, cls, bar, tag };
+}
+
+/* ===========================================================================
+   Views
+   =========================================================================== */
+async function viewOverview() {
+  const o = await api("/overview");
+  const bd = o.failure_breakdown;
+  const rate = o.calls ? ((o.errors / o.calls) * 100).toFixed(1) : "0.0";
+
+  // Honesty banner. If most spans measured as zero, the percentiles below are
+  // not latency and saying so beats rendering a confident chart (DF-4).
+  const zeroShare = o.latency.count ? o.latency.zero_duration / o.latency.count : 0;
+  const warn = zeroShare > 0.1 ? `
+    <div class="note-bar">
+      <span>⚠</span>
+      <div><b>${Math.round(zeroShare * 100)}% of tool calls measured as 0ms.</b>
+      This host's clock ticks every ~0.75ms, so latency for fast tools is not
+      measurable here. Percentiles below understate. Linux hosts are unaffected.</div>
+    </div>` : "";
+
+  const partial = o.classified_ratio < 1 ? `
+    <div class="note-bar">
+      <span>◐</span>
+      <div><b>${Math.round(o.classified_ratio * 100)}% of failures are precisely classified.</b>
+      The rest come from servers not running the <code>mcpobs</code> helper and
+      report only the coarse <em>tool error</em>. Two data qualities, kept distinct.</div>
+    </div>` : "";
+
+  el("content").innerHTML = `
+    ${warn}${partial}
+    <div class="grid g4">
+      <div class="card"><div class="lbl">Tool calls</div><div class="big">${num(o.calls)}</div>
+        <div class="sub">${o.servers} server${o.servers === 1 ? "" : "s"} · ${o.tools} tools</div></div>
+      <div class="card"><div class="lbl">Error rate</div>
+        <div class="big" style="color:${o.errors ? "var(--err)" : "var(--ok)"}">${rate}%</div>
+        <div class="sub">${num(o.errors)} failed calls</div></div>
+      <div class="card"><div class="lbl">p95 latency</div><div class="big">${dur(o.latency.p95_ms)}</div>
+        <div class="sub">p50 ${dur(o.latency.p50_ms)} · max ${dur(o.latency.max_ms)}</div></div>
+      <div class="card"><div class="lbl">Freshness p95</div><div class="big">${o.freshness_p95_seconds.toFixed(1)}s</div>
+        <div class="sub">event time → queryable</div></div>
+    </div>
+
+    <div class="panel">
+      <header><h3>Failure breakdown</h3>
+        <span class="note">what the raw span alone could never tell you</span></header>
+      <table><tbody>
+        ${Object.entries(bd).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).map(([k, v]) => `
+          <tr><td style="width:180px">${badge(k)}</td>
+              <td class="num" style="width:70px">${num(v)}</td>
+              <td>${distBar({ [k]: v, _rest: Math.max(0, o.calls + bd.pending_input - v) })}</td></tr>`).join("")}
+      </tbody></table>
+    </div>`;
+
+  el("foot-fresh").textContent = `freshness ${o.freshness_p95_seconds.toFixed(1)}s`;
+  el("foot-class").textContent = `classified ${Math.round(o.classified_ratio * 100)}%`;
+}
+
+async function viewServers() {
+  const rows = await api("/servers");
+  el("content").innerHTML = rows.length ? `
+    <div class="panel"><header><h3>MCP servers</h3></header>
+      <table>
+        <thead><tr><th>Server</th><th>Env</th><th class="num">Tools</th><th class="num">Calls</th>
+          <th class="num">Errors</th><th style="width:150px">Failures</th>
+          <th class="num">p95</th><th>Last seen</th></tr></thead>
+        <tbody>${rows.map((s) => `
+          <tr><td><strong>${esc(s.server)}</strong> <span class="mute mono">${esc(s.version)}</span></td>
+            <td class="dim">${esc(s.environment)}</td>
+            <td class="num">${s.tools}</td><td class="num">${num(s.calls)}</td>
+            <td class="num" style="color:${s.errors ? "var(--err)" : "inherit"}">${num(s.errors)}</td>
+            <td>${distBar(s.failure_breakdown)}</td>
+            <td class="num">${dur(s.latency.p95_ms)}</td>
+            <td class="dim">${ago(s.last_seen)}</td></tr>`).join("")}</tbody>
+      </table></div>` : `<div class="empty">No servers reporting in this window.</div>`;
+}
+
+async function viewTools() {
+  const rows = await api("/tools");
+  el("content").innerHTML = rows.length ? `
+    <div class="panel"><header><h3>Tools</h3>
+      <span class="note">latency excludes streams and awaiting-input rounds</span></header>
+      <table>
+        <thead><tr><th>Tool</th><th>Server</th><th class="num">Calls</th><th class="num">Errors</th>
+          <th style="width:150px">Failures</th><th class="num">p50</th><th class="num">p95</th>
+          <th>Dominant failure</th></tr></thead>
+        <tbody>${rows.map((t) => {
+          const worst = Object.entries(t.failure_breakdown)
+            .filter(([k, v]) => v > 0 && k !== "ok" && k !== "pending_input")
+            .sort((a, b) => b[1] - a[1])[0];
+          return `<tr class="click" data-tool="${esc(t.tool)}">
+            <td><strong>${esc(t.tool)}</strong></td>
+            <td class="dim">${esc(t.server)}</td>
+            <td class="num">${num(t.calls)}</td>
+            <td class="num" style="color:${t.errors ? "var(--err)" : "inherit"}">${num(t.errors)}</td>
+            <td>${distBar(t.failure_breakdown)}</td>
+            <td class="num">${dur(t.latency.p50_ms)}</td>
+            <td class="num">${dur(t.latency.p95_ms)}</td>
+            <td>${worst ? badge(worst[0]) : '<span class="mute">—</span>'}</td></tr>`;
+        }).join("")}</tbody>
+      </table></div>` : `<div class="empty">No tool calls in this window.</div>`;
+
+  document.querySelectorAll("[data-tool]").forEach((tr) =>
+    tr.onclick = () => go("traces", { tool: tr.dataset.tool }));
+}
+
+async function viewTraces(opts = {}) {
+  const q = opts.tool ? `/traces?tool=${encodeURIComponent(opts.tool)}&limit=60` : "/traces?limit=60";
+  const page = await api(q);
+  renderTraceList(page.items, opts.tool ? `Traces · ${opts.tool}` : "Recent traces",
+    "newest first, keyset-paginated");
+}
+
+async function viewErrors() {
+  const page = await api("/errors?limit=60");
+  renderTraceList(page.items, "Failing traces",
+    "awaiting-input rounds are not failures and are excluded");
+}
+
+function renderTraceList(items, heading, note) {
+  el("content").innerHTML = items.length ? `
+    <div class="panel"><header><h3>${esc(heading)}</h3><span class="note">${esc(note)}</span></header>
+      <table>
+        <thead><tr><th>Trace</th><th>Tool</th><th>Method</th><th>Status</th>
+          <th class="num">Spans</th><th class="num">Duration</th><th>When</th></tr></thead>
+        <tbody>${items.map((t) => `
+          <tr class="click" data-trace="${esc(t.trace_id)}">
+            <td class="mono dim">${esc(t.trace_id.slice(0, 16))}</td>
+            <td><strong>${esc(t.tool || "—")}</strong></td>
+            <td class="mono dim">${esc(t.mcp_method)}</td>
+            <td>${badge(t.failure_category || "ok")}</td>
+            <td class="num">${t.span_count}</td>
+            <td class="num">${dur(t.duration_ms)}</td>
+            <td class="dim">${ago(t.start_time)}</td></tr>`).join("")}</tbody>
+      </table></div>` : `<div class="empty">Nothing here in this window.</div>`;
+
+  document.querySelectorAll("[data-trace]").forEach((tr) =>
+    tr.onclick = () => go("trace", { trace: tr.dataset.trace }));
+}
+
+/* ---------------------------------------------------------------------------
+   Trace detail -- the waterfall. Phase 0's exit criterion: see a failed tool
+   call and where the time actually went, on one screen.
+--------------------------------------------------------------------------- */
+async function viewTrace(traceId) {
+  const t = await api(`/traces/${traceId}`);
+  const t0 = new Date(t.start_time + "Z").getTime();
+  const span0 = Math.max(t.duration_ms, 0.001);
+
+  const rows = t.spans.map((s) => {
+    const k = kind(s);
+    const offset = Math.max(0, new Date(s.start_time + "Z").getTime() - t0);
+    const left = Math.min(99, (offset / span0) * 100);
+    // Floor the width so a sub-millisecond span is still visible. A bar you
+    // cannot see reads as "did not happen", which is worse than imprecise.
+    const width = Math.max(0.6, Math.min(100 - left, (s.duration_ms / span0) * 100));
+    const failed = s.status === "ERROR";
+    return `
+      <div class="wf-row">
+        <div class="wf-name" style="padding-left:${s.depth * 18}px">
+          ${s.depth ? '<span class="rail"></span>' : ""}
+          <span class="wf-kind ${k.cls}">${k.tag}</span>
+          <span class="txt" title="${esc(s.name)}">${esc(s.name)}</span>
+          ${s.span_id === t.root_span_id ? '<span class="mute mono" style="font-size:9.5px">ROOT</span>' : ""}
+        </div>
+        <div class="num dim">${dur(s.duration_ms)}</div>
+        <div class="wf-track">
+          <div class="wf-bar ${failed ? "bar-err" : k.bar}" style="left:${left}%;width:${width}%">
+            ${width > 8 ? `<span>${dur(s.duration_ms)}</span>` : ""}
+          </div>
+        </div>
+      </div>`;
+  }).join("");
+
+  el("content").innerHTML = `
+    <div class="back" id="back">← back</div>
+    <div class="panel">
+      <header><h3>${esc(t.tool || t.mcp_method || "Trace")}</h3>
+        ${badge(t.failure_category || "ok")}
+        <span class="note mono">${esc(t.trace_id)}</span></header>
+      <div class="kv">
+        <div><span class="k">Server</span><span class="v">${esc(t.server || "—")}</span></div>
+        <div><span class="k">Method</span><span class="v">${esc(t.mcp_method || "—")}</span></div>
+        <div><span class="k">Duration</span><span class="v">${dur(t.duration_ms)}</span></div>
+        <div><span class="k">Spans</span><span class="v">${t.span_count}</span></div>
+        <div><span class="k">Errors</span><span class="v" style="color:${t.error_count ? "var(--err)" : "inherit"}">${t.error_count}</span></div>
+        <div><span class="k">Started</span><span class="v">${esc(t.start_time.replace("T", " ").slice(0, 19))}</span></div>
+      </div>
+      <div class="wf-head">
+        <div>Span</div><div class="num">Duration</div>
+        <div class="axis">
+          <span>0</span><span>${dur(t.duration_ms * 0.25)}</span>
+          <span>${dur(t.duration_ms * 0.5)}</span><span>${dur(t.duration_ms * 0.75)}</span>
+          <span>${dur(t.duration_ms)}</span>
+        </div>
+      </div>
+      ${rows}
+    </div>`;
+  el("back").onclick = () => history.back();
+}
+
+/* ===========================================================================
+   Router
+   =========================================================================== */
+const VIEWS = {
+  overview: { t: "Overview", f: viewOverview },
+  servers:  { t: "Servers",  f: viewServers },
+  tools:    { t: "Tools",    f: viewTools },
+  traces:   { t: "Traces",   f: viewTraces },
+  errors:   { t: "Errors",   f: viewErrors },
+  trace:    { t: "Trace",    f: null },
+};
+
+function go(view, params = {}, push = true) {
+  S.view = view;
+  Object.assign(S, params);
+  if (push) {
+    const q = new URLSearchParams({ view, ...params, w: S.window });
+    history.pushState({ view, ...params }, "", `?${q}`);
+  }
+  render();
+}
+
+async function render() {
+  const v = VIEWS[S.view] || VIEWS.overview;
+  el("title").textContent = v.t;
+  document.querySelectorAll("#nav a").forEach((a) =>
+    a.classList.toggle("on", a.dataset.view === S.view));
+  el("content").innerHTML = '<div class="spin">Loading…</div>';
+  try {
+    if (S.view === "trace") await viewTrace(S.trace);
+    else if (S.view === "traces") await viewTraces({ tool: S.tool });
+    else await v.f();
+    el("health-dot").style.background = "var(--ok)";
+  } catch (e) {
+    el("health-dot").style.background = "var(--err)";
+    el("content").innerHTML =
+      `<div class="empty">Could not load.<br><span class="mono" style="font-size:11px">${esc(e.message)}</span></div>`;
+  }
+}
+
+document.querySelectorAll("#nav a").forEach((a) =>
+  a.onclick = () => { S.tool = null; go(a.dataset.view); });
+
+el("range").onclick = (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  S.window = +b.dataset.m;
+  document.querySelectorAll("#range button").forEach((x) => x.classList.toggle("on", x === b));
+  render();
+};
+
+window.onpopstate = (e) => {
+  const p = new URLSearchParams(location.search);
+  S.view = p.get("view") || "overview";
+  S.trace = p.get("trace");
+  S.tool = p.get("tool");
+  render();
+};
+
+(function boot() {
+  const p = new URLSearchParams(location.search);
+  S.view = p.get("view") || "overview";
+  S.trace = p.get("trace");
+  S.tool = p.get("tool");
+  if (p.get("w")) {
+    S.window = +p.get("w");
+    document.querySelectorAll("#range button").forEach((b) =>
+      b.classList.toggle("on", +b.dataset.m === S.window));
+  }
+  render();
+  // Poll, deliberately slower than the ~5s ingest floor: refreshing faster than
+  // data can arrive just makes the page flicker with identical numbers.
+  setInterval(() => { if (S.view !== "trace") render(); }, 15000);
+})();
+</script>
+</body>
+</html>
