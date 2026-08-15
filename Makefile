@@ -1,7 +1,7 @@
 PY := .venv/Scripts/python.exe
 COMPOSE := docker compose
 
-.PHONY: help up down demo verify attrs lag logs ps clean test lint typecheck check freshness traces metrics deferred
+.PHONY: help up down demo verify attrs lag logs ps clean test lint typecheck check freshness traces metrics deferred rollups
 
 help:
 	@echo "up        - start clickhouse + kafka + collector + normalizer"
@@ -18,6 +18,7 @@ help:
 	@echo "freshness - end-to-end pipeline freshness (the headline metric)"
 	@echo "traces    - assembled trace summaries"
 	@echo "metrics   - the pipeline's own operational metrics (V2 19)"
+	@echo "rollups   - rebuild tool_metrics_1m from spans_raw (run after a replay)"
 	@echo "deferred  - open deferral register (what we postponed and why)"
 	@echo "clean     - down + remove volumes"
 
@@ -79,6 +80,9 @@ traces:
 
 metrics:
 	$(PY) scripts/metrics.py
+
+rollups:
+	$(PY) scripts/recompute_rollups.py
 
 deferred:
 	$(PY) scripts/deferred.py

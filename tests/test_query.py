@@ -256,3 +256,64 @@ class TestAttributeRedaction:
         from normalizer.redact import AttributeRedactor
 
         assert AttributeRedactor().value("http.url", "::: not a url :::")
+
+
+class TestClockVerdict:
+    """DF-4 as a product behaviour, not a verify-only warning.
+
+    The register said the quiet part: Linux is nanosecond-grade so OUR
+    production is probably fine, A CUSTOMER ON WINDOWS IS NOT. That makes the
+    coarse-clock caveat something the console owes the operator, and the
+    threshold logic is worth pinning because both halves of it are load-bearing.
+    """
+
+    def warn(self, p50_ms: float, tick_ms: float, count: int = 100, zeros: int = 0) -> str:
+        from query.repository import SpanRepository
+
+        return SpanRepository._clock_warning(p50_ms, tick_ms, count, zeros)
+
+    def test_a_fine_clock_produces_no_caveat(self) -> None:
+        assert self.warn(p50_ms=12.0, tick_ms=0.0001) == ""
+
+    def test_p50_near_the_tick_is_quantisation(self) -> None:
+        """A percentile stops meaning anything once the clock's tick approaches
+        it, however few samples floored to zero."""
+        assert "quantisation" in self.warn(p50_ms=1.0, tick_ms=0.5)
+
+    def test_mostly_zero_samples_warn_even_when_p50_looks_healthy(self) -> None:
+        """The second test is not redundant. A p50 comfortably above the tick
+        still misleads when most calls measured zero, because the survivors are
+        a biased tail rather than a sample of the whole."""
+        message = self.warn(p50_ms=40.0, tick_ms=0.5, count=100, zeros=60)
+        assert "60% of calls measured 0ms" in message
+
+    def test_no_samples_never_warns(self) -> None:
+        """An empty window is not a coarse clock. Warning here would put a
+        scary banner on a brand-new customer's first page load, which is the
+        same class of mistake as D42."""
+        assert self.warn(p50_ms=0.0, tick_ms=0.0, count=0) == ""
+        assert self.warn(p50_ms=0.0, tick_ms=0.5, count=0) == ""
+
+    def test_the_message_names_the_measured_tick(self) -> None:
+        """The old banner hardcoded '~0.75ms' -- measured once on one laptop and
+        frozen into the UI, so it was wrong for every other host."""
+        assert "0.750ms" in self.warn(p50_ms=1.0, tick_ms=0.75)
+
+    def test_latency_stats_carry_the_verdict(self) -> None:
+        from query.repository import SpanRepository
+
+        stats = SpanRepository._latency([100, 1_000_000, 2_000_000, 3_000_000,
+                                         4_000_000, 10, 500_000])
+        assert stats.clock_tick_ms == 0.5
+        assert stats.clock_warning
+        assert stats.p50_ms == 1.0
+
+    def test_latency_stats_without_a_tick_are_unqualified(self) -> None:
+        """Older callers pass six columns and must keep working -- an absent
+        tick is 'not measured', never 'measured as zero'."""
+        from query.repository import SpanRepository
+
+        stats = SpanRepository._latency([100, 50_000_000, 60_000_000, 70_000_000,
+                                         80_000_000, 0])
+        assert stats.clock_tick_ms == 0.0
+        assert stats.clock_warning == ""

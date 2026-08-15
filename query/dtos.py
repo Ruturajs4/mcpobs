@@ -56,6 +56,19 @@ class LatencyStats(BaseModel):
     #: computed over zeros is not a latency (D27, DF-4).
     zero_duration: int = 0
 
+    #: The smallest non-zero duration observed, i.e. the host clock's actual
+    #: tick. MEASURED, not assumed: OTel timestamps spans with `time.time_ns()`,
+    #: whose granularity belongs to the customer's host, not to our pipeline.
+    #: 0.0 means no sample yet.
+    clock_tick_ms: float = 0.0
+
+    #: Set when the clock is too coarse to support the numbers above. Empty
+    #: means the percentiles can be trusted. This is a STRING rather than a
+    #: boolean because the console shows it to the operator verbatim -- a flag
+    #: would have to be translated somewhere, and that somewhere would be the
+    #: browser, where the reason gets lost (DF-4).
+    clock_warning: str = ""
+
 
 class ToolSummary(BaseModel):
     tool: str

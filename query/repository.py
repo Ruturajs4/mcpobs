@@ -3,7 +3,7 @@
 THREE RULES, ENFORCED HERE SO NO ENDPOINT CAN FORGET THEM
     1. Tenant scoping is applied by this layer, never by a caller. An endpoint
        that forgets a `WHERE tenant_id` leaks another customer's telemetry, and
-       that must not be possible to write by accident (V2 §13.1).
+       that must not be possible to write by accident (V2 Â§13.1).
     2. Every read of `spans_raw` goes through `LATEST_SPANS`, which resolves
        `argMax(..., normalization_version)` per `(trace_id, span_id)`. A replay
        leaves several versions of the same span in the table; a naive read mixes
@@ -116,6 +116,46 @@ CAPABILITY_KINDS: dict[str, tuple[str, str]] = {
 FRESHNESS_WINDOW_MINUTES = 15
 """Freshness is a "right now" health signal, never a historical aggregate."""
 
+ROLLUP = """
+    SELECT
+        bucket, service_name, mcp_method, mcp_tool_name, failure_category,
+        sum(calls)             AS calls,
+        sum(errors)            AS errors,
+        quantilesMerge(0.50, 0.95, 0.99)(latency) AS latency,
+        sum(latency_count)     AS latency_count,
+        max(latency_max)       AS latency_max,
+        sum(zero_duration)     AS zero_duration,
+        min(min_tick_ns)       AS min_tick_ns,
+        sum(helper_classified) AS helper_classified,
+        max(last_seen)         AS last_seen,
+        anyLast(service_version) AS service_version,
+        anyLast(environment)     AS environment
+    FROM tool_metrics_1m
+    WHERE tenant_id = {tenant:String} AND project_id = {project:String}
+      AND bucket >= toStartOfMinute({since:DateTime})
+    GROUP BY bucket, service_name, mcp_method, mcp_tool_name, failure_category
+"""
+"""The minute rollup, re-aggregated (DF-7).
+
+An AggregatingMergeTree returns one row per unmerged part, so a reader MUST
+group -- reading it without a GROUP BY silently returns partial states. Grouping
+here also collapses the categories back together for callers that do not want
+the breakdown.
+
+Deliberately NOT wrapped in the `LATEST_SPANS` argMax: the rollup is built by a
+materialized view, which cannot see version history at all. `scripts/
+recompute_rollups.py` is what reconciles it after a replay, and assertion E1
+checks the two agree on every run.
+"""
+
+#: A percentile is meaningless once the clock's tick approaches it. Below this
+#: multiple of the observed tick, the console says so instead of printing a
+#: confident number (DF-4).
+CLOCK_TRUST_MULTIPLE = 10
+
+#: ...and a p50 well above the tick still lies if most samples floored to zero.
+CLOCK_ZERO_FRACTION = 0.20
+
 CATEGORIES = (
     "ok",
     "tool_error",
@@ -155,22 +195,63 @@ class SpanRepository:
         return FailureBreakdown(**counts)
 
     @staticmethod
-    def _latency(row: Sequence[Any] | None) -> LatencyStats:
+    def _clock_warning(p50_ms: float, tick_ms: float, count: int, zeros: int) -> str:
+        """Whether the host clock can support the percentiles above it (DF-4).
+
+        DF-4 sat on WATCH being reported by `make verify` every run -- which
+        means it was told to us and never to the customer. The number in the
+        console was the one nobody had qualified, and the entry itself says the
+        quiet part: Linux is nanosecond-grade so OUR production is likely fine,
+        A CUSTOMER ON WINDOWS IS NOT. That makes it a product caveat, not a
+        test-rig footnote.
+
+        Both tests matter and neither subsumes the other. A p50 within a few
+        ticks of the clock's resolution is quantisation noise however few zeros
+        there are; and a p50 comfortably above the tick still misleads when most
+        samples floored to zero, because the surviving non-zero samples are a
+        biased tail rather than a sample of the whole.
+        """
+        if not tick_ms or not count:
+            return ""
+        if p50_ms and p50_ms < tick_ms * CLOCK_TRUST_MULTIPLE:
+            return (
+                f"clock ticks every {tick_ms:.3f}ms - p50 is within "
+                f"{CLOCK_TRUST_MULTIPLE}x of that, so these percentiles are "
+                "quantisation, not latency"
+            )
+        if zeros and zeros / count > CLOCK_ZERO_FRACTION:
+            return (
+                f"{round(100 * zeros / count)}% of calls measured 0ms on a "
+                f"{tick_ms:.3f}ms clock - percentiles are computed over the "
+                "calls slow enough to register"
+            )
+        return ""
+
+    @classmethod
+    def _latency(cls, row: Sequence[Any] | None) -> LatencyStats:
         if not row or not row[0]:
             return LatencyStats()
-        count, p50, p95, p99, mx, zeros = row
+        count, p50, p95, p99, mx, zeros = row[:6]
+        tick = row[6] if len(row) > 6 else None
+        p50_ms = round(_number(p50) / 1e6, 3)
+        tick_ms = round(_number(tick) / 1e6, 4) if tick else 0.0
         return LatencyStats(
             count=count,
-            p50_ms=round(_number(p50) / 1e6, 3),
+            p50_ms=p50_ms,
             p95_ms=round(_number(p95) / 1e6, 3),
             p99_ms=round(_number(p99) / 1e6, 3),
             max_ms=round(_number(mx) / 1e6, 3),
             zero_duration=int(_number(zeros)),
+            clock_tick_ms=tick_ms,
+            clock_warning=cls._clock_warning(
+                p50_ms, tick_ms, int(count), int(_number(zeros))
+            ),
         )
 
     _LATENCY_SELECT = """
         SELECT count(), quantile(0.50)(duration_ns), quantile(0.95)(duration_ns),
-               quantile(0.99)(duration_ns), max(duration_ns), countIf(duration_ns = 0)
+               quantile(0.99)(duration_ns), max(duration_ns), countIf(duration_ns = 0),
+               min(if(duration_ns > 0, duration_ns, NULL))
         FROM ({latest}) WHERE is_latency_eligible = 1 {method} {extra}
     """
 
@@ -193,21 +274,49 @@ class SpanRepository:
         return self._latency(rows[0] if rows else None)
 
     # -- reads -------------------------------------------------------------
+    def _rollup_latency(self, params: dict[str, Any], extra: str = "", **more: Any) -> LatencyStats:
+        """Latency from the rollup's merged quantile states.
+
+        `quantilesMerge` over stored states, not `quantile` over rows -- the
+        states already exclude ineligible spans, because the rollup applied
+        `is_latency_eligible` at WRITE time (D29). A reader cannot forget it,
+        which is the same reasoning that made eligibility a column rather than
+        a query-time filter.
+        """
+        rows = self._rows(
+            f"""SELECT sum(latency_count),
+                       quantilesMerge(0.50, 0.95, 0.99)(latency)[1],
+                       quantilesMerge(0.50, 0.95, 0.99)(latency)[2],
+                       quantilesMerge(0.50, 0.95, 0.99)(latency)[3],
+                       max(latency_max), sum(zero_duration), min(min_tick_ns)
+                FROM tool_metrics_1m
+                WHERE tenant_id = {{tenant:String}} AND project_id = {{project:String}}
+                  AND bucket >= toStartOfMinute({{since:DateTime}}) {extra}""",
+            {**params, **more},
+        )
+        return self._latency(rows[0] if rows else None)
+
     def overview(self, tenant: str, project: str, since: datetime, window: int) -> Overview:
         params = self._scope(tenant, project, since)
 
+        # Reads the ROLLUP, not the raw spans (DF-7). This is the widest scan in
+        # the product -- every span in the window, for a handful of scalars --
+        # and it is the query a dashboard fires on every page load. Assertion E1
+        # compares these numbers against the raw table on every verify run, so
+        # the second path is continuously checked rather than trusted.
         totals = self._rows(
-            f"""SELECT uniqExact(service_name), uniqExactIf(mcp_tool_name, mcp_tool_name != ''),
-                       countIf(mcp_method = 'tools/call'),
-                       sumIf(mcp_is_error, mcp_method = 'tools/call')
-                FROM ({LATEST_SPANS})""",
+            f"""SELECT uniqExact(service_name),
+                       uniqExactIf(mcp_tool_name, mcp_tool_name != ''),
+                       sumIf(calls, mcp_method = 'tools/call'),
+                       sumIf(errors, mcp_method = 'tools/call')
+                FROM ({ROLLUP})""",
             params,
         )
         servers, tools, calls, errors = totals[0] if totals else (0, 0, 0, 0)
 
         breakdown = self._breakdown(
             self._rows(
-                f"""SELECT failure_category, count() FROM ({LATEST_SPANS})
+                f"""SELECT failure_category, sum(calls) FROM ({ROLLUP})
                     WHERE failure_category != '' GROUP BY failure_category""",
                 params,
             )
@@ -217,8 +326,7 @@ class SpanRepository:
         # guesswork. Surfaced because mixing the two silently would misrepresent
         # the product's core claim (D21).
         classified = self._rows(
-            f"""SELECT countIf(failure_kind_source = 'helper'), count()
-                FROM ({LATEST_SPANS})
+            f"""SELECT sum(helper_classified), sum(calls) FROM ({ROLLUP})
                 WHERE failure_category NOT IN ('', 'ok', 'protocol_error')""",
             params,
         )
@@ -230,6 +338,10 @@ class SpanRepository:
         # REPLAYED spans, whose event time precedes their ingest time by hours
         # by design (D26). Over 24h that reported 19,820s of "latency", which
         # was measuring a replay, not the pipeline.
+        #
+        # Stays on `spans_raw`: `ingested_at` is a property of a span's journey
+        # through the pipeline, and a minute bucket has already thrown away the
+        # per-span arrival times this measures.
         freshness = self._rows(
             f"""SELECT quantile(0.95)(dateDiff('millisecond', timestamp, ingested_at))
                 FROM spans_raw
@@ -245,19 +357,23 @@ class SpanRepository:
             calls=calls,
             errors=errors or 0,
             failure_breakdown=breakdown,
-            latency=self._latency_for(params),
+            latency=self._rollup_latency(params, "AND mcp_method = 'tools/call'"),
             classified_ratio=round(helper / total, 3) if total else 1.0,
             freshness_p95_seconds=round(_number(freshness[0][0]) / 1000, 2) if freshness else 0.0,
         )
 
     def servers(self, tenant: str, project: str, since: datetime) -> list[ServerSummary]:
         params = self._scope(tenant, project, since)
+        # Also the rollup. `uniqExact` over tool names is EXACT here rather than
+        # an estimate, because the tool name is part of the rollup's sort key --
+        # which is why one table with the tool in the key replaced the two the
+        # register named (see 012_rollups.sql).
         rows = self._rows(
-            f"""SELECT service_name, anyLast(service_version),
-                       anyLast(environment), countIf(mcp_method = 'tools/call'),
-                       sumIf(mcp_is_error, mcp_method = 'tools/call'),
-                       uniqExactIf(mcp_tool_name, mcp_tool_name != ''), max(span_time)
-                FROM ({LATEST_SPANS}) WHERE service_name != ''
+            f"""SELECT service_name, anyLast(service_version), anyLast(environment),
+                       sumIf(calls, mcp_method = 'tools/call'),
+                       sumIf(errors, mcp_method = 'tools/call'),
+                       uniqExactIf(mcp_tool_name, mcp_tool_name != ''), max(last_seen)
+                FROM ({ROLLUP}) WHERE service_name != ''
                 GROUP BY service_name ORDER BY 4 DESC""",
             params,
         )
@@ -265,7 +381,7 @@ class SpanRepository:
         for name, version, env, calls, errors, tools, last in rows:
             breakdown = self._breakdown(
                 self._rows(
-                    f"""SELECT failure_category, count() FROM ({LATEST_SPANS})
+                    f"""SELECT failure_category, sum(calls) FROM ({ROLLUP})
                         WHERE service_name = {{server:String}} AND failure_category != ''
                         GROUP BY failure_category""",
                     {**params, "server": name},
@@ -280,8 +396,10 @@ class SpanRepository:
                     errors=errors or 0,
                     tools=tools,
                     failure_breakdown=breakdown,
-                    latency=self._latency_for(
-                        params, "AND service_name = {server:String}", server=name
+                    latency=self._rollup_latency(
+                        params,
+                        "AND mcp_method = 'tools/call' AND service_name = {server:String}",
+                        server=name,
                     ),
                     last_seen=last,
                 )
@@ -427,7 +545,7 @@ class SpanRepository:
             params["tool"] = tool
         if cursor:
             # Keyset, not OFFSET: a deep OFFSET re-scans everything before it,
-            # and the page shifts under you as new spans arrive (V2 §13.1).
+            # and the page shifts under you as new spans arrive (V2 Â§13.1).
             clauses.append("start_time < {cursor:DateTime64(9)}")
             params["cursor"] = decode_cursor(cursor)
         params["limit"] = limit + 1

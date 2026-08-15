@@ -351,12 +351,20 @@ def main() -> int:
         f"SELECT (SELECT uniqExact(trace_id) FROM spans_raw WHERE 1 {probe}), "
         f"       (SELECT uniqExact(trace_id) FROM trace_summaries WHERE 1 {probe})"
     ).result_rows[0]
+    # The raw side counts DISTINCT SPANS, not rows. It used to count rows, and
+    # passed -- because `trace_summaries` counted the same replayed spans twice
+    # and the two errors cancelled. So this assertion was agreeing with a
+    # double-count rather than checking a truth, which is the exact trap its own
+    # comment above warns about: an aggregate compared against a different
+    # population. Only visible once the recompute (DF-7) made one side correct.
     raw_spans, summed_spans = ch.query(
-        f"SELECT (SELECT count() FROM spans_raw WHERE 1 {probe}), "
+        f"SELECT (SELECT count() FROM ("
+        f"           SELECT span_id FROM spans_raw WHERE 1 {probe} "
+        f"           GROUP BY tenant_id, project_id, trace_id, span_id)), "
         f"       (SELECT sum(span_count) FROM trace_summaries WHERE 1 {probe})"
     ).result_rows[0]
     record(
-        "B4 trace_summaries has exactly one row per trace",
+        "B4 trace_summaries accounts for every distinct trace and span",
         raw_traces == summary_traces and raw_spans == summed_spans,
         f"{summary_traces}/{raw_traces} traces, {summed_spans}/{raw_spans} spans accounted for",
     )
@@ -501,9 +509,8 @@ def main() -> int:
         f"{zero}/{total} ({ratio:.0%}) zero-duration; smallest non-zero span "
         f"{(nonzero_floor or 0) / 1e6:.3f}ms"
         + (
-            "  -- COARSE CLOCK: latency percentiles for fast tools are not "
-            "trustworthy here. See the Clock resolution section of "
-            "docs/observed_attributes.md (D27)."
+            "  -- COARSE CLOCK. No longer a gap this script only tells US "
+            "about: assertion E5b checks the console says so too (DF-4, D81)."
             if ratio >= 0.10
             else ""
         ),
@@ -775,6 +782,133 @@ def main() -> int:
         "D6e db.operation and db.collection are derived from the statement",
         db[2] > 0 and db[0] == db[2] and db[1] == db[2],
         f"{db[0]}/{db[2]} have an operation, {db[1]}/{db[2]} a collection",
+    )
+
+    # ---------------- E: rollups and the clock -----------------------------
+    print()
+    print("--- E: rollups (DF-7) and clock resolution (DF-4) ---")
+
+    # THE assertion for DF-7, and it has to be run in two steps to mean
+    # anything. A materialized view cannot honour the argMax over
+    # normalization_version that every other read obeys (D24), so a replay makes
+    # the rollup over-count -- silently, with nothing erroring.
+    #
+    # This script has ALREADY replayed a span by the time it gets here: B11b
+    # deliberately inserts the same span again under a different token, to prove
+    # a bug-fix replay is not discarded. So the drift below is not hypothetical
+    # and not a test artefact -- it is the real failure mode, reproduced.
+    #
+    # E1a measures it. E1b proves `make rollups` repairs it. Asserting only the
+    # second would hide that the first is possible; asserting only the first
+    # would leave the repair untested.
+    def rollup_vs_raw():
+        rollup = ch.query("SELECT sum(calls), sum(errors) FROM tool_metrics_1m").result_rows[0]
+        raw = ch.query(
+            "SELECT count(), sum(err) FROM ("
+            "  SELECT argMax(mcp_is_error, normalization_version) AS err "
+            "  FROM spans_raw GROUP BY tenant_id, project_id, span_id)"
+        ).result_rows[0]
+        return rollup, raw
+
+    before_rollup, before_raw = rollup_vs_raw()
+    record(
+        "E1a a replay is visible as rollup drift, not hidden",
+        before_rollup[0] >= before_raw[0],
+        f"rollup {before_rollup[0]} vs raw {before_raw[0]} calls"
+        + (" (drift, as expected after B11b's replay)"
+           if before_rollup[0] != before_raw[0] else " (no replay in this window)"),
+    )
+
+    from scripts.recompute_rollups import RollupRecomputer
+
+    recomputer = RollupRecomputer()
+    for day in recomputer.dates(None):
+        recomputer.recompute(day)
+    after_rollup, after_raw = rollup_vs_raw()
+    record(
+        "E1b `make rollups` reconciles the rollup with the raw table",
+        after_rollup[0] == after_raw[0] and after_rollup[1] == after_raw[1],
+        f"rollup {after_rollup[0]} calls / {after_rollup[1]} errors "
+        f"vs raw {after_raw[0]} / {after_raw[1]}",
+    )
+
+    # The rollup is only worth reading if the API actually reads it. Comparing
+    # the endpoint against the raw table closes the loop: a rollup nobody reads
+    # is what `trace_summaries` was for four days.
+    api_overview = api("/api/v1/overview?window_minutes=10080")
+    raw_calls = ch.query(
+        "SELECT count() FROM ("
+        "  SELECT argMax(mcp_method, normalization_version) AS m "
+        "  FROM spans_raw GROUP BY tenant_id, project_id, span_id) "
+        "WHERE m = 'tools/call'"
+    ).result_rows[0][0]
+    record(
+        "E2 /overview serves rollup numbers that match raw",
+        api_overview["calls"] == raw_calls,
+        f"api {api_overview['calls']} vs raw {raw_calls} tool calls",
+    )
+
+    # DF-3: the aggregate must not outlive the data it summarises.
+    parts = ch.query(
+        "SELECT count(DISTINCT partition) FROM system.parts "
+        "WHERE database = 'mcpobs' AND table = 'trace_summaries' AND active"
+    ).result_rows[0]
+    # `create_table_query` carries the TTL clause; this ClickHouse exposes no
+    # dedicated column for it, and asserting on the DDL is anyway closer to what
+    # is being claimed -- that the table was DECLARED droppable by partition.
+    ttl = ch.query(
+        "SELECT count() FROM system.tables WHERE database = 'mcpobs' "
+        "  AND name IN ('trace_summaries', 'tool_metrics_1m') "
+        "  AND partition_key != '' AND create_table_query LIKE '%TTL %'"
+    ).result_rows[0][0]
+    record(
+        "E3 aggregate tables are partitioned and have a TTL",
+        ttl == 2,
+        f"{ttl}/2 of trace_summaries and tool_metrics_1m are droppable by partition"
+        f" ({parts[0]} live partition(s))",
+    )
+
+    # DF-3's stated cost: a trace straddling midnight becomes two rows. Distinct
+    # traces is what B4 always meant, so the split must not change the answer.
+    #
+    # Run AFTER the recompute above, and that ordering is the finding rather
+    # than a convenience. `trace_summaries` is a materialized view too, so it
+    # double-counts a replayed span exactly as the new rollup does -- it had
+    # been doing so since Day 2, invisibly, because B4 counts distinct TRACES
+    # and a replayed span adds no trace. Writing this assertion against SPANS is
+    # what surfaced it.
+    summary = ch.query(
+        "SELECT uniqExact(trace_id), sum(span_count) FROM trace_summaries"
+    ).result_rows[0]
+    raw_traces = ch.query(
+        "SELECT uniqExact(trace_id), count() FROM ("
+        "  SELECT trace_id FROM spans_raw "
+        "  GROUP BY tenant_id, project_id, trace_id, span_id)"
+    ).result_rows[0]
+    record(
+        "E4 trace_summaries reconciles with raw, by trace AND by span",
+        summary[0] == raw_traces[0] and summary[1] == raw_traces[1],
+        f"{summary[0]} traces / {summary[1]} spans vs raw {raw_traces[0]} / {raw_traces[1]}",
+    )
+
+    # DF-4 becomes a product behaviour rather than a verify-only warning. The
+    # register said it plainly: Linux is nanosecond-grade so OUR production is
+    # probably fine, A CUSTOMER ON WINDOWS IS NOT -- which makes it a caveat
+    # that has to reach the console, not just this script.
+    tick = ch.query(
+        "SELECT min(min_tick_ns) FROM tool_metrics_1m"
+    ).result_rows[0][0]
+    latency = api_overview["latency"]
+    coarse = bool(tick and tick > 100_000)
+    record(
+        "E5 the observed clock tick is measured and exposed",
+        latency["clock_tick_ms"] > 0,
+        f"clock ticks every {latency['clock_tick_ms']:.4f}ms (observed, not assumed)",
+    )
+    record(
+        "E5b a clock too coarse for the percentiles says so in the API",
+        (not coarse) or bool(latency["clock_warning"]),
+        latency["clock_warning"] or "clock is fine; no caveat needed",
     )
 
     # ---------------- B7: freshness, the headline metric -------------------

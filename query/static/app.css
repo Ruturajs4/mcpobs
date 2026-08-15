@@ -241,3 +241,10 @@ tbody tr.sel td { border-bottom-color: transparent; }
 .note-bar b { color: #fcd34d; }
 .empty { padding: 44px; text-align: center; color: var(--text-mute); font-size: 13px; }
 .spin { padding: 44px; text-align: center; color: var(--text-mute); }
+
+/* A latency the host clock could not resolve. Dimmed and dotted rather than
+   hidden: the number is the best available answer, it just is not a precise
+   one, and hiding it would leave an operator with no signal at all (DF-4).
+   The tooltip carries the reason, computed server-side where the clock was
+   actually measured. */
+.approx { color: var(--text-dim); border-bottom: 1px dotted var(--text-mute); cursor: help; }

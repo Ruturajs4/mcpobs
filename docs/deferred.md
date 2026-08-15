@@ -23,14 +23,14 @@ today, will bite at scale) · `CLOSED` (kept for the record).
 | # | Deferred | Risk if it stays open | Forced back by | Status |
 | --- | --- | --- | --- | --- |
 | DF-2 | **Multi-broker Kafka (RF=3, `min.insync.replicas=2`).** Local runs one broker at RF=1. | `acks=all` is exercised, but the ack *semantics under broker loss* are not. ADR-008's durability claim is proven for a healthy cluster only. | First staging deployment, or before any customer data. | OPEN |
-| DF-3 | **`trace_summaries` has no `PARTITION BY` or TTL.** Every candidate date lives in an aggregate column whose value changes as parts merge, and a trace can straddle midnight — so no deterministic partition key was available. | The table grows without bound and cannot be dropped by partition. Fine at laptop scale; not fine at 4.3 TB/day (Architecture §9.3). | Retention policy work, or the first table that will not fit. | OPEN |
-| DF-4 | **Latency percentiles are untrustworthy on this host.** OTel timestamps spans with `time.time_ns()`, whose smallest tick here is 0.749 ms, so ~40% of tool-call spans record `duration_ns = 0`. | Any latency number produced locally is wrong for fast tools. Linux is nanosecond-grade so production is very likely fine — **a customer on Windows is not**. | B8 reports it every run. Closes when measured on Linux, or when we document the customer-facing caveat. | WATCH |
+| DF-3 | **`trace_summaries` has no `PARTITION BY` or TTL.** | **The blocker was half-imagined.** "Every candidate date lives in an aggregate column" is true of `min(timestamp)` and irrelevant: `toDate(timestamp)` of the row being inserted is deterministic. Partitioned and TTL'd to 7 days, matching `spans_raw` so a summary never outlives the spans it links to (D78-D80). Closing it also exposed that the table had been double-counting replayed spans since Day 2 (D77). | - | CLOSED |
+| DF-4 | **Latency percentiles are untrustworthy on this host.** | Closed by the second of its own exit criteria -- the customer-facing caveat. It had been reported to *us* by `make verify` every run while the console showed an unqualified number, and the entry itself said why that was not enough: **a customer on Windows is not** unaffected. The tick is now measured per service and the console marks every percentile it cannot support (D81-D83). | - | CLOSED |
 
 ## Product surface — planned, not risky
 
 | # | Deferred | Why it waits | Status |
 | --- | --- | --- | --- |
-| DF-7 | Rollups (`server_metrics_1m`, `tool_metrics_1m`) | Day 4–5, deliberately **after** Day 3, so they encode query patterns the API actually validated rather than guesses. | OPEN |
+| DF-7 | Rollups (`server_metrics_1m`, `tool_metrics_1m`) | Built as ONE table, because the server view is the tool view with a column dropped (D73). Overview and Servers read it; assertion E2 checks the API's numbers against raw. The register's two-table framing would have created a second source of truth (D73-D76). | CLOSED |
 | DF-9 | API keys, tenancy, Postgres control plane | Phase 1. Tenant columns exist, hard-coded to `local`. | OPEN |
 | DF-10 | Alerting engine, cross-region query, RBAC/SSO | V2 §20.2 — explicitly out of scope for launch. | OPEN |
 

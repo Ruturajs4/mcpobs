@@ -31,6 +31,14 @@ function dur(ms) {
   if (ms < 1000) return `${ms.toFixed(ms < 10 ? 2 : 1)}ms`;
   return `${(ms / 1000).toFixed(2)}s`;
 }
+// A latency the host clock cannot actually resolve, marked where it is READ
+// rather than only in a banner at the top of one page (DF-4). A number carrying
+// no qualifier in a table is a number someone will quote.
+function durq(latency) {
+  const text = dur(latency?.p95_ms ?? 0);
+  if (!latency?.clock_warning) return text;
+  return `<span class="approx" title="${esc(latency.clock_warning)}">~${text}</span>`;
+}
 const num = (n) => (n ?? 0).toLocaleString();
 const ago = (iso) => {
   if (!iso) return "—";
@@ -80,13 +88,16 @@ async function viewOverview() {
   const o = await api("/overview");
   const bd = o.failure_breakdown;
   const rate = o.calls ? ((o.errors / o.calls) * 100).toFixed(1) : "0.0";
-  const zeroShare = o.latency.count ? o.latency.zero_duration / o.latency.count : 0;
-
   const banners = [];
-  if (zeroShare > 0.1) banners.push(`<div class="note-bar"><span>⚠</span><div>
-    <b>${Math.round(zeroShare * 100)}% of tool calls measured as 0ms.</b>
-    This host's clock ticks every ~0.75ms, so latency for fast tools is not
-    measurable here. Percentiles below understate. Linux hosts are unaffected.</div></div>`);
+  // The caveat comes from the SERVER, which measured the clock, rather than
+  // from a threshold in the browser with the tick hardcoded. The old banner
+  // said "~0.75ms" -- a number measured once on one laptop and then frozen into
+  // the UI, so it was wrong for every other host and silent when the clock was
+  // fine but most calls still floored to zero.
+  if (o.latency.clock_warning) banners.push(`<div class="note-bar"><span>&#9888;</span><div>
+    <b>Latency percentiles are not reliable on this host.</b>
+    ${esc(o.latency.clock_warning)}. Linux hosts are nanosecond-grade and
+    unaffected; a server on Windows is not.</div></div>`);
   if (o.classified_ratio < 1) banners.push(`<div class="note-bar"><span>◐</span><div>
     <b>${Math.round(o.classified_ratio * 100)}% of failures are precisely classified.</b>
     The rest come from servers not running the <code>mcpobs</code> helper and report
@@ -100,8 +111,11 @@ async function viewOverview() {
       <div class="card"><div class="lbl">Error rate</div>
         <div class="big" style="color:${o.errors ? "var(--err)" : "var(--ok)"}">${rate}%</div>
         <div class="sub">${num(o.errors)} failed calls</div></div>
-      <div class="card"><div class="lbl">p95 latency</div><div class="big">${dur(o.latency.p95_ms)}</div>
-        <div class="sub">p50 ${dur(o.latency.p50_ms)} · max ${dur(o.latency.max_ms)}</div></div>
+      <div class="card"><div class="lbl">p95 latency</div>
+        <div class="big"${o.latency.clock_warning ? ' style="color:var(--text-dim)"' : ""}>${
+          o.latency.clock_warning ? "~" : ""}${dur(o.latency.p95_ms)}</div>
+        <div class="sub">p50 ${dur(o.latency.p50_ms)} · max ${dur(o.latency.max_ms)}${
+          o.latency.clock_tick_ms ? ` · clock ${o.latency.clock_tick_ms.toFixed(3)}ms` : ""}</div></div>
       <div class="card"><div class="lbl">Freshness p95</div><div class="big">${o.freshness_p95_seconds.toFixed(1)}s</div>
         <div class="sub">event time → queryable</div></div>
     </div>
@@ -130,7 +144,7 @@ async function viewServers() {
         <td class="dim">${esc(s.environment)}</td><td class="num">${s.tools}</td>
         <td class="num">${num(s.calls)}</td>
         <td class="num" style="color:${s.errors ? "var(--err)" : "inherit"}">${num(s.errors)}</td>
-        <td>${distBar(s.failure_breakdown)}</td><td class="num">${dur(s.latency.p95_ms)}</td>
+        <td>${distBar(s.failure_breakdown)}</td><td class="num">${durq(s.latency)}</td>
         <td class="dim">${ago(s.last_seen)}</td></tr>`).join("")}</tbody>
     </table></div>` : `<div class="empty">No servers reporting in this window.</div>`;
   bindAll("[data-server]", (n) => go("capabilities", { kind: "tool", server: n.dataset.server }));
@@ -168,7 +182,7 @@ async function viewCapabilities() {
           <td class="num">${num(r.calls)}</td>
           <td class="num" style="color:${r.errors ? "var(--err)" : "inherit"}">${num(r.errors)}</td>
           <td>${distBar(r.failure_breakdown)}</td>
-          <td class="num">${dur(r.latency.p50_ms)}</td><td class="num">${dur(r.latency.p95_ms)}</td>
+          <td class="num">${dur(r.latency.p50_ms)}</td><td class="num">${durq(r.latency)}</td>
           <td>${worst ? badge(worst[0]) : '<span class="mute">—</span>'}</td>
           <td class="dim">${ago(r.last_seen)}</td></tr>`;
       }).join("")}</tbody></table></div>`
