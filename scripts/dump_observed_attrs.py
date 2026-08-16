@@ -294,11 +294,40 @@ def build_report(by_transport: dict[str, list[dict]]) -> str:
             f"- Shared: {len(keysets[a] & keysets[b])} attributes",
             "",
         ]
-        if not only_a and not only_b:
+        # Identical attribute SETS no longer imply an indistinguishable
+        # transport. This block used to conclude exactly that, and kept printing
+        # "network.transport is not emitted" for a full release after mcpobs
+        # started emitting it -- because both transports emit the same KEYS,
+        # carrying different VALUES. Comparing keys and reporting on values is
+        # how a generated document states something the data contradicts.
+        values = {
+            t: sorted(
+                {
+                    str(sp["attributes"]["network.transport"])
+                    for sp in mcp_spans(spans_for)
+                    if "network.transport" in (sp.get("attributes") or {})
+                }
+            )
+            for t, spans_for in by_transport.items()
+        }
+        distinguishable = (
+            values.get(a) and values.get(b) and set(values[a]).isdisjoint(values[b])
+        )
+        if distinguishable:
             lines += [
-                "**The two transports emit identical attribute sets.** Transport is therefore "
-                "not observable from span attributes alone on Day 1 — `network.transport` is "
-                "not emitted, so the normalizer cannot distinguish stdio from streamable HTTP.",
+                f"**The transport is recorded.** `network.transport` is `{values[a][0]}` on "
+                f"{a} spans and `{values[b][0]}` on {b} spans, so the two populations are "
+                "distinguishable in storage. The MCP SDK does not emit this attribute; "
+                "`mcpobs` derives it from `server.run(transport)`, from `instrument_asgi()`, "
+                "or from an explicit `instrument(server, transport=...)`.",
+                "",
+            ]
+        elif not only_a and not only_b:
+            lines += [
+                "**The two transports emit identical attribute sets AND identical "
+                "`network.transport` values.** Transport is therefore not observable from "
+                "span attributes alone — check that `mcpobs.instrument()` ran before "
+                "`server.run(...)`.",
                 "",
             ]
 

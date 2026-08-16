@@ -4,7 +4,7 @@
 
 This report is the source of truth for what the MCP Python SDK actually emits. Where it disagrees with the Day-1 engineering document, **this report wins** (Day-1 doc D10).
 
-Captured: 2026-08-15 16:38 UTC
+Captured: 2026-08-16 15:40 UTC
 
 ## Resolved versions
 
@@ -25,10 +25,10 @@ Captured: 2026-08-15 16:38 UTC
 | Property | Value |
 | --- | --- |
 | Platform | `Windows 10` |
-| `time.time_ns()` smallest tick | `0.752 ms` |
+| `time.time_ns()` smallest tick | `1.505 ms` |
 | `monotonic` resolution | `15.625 ms` |
 | `perf_counter` resolution | `0.100 us` |
-| Consequence | Spans shorter than ~0.75 ms record as `duration_ns = 0` |
+| Consequence | Spans shorter than ~1.50 ms record as `duration_ns = 0` |
 
 > **Latency percentiles for fast tools are not trustworthy on this platform.**
 > OpenTelemetry timestamps spans with `time.time_ns()`, so the clock tick above is
@@ -53,14 +53,29 @@ Captured: 2026-08-15 16:38 UTC
 | `stdio` | `tools/call confirm_deploy` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `stdio` | `tools/call confirm_deploy` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `stdio` | `tools/call submit_order` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `stdio` | `tools/call enqueue_job` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `stdio` | `tools/call query_orders` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `stdio` | `tools/call summarize` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `stdio` | `tools/call customer_profile` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `stdio` | `tools/call customer_profile` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `stdio` | `tools/call order_history` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `stdio` | `tools/call check_stock` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `stdio` | `tools/call cache_warm` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `stdio` | `tools/call partner_health` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `stdio` | `tools/call place_order` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `stdio` | `tools/call place_order` | `SpanKind.SERVER` | `ERROR` | `tool_error` | 0 |
 | `stdio` | `prompts/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `stdio` | `prompts/get triage_error` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `stdio` | `prompts/get summarize_incident` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `stdio` | `resources/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `stdio` | `resources/read` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `stdio` | `resources/read` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `stdio` | `tools/call publish_change` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `stdio` | `subscriptions/listen` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `stdio` | `notifications/cancelled` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `stdio` | `tools/call slow_export` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `stdio` | `tools/call slow_export` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `stdio` | `notifications/cancelled` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `http` | `server/discover` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `http` | `tools/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `http` | `tools/call echo_fast` | `SpanKind.SERVER` | `UNSET` | — | 0 |
@@ -82,46 +97,72 @@ Captured: 2026-08-15 16:38 UTC
 | `http` | `tools/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `http` | `tools/call submit_order` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `http` | `tools/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/call enqueue_job` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `http` | `tools/call query_orders` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `http` | `tools/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `http` | `tools/call summarize` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/call customer_profile` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/call customer_profile` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/call order_history` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/call check_stock` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/call cache_warm` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/call partner_health` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/call place_order` | `SpanKind.SERVER` | `ERROR` | `tool_error` | 0 |
+| `http` | `tools/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/call place_order` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `http` | `prompts/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `http` | `prompts/get triage_error` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `http` | `prompts/get summarize_incident` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `http` | `resources/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `http` | `resources/read` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `http` | `resources/read` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/call publish_change` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `subscriptions/listen` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/call slow_export` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
+| `http` | `tools/call slow_export` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 
 ## Attributes emitted on MCP spans
 
 | Attribute | Python type | Spans | Example |
 | --- | --- | --- | --- |
-| `error.type` | `str` | 8/50 | `tool_error` |
-| `gen_ai.operation.name` | `str` | 24/50 | `execute_tool` |
-| `gen_ai.prompt.name` | `str` | 4/50 | `triage_error` |
-| `gen_ai.tool.call.arguments` | `str` | 50/50 | `{
+| `error.type` | `str` | 10/89 | `tool_error` |
+| `gen_ai.operation.name` | `str` | 48/89 | `execute_tool` |
+| `gen_ai.prompt.name` | `str` | 4/89 | `triage_error` |
+| `gen_ai.tool.call.arguments` | `str` | 85/89 | `{
   "jsonrpc": "2.0",
   "id": 1,
   "method":` |
-| `gen_ai.tool.call.result` | `str` | 50/50 | `{
+| `gen_ai.tool.call.result` | `str` | 83/89 | `{
   "jsonrpc": "2.0",
   "id": 1,
   "result":` |
-| `gen_ai.tool.name` | `str` | 24/50 | `echo_fast` |
-| `jsonrpc.request.id` | `str` | 50/50 | `1` |
-| `mcp.method.name` | `str` | 50/50 | `server/discover` |
-| `mcp.protocol.version` | `str` | 50/50 | `2026-07-28` |
-| `mcp.resource.uri` | `str` | 4/50 | `config://limits` |
-| `mcpobs.client.name` | `str` | 50/50 | `mcp` |
-| `mcpobs.client.version` | `str` | 50/50 | `0.1.0` |
-| `mcpobs.failure.detail` | `str` | 8/50 | `upstream rejected the request` |
-| `mcpobs.failure.kind` | `str` | 8/50 | `tool_error` |
-| `mcpobs.failure.kind.version` | `int` | 8/50 | `2` |
-| `mcpobs.mrtr.state.in` | `str` | 2/50 | `e973cab711cdcb3d` |
-| `mcpobs.mrtr.state.out` | `str` | 2/50 | `e973cab711cdcb3d` |
-| `mcpobs.request.size` | `int` | 50/50 | `411` |
-| `mcpobs.response.size` | `int` | 50/50 | `540` |
-| `mcpobs.result.type` | `str` | 2/50 | `input_required` |
+| `gen_ai.tool.name` | `str` | 48/89 | `echo_fast` |
+| `jsonrpc.request.id` | `str` | 87/89 | `1` |
+| `mcp.method.name` | `str` | 89/89 | `server/discover` |
+| `mcp.protocol.version` | `str` | 89/89 | `2026-07-28` |
+| `mcp.resource.uri` | `str` | 4/89 | `config://limits` |
+| `mcpobs.cancelled` | `bool` | 4/89 | `True` |
+| `mcpobs.client.name` | `str` | 83/89 | `mcp` |
+| `mcpobs.client.version` | `str` | 83/89 | `0.1.0` |
+| `mcpobs.failure.detail` | `str` | 10/89 | `upstream rejected the request` |
+| `mcpobs.failure.kind` | `str` | 10/89 | `tool_error` |
+| `mcpobs.failure.kind.version` | `int` | 10/89 | `2` |
+| `mcpobs.mrtr.state.in` | `str` | 2/89 | `e973cab711cdcb3d` |
+| `mcpobs.mrtr.state.out` | `str` | 2/89 | `e973cab711cdcb3d` |
+| `mcpobs.request.size` | `int` | 85/89 | `411` |
+| `mcpobs.response.size` | `int` | 83/89 | `540` |
+| `mcpobs.result.type` | `str` | 2/89 | `input_required` |
+| `network.transport` | `str` | 89/89 | `stdio` |
 
 ## Expected by the Day-1 doc but NOT emitted
 
@@ -129,7 +170,6 @@ These appear in Day-1 doc §4.2. The SDK does not emit them; the corresponding c
 
 - `rpc.response.status_code`
 - `mcp.session.id`
-- `network.transport`
 - `network.protocol.name`
 - `network.protocol.version`
 - `jsonrpc.protocol.version`
@@ -142,7 +182,7 @@ These appear in Day-1 doc §4.2. The SDK does not emit them; the corresponding c
 
 Distinct `error.type` values observed across all failure scenarios: `tool_error`
 
-Failing spans: 8 · spans carrying `rpc.response.status_code`: 0 · spans carrying exception events: 0
+Failing spans: 10 · spans carrying `rpc.response.status_code`: 0 · spans carrying exception events: 0
 
 > ### FINDING: the failure taxonomy is not reachable from span attributes
 >
@@ -171,9 +211,9 @@ Failing spans: 8 · spans carrying `rpc.response.status_code`: 0 · spans carryi
 
 - Attributes on `stdio` only: _none_
 - Attributes on `http` only: _none_
-- Shared: 20 attributes
+- Shared: 22 attributes
 
-**The two transports emit identical attribute sets.** Transport is therefore not observable from span attributes alone on Day 1 — `network.transport` is not emitted, so the normalizer cannot distinguish stdio from streamable HTTP.
+**The transport is recorded.** `network.transport` is `stdio` on stdio spans and `streamable-http` on http spans, so the two populations are distinguishable in storage. The MCP SDK does not emit this attribute; `mcpobs` derives it from `server.run(transport)`, from `instrument_asgi()`, or from an explicit `instrument(server, transport=...)`.
 
 ## Downstream child spans (A4)
 
@@ -182,11 +222,75 @@ Failing spans: 8 · spans carrying `rpc.response.status_code`: 0 · spans carryi
 | `stdio` | `GET` | `GET` | `200` |
 | `stdio` | `GET` | `GET` | `500` |
 | `stdio` | `POST` | `POST` | `201` |
+| `stdio` | `mcpobs.demo.jobs send` | `` | `` |
 | `stdio` | `SELECT` | `` | `` |
 | `stdio` | `chat gpt-4o-mini` | `` | `` |
+| `stdio` | `GET` | `` | `` |
+| `stdio` | `GET` | `` | `` |
+| `stdio` | `SELECT` | `` | `` |
+| `stdio` | `SELECT` | `` | `` |
+| `stdio` | `SELECT` | `` | `` |
+| `stdio` | `SETEX` | `` | `` |
+| `stdio` | `GET` | `` | `` |
+| `stdio` | `SETEX` | `` | `` |
+| `stdio` | `GET` | `` | `` |
+| `stdio` | `SETEX` | `` | `` |
+| `stdio` | `GET` | `` | `` |
+| `stdio` | `SETEX` | `` | `` |
+| `stdio` | `GET` | `` | `` |
+| `stdio` | `SETEX` | `` | `` |
+| `stdio` | `GET` | `` | `` |
+| `stdio` | `GET` | `GET` | `200` |
+| `stdio` | `GET` | `GET` | `200` |
+| `stdio` | `GET` | `GET` | `200` |
+| `stdio` | `SELECT` | `` | `` |
+| `stdio` | `UPDATE` | `` | `` |
+| `stdio` | `POST` | `POST` | `200` |
+| `stdio` | `POST` | `POST` | `200` |
+| `stdio` | `POST` | `POST` | `200` |
+| `stdio` | `INSERT` | `` | `` |
+| `stdio` | `DEL` | `` | `` |
+| `stdio` | `SELECT` | `` | `` |
+| `stdio` | `UPDATE` | `` | `` |
+| `stdio` | `POST` | `POST` | `200` |
+| `stdio` | `POST` | `POST` | `503` |
+| `stdio` | `mcp.subscription.event` | `` | `` |
+| `stdio` | `mcp.progress` | `` | `` |
+| `stdio` | `mcp.progress` | `` | `` |
+| `stdio` | `mcp.progress` | `` | `` |
+| `stdio` | `mcp.progress` | `` | `` |
 | `http` | `GET` | `GET` | `200` |
 | `http` | `GET` | `GET` | `500` |
 | `http` | `POST` | `POST` | `201` |
+| `http` | `mcpobs.demo.jobs send` | `` | `` |
 | `http` | `SELECT` | `` | `` |
 | `http` | `chat gpt-4o-mini` | `` | `` |
+| `http` | `GET` | `` | `` |
+| `http` | `GET` | `` | `` |
+| `http` | `SELECT` | `` | `` |
+| `http` | `SELECT` | `` | `` |
+| `http` | `SELECT` | `` | `` |
+| `http` | `SETEX` | `` | `` |
+| `http` | `GET` | `` | `` |
+| `http` | `SETEX` | `` | `` |
+| `http` | `GET` | `` | `` |
+| `http` | `SETEX` | `` | `` |
+| `http` | `GET` | `` | `` |
+| `http` | `SETEX` | `` | `` |
+| `http` | `GET` | `` | `` |
+| `http` | `SETEX` | `` | `` |
+| `http` | `GET` | `` | `` |
+| `http` | `GET` | `GET` | `200` |
+| `http` | `GET` | `GET` | `200` |
+| `http` | `GET` | `GET` | `200` |
+| `http` | `SELECT` | `` | `` |
+| `http` | `UPDATE` | `` | `` |
+| `http` | `POST` | `POST` | `200` |
+| `http` | `POST` | `POST` | `503` |
+| `http` | `SELECT` | `` | `` |
+| `http` | `mcp.subscription.event` | `` | `` |
+| `http` | `mcp.progress` | `` | `` |
+| `http` | `mcp.progress` | `` | `` |
+| `http` | `mcp.progress` | `` | `` |
+| `http` | `mcp.progress` | `` | `` |
 

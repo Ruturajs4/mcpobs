@@ -46,7 +46,7 @@ INTERNAL_FILES = {
 #: `alpha-readiness.md` by name does nothing if its contents move to
 #: `readiness.md` and someone forgets to update the list.
 INTERNAL_PHRASES = (
-    "not ready for a customer-facing alpha",
+    "not ready for an external alpha",
     "Release blockers",
     "run as root",
     "no tenant isolation",
@@ -83,6 +83,28 @@ def _nav_targets(nav: object, out: set[str] | None = None) -> set[str]:
 
 
 class TestInternalDocsAreExcluded:
+    def test_every_canary_phrase_still_appears_in_an_internal_doc(self) -> None:
+        """A phrase that matches nothing protects nothing.
+
+        Rewriting `alpha-readiness.md` changed "not ready for a customer-facing
+        alpha" to "not ready for an external alpha", which silently disarmed
+        that canary -- the leak test kept passing because it was searching the
+        built site for a string that no longer existed anywhere. Editing an
+        internal document must not be able to weaken the guard on it.
+        """
+        corpus = "\n".join(
+            (DOCS / f).read_text(encoding="utf-8", errors="ignore")
+            for f in INTERNAL_FILES
+            if (DOCS / f).exists()
+        )
+        dead = [p for p in INTERNAL_PHRASES if p not in corpus]
+        assert not dead, (
+            f"canary phrases matching no internal document: {dead}. "
+            "They would never detect a leak. Replace them with text that is "
+            "actually in the file you are trying to protect."
+        )
+
+
     def test_every_internal_file_is_in_exclude_docs(self) -> None:
         """`exclude_docs` is the mechanism. `nav` is not."""
         excluded = set(_config().get("exclude_docs", "").split())
