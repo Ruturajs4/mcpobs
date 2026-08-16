@@ -26,10 +26,13 @@ jobs:
         run: pytest
 
       - name: Lint
-        run: ruff check normalizer/ tests/ scripts/ demo_server/
+        run: ruff check normalizer/ mcpobs/ query/ control/ ingest/ archiver/ tests/ scripts/ demo_server/
 
       - name: Typecheck
-        run: mypy normalizer/
+        run: mypy normalizer/ mcpobs/ query/ control/ ingest/ archiver/
+
+      - name: Browser JavaScript syntax
+        run: node --check query/static/app.js && node --check query/static/admin.js
 
       # This is the tripwire that matters. The failure classifier matches
       # SDK-generated message prefixes; an SDK release that changes them would

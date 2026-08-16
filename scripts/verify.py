@@ -1363,6 +1363,7 @@ def main() -> int:
 
     quota_org = "local"
     original_plan = None
+    quota_probe = None
     try:
         from control.repository import ControlPlane as ControlPlaneClient
 
@@ -1418,6 +1419,8 @@ def main() -> int:
             except urllib.error.HTTPError as exc:
                 return exc.code, _headers(exc.headers)
 
+        quota_probe = _probe
+
         # WAIT FOR THE CACHE, and this is a product property rather than a test
         # workaround. Quota limits ride on the cached `Principal`, so a change
         # converges within CACHE_TTL_SECONDS (30s) in every process that is not
@@ -1472,6 +1475,25 @@ def main() -> int:
                 )
         except Exception as exc:
             print(f"     WARNING: could not restore {quota_org} quota: {exc}")
+
+    # Restoring Postgres is not enough: each gateway process may still hold the
+    # temporary five-span principal for the documented cache TTL. Wait for the
+    # real ingest path to observe the restored plan before later scenarios send
+    # progress spans, otherwise test ordering turns a healthy pipeline into H2's
+    # misleading 429/"no progress" failure.
+    restored_status = 0
+    if quota_probe is not None and original_plan is not None:
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            restored_status, _ = quota_probe(1)
+            if restored_status < 400:
+                break
+            time.sleep(2)
+    record(
+        "J1d restored quota converges before later scenarios",
+        quota_probe is not None and original_plan is not None and restored_status < 400,
+        f"gateway returned {restored_status} after restoring the original plan",
+    )
 
     # Unlimited plans must short-circuit before touching the counter at all.
     record(

@@ -45,6 +45,7 @@ contract, which outranks every document where they disagree.
 - [`docs/decisions.md`](docs/decisions.md) — decision log, including the Day-1 findings
 - [`docs/observed_attributes.md`](docs/observed_attributes.md) — **generated**, the span contract
 - [`docs/deferred.md`](docs/deferred.md) — everything knowingly postponed, and what forces it back
+- [`docs/alpha-readiness.md`](docs/alpha-readiness.md) — current release verdict, blockers, and alpha gate
 
 ## Getting a key
 

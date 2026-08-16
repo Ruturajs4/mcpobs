@@ -1,3 +1,25 @@
+@font-face {
+  font-family: "MCP Inter";
+  src: url("/static/fonts/inter-variable.woff2") format("woff2-variations");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "MCP Mono";
+  src: url("/static/fonts/jetbrains-mono-regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "MCP Mono";
+  src: url("/static/fonts/jetbrains-mono-semibold.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+}
+
 /* ---------------------------------------------------------------------------
    Design tokens. Dark-first, in the SigNoz idiom (V2 §14.7): near-black ground,
    a single blue accent, and status colour reserved for status ONLY -- never
@@ -11,14 +33,16 @@
   --accent: #4e74f8; --accent-dim: #2c3f80;
   --ok: #22c55e; --warn: #f59e0b; --err: #ef4444;
   --purple: #a855f7; --cyan: #06b6d4; --pink: #ec4899;
-  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+  --mono: "MCP Mono", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: "MCP Inter", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --r: 6px;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--text);
-  font: 13px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
+  font: 13px/1.5 var(--sans); font-optical-sizing: auto;
+  font-feature-settings: "liga" 1, "calt" 1; letter-spacing: -0.005em;
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
 
 /* --------------------------------------------------------------- layout */
 .app { display: grid; grid-template-columns: 208px 1fr; height: 100vh; }
@@ -28,7 +52,7 @@ body { margin: 0; background: var(--bg); color: var(--text);
   display: flex; align-items: center; gap: 9px; }
 .brand .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok);
   box-shadow: 0 0 10px var(--ok); flex: none; }
-.brand h1 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: -0.01em; }
+.brand h1 { margin: 0; font-size: 13.5px; font-weight: 650; letter-spacing: -0.025em; }
 .brand .sub { font-size: 10px; color: var(--text-mute); font-family: var(--mono); }
 
 nav { padding: 8px; display: flex; flex-direction: column; gap: 1px; overflow-y: auto; }
@@ -88,8 +112,14 @@ nav .grp { padding: 13px 10px 5px; font-size: 10px; text-transform: uppercase;
 .main { display: flex; flex-direction: column; overflow: hidden; }
 .top { height: 52px; flex: none; border-bottom: 1px solid var(--border);
   display: flex; align-items: center; gap: 14px; padding: 0 20px; background: var(--panel); }
-.top h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.top h2 { margin: 0; font-size: 14.5px; font-weight: 650; letter-spacing: -0.02em; }
 .top .spacer { flex: 1; }
+/* Between the header and the scrolling list: `flex: none` so it never scrolls
+   away. Filters you cannot see are filters you forget are applied, and a list
+   silently narrowed by an off-screen control is how people conclude their data
+   is missing. Empty views collapse it to nothing via :empty. */
+.filters { flex: none; padding: 0 20px; }
+.filters:empty { display: none; }
 .content { flex: 1; overflow-y: auto; padding: 20px; }
 
 .range { display: flex; background: var(--raised); border: 1px solid var(--border);
@@ -106,7 +136,7 @@ nav .grp { padding: 13px 10px 5px; font-size: 10px; text-transform: uppercase;
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
 .card .lbl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
   color: var(--text-mute); font-weight: 600; margin-bottom: 7px; }
-.card .big { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.card .big { font-size: 27px; font-weight: 620; letter-spacing: -0.035em; font-variant-numeric: tabular-nums; }
 .card .sub { font-size: 11.5px; color: var(--text-dim); margin-top: 3px; }
 
 .panel { background: var(--panel); border: 1px solid var(--border);
@@ -136,6 +166,7 @@ tbody tr.sel { background: var(--accent-dim); }
 tbody tr.sel td { border-bottom-color: transparent; }
 .num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
 .mono { font-family: var(--mono); font-size: 11.5px; }
+.num, .mono, code, pre { font-variant-ligatures: none; letter-spacing: -0.015em; }
 .dim { color: var(--text-dim); } .mute { color: var(--text-mute); }
 
 /* --------------------------------------------------------------- badges */
@@ -316,3 +347,48 @@ tbody tr.sel td { border-bottom-color: transparent; }
    HTTP call. */
 .k-msg { background: #ec489922; color: #f9a8d4; }
 .bar-msg { background: var(--pink); }
+
+/* API-described filter panel. The controls are generic: the server supplies
+   labels, help and option values; this stylesheet only knows the four control
+   types. */
+.btn-ghost { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r);
+  color: var(--text-dim); font: inherit; font-size: 12.5px; padding: 6px 11px; cursor: pointer; }
+.btn-ghost:hover { background: var(--raised); color: var(--text); }
+.btn-ghost.on { border-color: var(--accent); color: var(--text); background: #4e74f81a; }
+.chip { display: inline-flex; align-items: center; gap: 6px; background: var(--raised);
+  border: 1px solid var(--border); border-radius: 20px; padding: 3px 5px 3px 10px;
+  font-size: 11.5px; color: var(--text-dim); }
+.chip button { background: none; border: 0; color: var(--text-mute); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 0 3px; border-radius: 50%; }
+.chip button:hover { color: var(--err); background: #ef444422; }
+.chip-clear { background: none; border: 0; color: var(--accent); cursor: pointer;
+  font: inherit; font-size: 11.5px; padding: 2px 4px; }
+.chip-clear:hover { text-decoration: underline; }
+.fcount { color: var(--text-mute); font-size: 11.5px; }
+.filter-summary { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding: 12px 0 2px; }
+.filter-summary input { width: 250px; background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--r); color: var(--text); font: inherit; font-size: 12.5px; padding: 7px 9px; }
+.filter-summary input:focus, .generic-control input:focus, .generic-control select:focus { outline: none; border-color: var(--accent); }
+.filter-loading { color: var(--text-mute); font-size: 12px; padding: 11px 0; }
+.filter-panel { position: fixed; z-index: 70; top: 0; right: 0; bottom: 0; width: min(380px, 100vw);
+  display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--border);
+  box-shadow: -18px 0 48px #0008; transform: translateX(105%); transition: transform .18s ease; }
+.filter-panel.open { transform: translateX(0); }
+.filter-panel-head, .filter-panel-foot { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid var(--border); }
+.filter-panel-head strong { display: block; font-size: 14px; }.filter-panel-head span { display: block; color: var(--text-mute); font-size: 11.5px; margin-top: 2px; }
+.filter-panel-head button { background: none; border: 0; color: var(--text-mute); cursor: pointer; font-size: 22px; line-height: 1; }
+.filter-panel-body { overflow-y: auto; padding: 4px 18px 24px; }.filter-panel-foot { margin-top: auto; border-top: 1px solid var(--border); border-bottom: 0; }
+.filter-group { border-bottom: 1px solid var(--border-lo); padding: 16px 0; }.filter-group h4 { margin: 0 0 10px; color: var(--text-mute); font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; }
+.generic-control { display: block; margin: 10px 0; }.generic-control > span { display: block; color: var(--text-dim); font-size: 12px; margin-bottom: 5px; }
+.generic-control input, .generic-control select { width: 100%; background: var(--raised); border: 1px solid var(--border); border-radius: var(--r); color: var(--text); font: inherit; font-size: 12.5px; padding: 7px 8px; }
+.generic-control small, .generic-toggle small { display: block; color: var(--text-mute); font-size: 11px; line-height: 1.35; margin-top: 4px; }
+.generic-toggle { display: block; color: var(--text-dim); font-size: 12.5px; padding: 7px 0; cursor: pointer; }.generic-toggle input { margin: 0 8px 0 0; accent-color: var(--accent); }
+.generic-advanced-row { display: grid; grid-template-columns: 1fr 100px; gap: 7px; margin: 9px 0;
+  padding: 10px; background: var(--bg); border: 1px solid var(--border-lo); border-radius: var(--r); }
+.generic-advanced-row input { grid-column: 1 / 2; }
+.generic-advanced-row button { grid-column: 2; background: transparent; border: 1px solid var(--border);
+  border-radius: var(--r); color: var(--text-mute); cursor: pointer; font-size: 17px; }
+.generic-advanced-row select, .generic-advanced-row input { min-width: 0; width: 100%; background: var(--raised);
+  border: 1px solid var(--border); border-radius: var(--r); color: var(--text); font: inherit; padding: 7px 8px; }
+.generic-empty { color: var(--text-mute); font-size: 11.5px; margin: 0 0 10px; }
+.pagination { display: flex; justify-content: flex-end; align-items: center; gap: 9px; padding: 14px 0 2px; color: var(--text-mute); font-size: 12px; }.pagination button:disabled { cursor: not-allowed; opacity: .45; }

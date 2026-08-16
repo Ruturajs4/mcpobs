@@ -32,14 +32,15 @@ from control import ControlPlane
 from control.keys import READ
 from control.models import Principal
 from query.dtos import (
-    CapabilityRow,
+    CapabilityPage,
     Overview,
     Page,
     ServerSummary,
     ToolSummary,
     TraceDetail,
 )
-from query.repository import SpanRepository
+from query.filters import Filters, catalog, openapi_parameters, parse
+from query.repository import SpanRepository, decode_cursor
 
 app = FastAPI(
     title="MCP Observability Query API",
@@ -64,6 +65,12 @@ def repository() -> SpanRepository:
             database=os.getenv("CLICKHOUSE_DB", "mcpobs"),
             username=os.getenv("CLICKHOUSE_USER", "default"),
             password=os.getenv("CLICKHOUSE_PASSWORD", ""),
+            # This repository is shared by FastAPI's worker threads. A generated
+            # ClickHouse session id would be shared too, and clickhouse-connect
+            # rejects overlapping requests in one session. The HTTP connection
+            # pool remains shared and concurrent; only server-session affinity
+            # is disabled because none of these read-only queries needs it.
+            autogenerate_session_id=False,
             # Bounded server-side so one expensive query cannot occupy a
             # connection indefinitely (V2 §13.1).
             settings={"max_execution_time": 20},
@@ -129,6 +136,25 @@ ScopeDep = Annotated[Scope, Depends()]
 RepoDep = Annotated[SpanRepository, Depends(repository)]
 
 
+def request_filters(view: str, request: Request) -> Filters:
+    """Parse user-controlled filters into a stable 422 API contract."""
+    try:
+        return parse(view, request.query_params, request.query_params.getlist("where"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def validated_cursor(cursor: str | None) -> str | None:
+    """Reject malformed opaque cursors before entering the repository."""
+    if cursor is None:
+        return None
+    try:
+        decode_cursor(cursor)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid cursor") from exc
+    return cursor
+
+
 @app.get("/health")
 def health(repo: RepoDep) -> dict[str, str]:
     try:
@@ -159,13 +185,17 @@ def tools(scope: ScopeDep, repo: RepoDep) -> list[ToolSummary]:
     return repo.tools(scope.tenant, scope.project, scope.since)
 
 
-@app.get("/api/v1/capabilities", response_model=list[CapabilityRow])
+@app.get(
+    "/api/v1/capabilities",
+    response_model=CapabilityPage,
+    openapi_extra={"parameters": openapi_parameters("capabilities")},
+)
 def capabilities(
     scope: ScopeDep,
     repo: RepoDep,
+    request: Request,
     kind: Annotated[str, Query(pattern="^(tool|prompt|resource|protocol)$")] = "tool",
-    server: str | None = None,
-) -> list[CapabilityRow]:
+) -> CapabilityPage:
     """Tools, prompts, resources, or protocol methods.
 
     `protocol` is the one that was missing: `tools/list` and `server/discover`
@@ -173,27 +203,45 @@ def capabilities(
     every client connect, so if it is slow that is a real customer symptom the
     UI was silent about.
     """
-    return repo.capabilities(scope.tenant, scope.project, scope.since, kind=kind, server=server)
+    return repo.capabilities(
+        scope.tenant,
+        scope.project,
+        scope.since,
+        kind=kind,
+        filters=request_filters("capabilities", request),
+    )
 
 
-@app.get("/api/v1/traces", response_model=Page)
+@app.get("/api/v1/filters")
+def filters(
+    view: Annotated[str, Query(pattern="^(traces|errors|capabilities)$")],
+    scope: ScopeDep,
+    repo: RepoDep,
+) -> dict[str, object]:
+    """Generic filter-panel contract, including values available in this scope."""
+    return catalog(view, repo.filter_options(scope.tenant, scope.project, scope.since))
+
+
+@app.get(
+    "/api/v1/traces",
+    response_model=Page,
+    openapi_extra={"parameters": openapi_parameters("traces")},
+)
 def traces(
     scope: ScopeDep,
     repo: RepoDep,
+    request: Request,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 50,
     cursor: str | None = None,
-    failure_category: str | None = None,
-    tool: str | None = None,
 ) -> Page:
-    """Trace list, keyset-paginated and filterable by failure kind."""
+    """Trace list, keyset-paginated and filtered entirely in SQL."""
     return repo.traces(
         scope.tenant,
         scope.project,
         scope.since,
         limit=limit,
-        cursor=cursor,
-        failure_category=failure_category,
-        tool=tool,
+        cursor=validated_cursor(cursor),
+        filters=request_filters("traces", request),
     )
 
 
@@ -211,28 +259,41 @@ def trace(trace_id: str, scope: ScopeDep, repo: RepoDep) -> TraceDetail:
     return detail
 
 
-@app.get("/api/v1/errors", response_model=Page)
+@app.get(
+    "/api/v1/errors",
+    response_model=Page,
+    openapi_extra={"parameters": openapi_parameters("errors")},
+)
 def errors(
     scope: ScopeDep,
     repo: RepoDep,
+    request: Request,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 50,
     cursor: str | None = None,
-    failure_category: str | None = None,
 ) -> Page:
     """Failing traces only.
 
     `pending_input` is NOT an error: it is an MRTR interim round, and counting
     it here would be the single most likely way to corrupt an error rate
     (Day-1 §3.2, D20).
+
+    The failures-only clause is dropped when an explicit category is asked for,
+    so `?failure_category=cancelled` can still show cancellations -- they are
+    excluded from the default failure set on purpose (D20), and a filter the
+    list refuses to honour is worse than one it does not offer.
     """
+    parsed_filters = request_filters("errors", request)
+    has_category_filter = "failure_category" in parsed_filters.values or any(
+        condition.field == "failure_category" for condition in parsed_filters.conditions
+    )
     return repo.traces(
         scope.tenant,
         scope.project,
         scope.since,
         limit=limit,
-        cursor=cursor,
-        failure_category=failure_category,
-        failures_only=failure_category is None,
+        cursor=validated_cursor(cursor),
+        filters=parsed_filters,
+        failures_only=not has_category_filter,
     )
 
 

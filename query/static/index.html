@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MCP Observability</title>
+<link rel="preload" href="/static/fonts/inter-variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/jetbrains-mono-regular.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='12' fill='%234e74f8'/></svg>">
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
@@ -71,6 +74,11 @@
         <button data-m="10080">7d</button>
       </div>
     </header>
+    <!-- The filter bar lives OUTSIDE #content deliberately. render() replaces
+         the whole of #content, so a search box inside it would be destroyed and
+         rebuilt on every keystroke -- losing focus and the caret mid-word. Here
+         it survives every list redraw, including the 30s auto-refresh. -->
+    <div class="filters" id="filters"></div>
     <div class="content" id="content"><div class="spin">Loading…</div></div>
   </main>
 </div>

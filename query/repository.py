@@ -17,6 +17,8 @@ Parameters are always bound, never interpolated.
 from __future__ import annotations
 
 import base64
+import binascii
+import json
 import math
 from collections.abc import Sequence
 from datetime import datetime
@@ -26,8 +28,10 @@ import clickhouse_connect
 from clickhouse_connect.driver.client import Client
 
 from query.dtos import (
+    CapabilityPage,
     CapabilityRow,
     FailureBreakdown,
+    FilterOptions,
     LatencyStats,
     Overview,
     Page,
@@ -38,6 +42,7 @@ from query.dtos import (
     TraceDetail,
     TraceSummary,
 )
+from query.filters import HAVING, WHERE, Filters
 
 # Rule 2, in one place. Every span read starts here.
 #
@@ -147,6 +152,14 @@ materialized view, which cannot see version history at all. `scripts/
 recompute_rollups.py` is what reconciles it after a replay, and assertion E1
 checks the two agree on every run.
 """
+
+#: Most rows a capability table returns. Aggregation is by NAME, so this bounds
+#: distinct tools/prompts/resources rather than call volume -- a few dozen for a
+#: real server. The cap exists because the number is unbounded in principle, and
+#: because each row previously cost two extra queries; that is fixed, but a
+#: table nobody can read is still not worth building. Sorted first, so what is
+#: dropped is the tail of whatever the reader asked to sort by.
+CAPABILITY_ROW_CAP = 200
 
 #: A percentile is meaningless once the clock's tick approaches it. Below this
 #: multiple of the observed tick, the console says so instead of printing a
@@ -456,8 +469,8 @@ class SpanRepository:
         project: str,
         since: datetime,
         kind: str = "tool",
-        server: str | None = None,
-    ) -> list[CapabilityRow]:
+        filters: Filters | None = None,
+    ) -> CapabilityPage:
         """Tools, prompts, resources or protocol methods -- one query path.
 
         They differ only in which `mcp_method` they filter and which column
@@ -465,6 +478,7 @@ class SpanRepository:
         cannot.
         """
         method, name_col = CAPABILITY_KINDS.get(kind, CAPABILITY_KINDS["tool"])
+        filters = filters or Filters("capabilities")
         params = self._scope(tenant, project, since)
 
         clauses = [f"{name_col} != ''"]
@@ -475,49 +489,150 @@ class SpanRepository:
             # protocol = everything that is not a capability invocation
             known = ", ".join(f"'{m}'" for m, _ in CAPABILITY_KINDS.values() if m)
             clauses.append(f"mcp_method NOT IN ({known})")
-        if server:
-            clauses.append("service_name = {server:String}")
-            params["server"] = server
+        clauses.extend(filters.clauses(WHERE, params, name_col))
         where = " AND ".join(clauses)
 
+        # HAVING, not a Python filter over the result: dropping rows after the
+        # fact means the per-row latency queries below run for rows nobody
+        # asked for -- one wasted ClickHouse round trip each.
+        having = filters.clauses(HAVING, params, name_col)
+        having_sql = (" HAVING " + " AND ".join(having)) if having else ""
+
+        # `sort` is looked up in a fixed map and never taken from the query
+        # string: ClickHouse cannot parameterise an identifier, so an
+        # unvalidated sort key would be raw SQL from a URL.
+        order = filters.order_by()
+
+        # One extra row is fetched so truncation can be DETECTED rather than
+        # guessed: exactly `cap` rows is ambiguous between "that is all of them"
+        # and "there are more", and a table that silently drops the difference
+        # is one someone will read as complete.
+        params["cap"] = CAPABILITY_ROW_CAP + 1
         rows = self._rows(
             f"""SELECT {name_col} AS item, anyLast(service_name), anyLast(mcp_method),
-                       count(), sum(mcp_is_error), max(span_time)
+                       count() AS calls, sum(mcp_is_error) AS errors,
+                       max(span_time) AS last_seen,
+                       quantileIf(0.95)(duration_ns / 1e6, is_latency_eligible = 1) AS p95_sort
                 FROM ({LATEST_SPANS}) WHERE {where}
-                GROUP BY item ORDER BY 4 DESC""",
+                GROUP BY item{having_sql} ORDER BY {order} LIMIT {{cap:UInt32}}""",
             params,
         )
+        truncated = len(rows) > CAPABILITY_ROW_CAP
+        rows = rows[:CAPABILITY_ROW_CAP]
+        if not rows:
+            return CapabilityPage(items=[], truncated=False, cap=CAPABILITY_ROW_CAP)
 
-        out = []
-        for name, svc, meth, calls, errors, last in rows:
-            scoped = {**params, "item": name}
-            breakdown = self._breakdown(
-                self._rows(
-                    f"""SELECT failure_category, count() FROM ({LATEST_SPANS})
-                        WHERE {name_col} = {{item:String}} AND failure_category != ''
-                        GROUP BY failure_category""",
-                    scoped,
-                )
+        # THE 2N+1. This used to run a breakdown query AND a latency query for
+        # every row, so a tenant with 500 tools issued 1001 ClickHouse queries
+        # for one page -- around 16ms each, measured, which crosses the 20s
+        # max_execution_time somewhere past a thousand capabilities. Both are
+        # now single grouped queries over the same row set, so the cost is three
+        # queries whether the table has four rows or two hundred.
+        names = [r[0] for r in rows]
+        params["items"] = names
+        item_filter = f"AND {name_col} IN {{items:Array(String)}}"
+
+        # `where` is re-applied to BOTH follow-ups. The per-row versions omitted
+        # it, so a breakdown counted every span sharing the item's name across
+        # all servers and methods while `calls` beside it counted only the
+        # filtered ones -- a row whose bar could sum to more than its own total.
+        # Latent on data where no two servers share a tool name, wrong the
+        # moment two do.
+        breakdowns: dict[str, FailureBreakdown] = {}
+        grouped: dict[str, list[Sequence[Any]]] = {name: [] for name in names}
+        for item, category, count in self._rows(
+            f"""SELECT {name_col} AS item, failure_category, count()
+                FROM ({LATEST_SPANS})
+                WHERE {where} AND failure_category != '' {item_filter}
+                GROUP BY item, failure_category""",
+            params,
+        ):
+            grouped.setdefault(item, []).append((category, count))
+        for name in names:
+            breakdowns[name] = self._breakdown(grouped.get(name, []))
+
+        latencies = self._latencies_by_item(where, name_col, item_filter, params)
+
+        # `p95_sort` exists only to make ORDER BY p95 possible in one pass; the
+        # p95 actually REPORTED comes from the grouped latency query, which
+        # applies the eligibility rule and the clock caveat. Two different
+        # numbers would be a bug, so the sort key is never displayed.
+        items = [
+            CapabilityRow(
+                kind=kind,
+                name=name,
+                method=meth or method,
+                server=svc or "",
+                calls=calls,
+                errors=errors or 0,
+                failure_breakdown=breakdowns[name],
+                latency=latencies.get(name, LatencyStats()),
+                last_seen=last,
             )
-            out.append(
-                CapabilityRow(
-                    kind=kind,
-                    name=name,
-                    method=meth or method,
-                    server=svc or "",
-                    calls=calls,
-                    errors=errors or 0,
-                    failure_breakdown=breakdown,
-                    latency=self._latency_for(
-                        params,
-                        f"AND {name_col} = {{item:String}}",
-                        item=name,
-                        _any_method=True,
-                    ),
-                    last_seen=last,
-                )
-            )
+            for name, svc, meth, calls, errors, last, _p95_sort in rows
+        ]
+        return CapabilityPage(items=items, truncated=truncated, cap=CAPABILITY_ROW_CAP)
+
+    def _latencies_by_item(
+        self, where: str, name_col: str, item_filter: str, params: dict[str, Any]
+    ) -> dict[str, LatencyStats]:
+        """Latency for every item in one query, keyed by item.
+
+        Column order matches `_LATENCY_SELECT` exactly so `_latency` -- which
+        owns the unit conversion, the zero-duration count and the clock caveat
+        -- stays the single place those are computed. Reimplementing that
+        arithmetic here is how the grouped path would start disagreeing with the
+        per-row one it replaced.
+        """
+        out: dict[str, LatencyStats] = {}
+        for row in self._rows(
+            f"""SELECT {name_col} AS item, count(), quantile(0.50)(duration_ns),
+                       quantile(0.95)(duration_ns), quantile(0.99)(duration_ns),
+                       max(duration_ns), countIf(duration_ns = 0),
+                       min(if(duration_ns > 0, duration_ns, NULL))
+                FROM ({LATEST_SPANS})
+                WHERE {where} AND is_latency_eligible = 1 {item_filter}
+                GROUP BY item""",
+            params,
+        ):
+            out[row[0]] = self._latency(row[1:])
         return out
+
+    def filter_options(self, tenant: str, project: str, since: datetime) -> FilterOptions:
+        """The distinct values worth offering in a filter dropdown.
+
+        From the data, not a constant. A hardcoded server list goes stale the
+        first time somebody renames a service, and a dropdown offering a value
+        that returns nothing is worse than no dropdown -- it looks like the
+        filter is broken.
+
+        One query, four columns, capped. The cap matters: a tenant with 10k
+        distinct tools must not ship 10k options into a `<select>`, and the
+        search box already covers the long tail.
+        """
+        params = self._scope(tenant, project, since)
+        rows = self._rows(
+            f"""SELECT
+                    arraySlice(arraySort(groupUniqArrayIf(200)(service_name,
+                        service_name != '')), 1, 200),
+                    arraySlice(arraySort(groupUniqArrayIf(200)(mcp_tool_name,
+                        mcp_tool_name != '')), 1, 200),
+                    arraySlice(arraySort(groupUniqArrayIf(100)(mcp_method,
+                        mcp_method != '')), 1, 100),
+                    arraySlice(arraySort(groupUniqArrayIf(50)(failure_category,
+                        failure_category NOT IN ('', 'ok'))), 1, 50)
+                FROM ({LATEST_SPANS})""",
+            params,
+        )
+        if not rows:
+            return FilterOptions()
+        servers, tools, methods, categories = rows[0]
+        return FilterOptions(
+            servers=list(servers),
+            tools=list(tools),
+            methods=list(methods),
+            categories=list(categories),
+        )
 
     def traces(
         self,
@@ -526,8 +641,7 @@ class SpanRepository:
         since: datetime,
         limit: int = 50,
         cursor: str | None = None,
-        failure_category: str | None = None,
-        tool: str | None = None,
+        filters: Filters | None = None,
         failures_only: bool = False,
     ) -> Page:
         params = self._scope(tenant, project, since)
@@ -540,17 +654,19 @@ class SpanRepository:
             # tell. `pending_input` is excluded here because an MRTR interim
             # round is not a failure (D20).
             clauses.append("failure_category NOT IN ('', 'ok', 'pending_input')")
-        if failure_category:
-            clauses.append("failure_category = {category:String}")
-            params["category"] = failure_category
-        if tool:
-            clauses.append("mcp_tool_name = {tool:String}")
-            params["tool"] = tool
+        if filters is not None:
+            clauses.extend(filters.clauses(WHERE, params))
         if cursor:
             # Keyset, not OFFSET: a deep OFFSET re-scans everything before it,
             # and the page shifts under you as new spans arrive (V2 Â§13.1).
-            clauses.append("start_time < {cursor:DateTime64(9)}")
-            params["cursor"] = decode_cursor(cursor)
+            cursor_time, cursor_trace_id = decode_cursor(cursor)
+            clauses.append(
+                "(start_time < {cursor_time:DateTime64(9)} OR "
+                "(start_time = {cursor_time:DateTime64(9)} "
+                "AND trace_id < {cursor_trace_id:String}))"
+            )
+            params["cursor_time"] = cursor_time
+            params["cursor_trace_id"] = cursor_trace_id
         params["limit"] = limit + 1
 
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -571,7 +687,7 @@ class SpanRepository:
                     FROM ({LATEST_SPANS})
                     GROUP BY trace_id
                 ) {where}
-                ORDER BY start_time DESC LIMIT {{limit:UInt32}}""",
+                ORDER BY start_time DESC, trace_id DESC LIMIT {{limit:UInt32}}""",
             params,
         )
 
@@ -589,7 +705,11 @@ class SpanRepository:
             )
             for r in rows
         ]
-        next_cursor = encode_cursor(items[limit - 1].start_time) if len(items) > limit else None
+        next_cursor = (
+            encode_cursor(items[limit - 1].start_time, items[limit - 1].trace_id)
+            if len(items) > limit
+            else None
+        )
         return Page(items=items[:limit], next_cursor=next_cursor)
 
     #: Every stored column, so span detail is complete by construction rather
@@ -943,9 +1063,30 @@ def _order_tree(spans: list[SpanDTO], root: SpanDTO | None) -> list[SpanDTO]:
     return ordered
 
 
-def encode_cursor(value: datetime) -> str:
-    return base64.urlsafe_b64encode(value.isoformat().encode()).decode()
+def encode_cursor(value: datetime, trace_id: str) -> str:
+    """Encode the complete keyset position.
+
+    A timestamp alone is not a total order: when a page ends in the middle of
+    several traces with the same start time, the remaining ties would vanish
+    from the next page. The trace id is the deterministic second key used by
+    both ORDER BY and the seek predicate.
+    """
+    payload = json.dumps([value.isoformat(), trace_id], separators=(",", ":"))
+    return base64.urlsafe_b64encode(payload.encode()).decode()
 
 
-def decode_cursor(cursor: str) -> datetime:
-    return datetime.fromisoformat(base64.urlsafe_b64decode(cursor.encode()).decode())
+def decode_cursor(cursor: str) -> tuple[datetime, str]:
+    """Decode an opaque cursor, normalizing every malformed shape to ValueError."""
+    try:
+        raw = json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
+        if (
+            not isinstance(raw, list)
+            or len(raw) != 2
+            or not isinstance(raw[0], str)
+            or not isinstance(raw[1], str)
+            or not raw[1]
+        ):
+            raise ValueError("invalid cursor")
+        return datetime.fromisoformat(raw[0]), raw[1]
+    except (ValueError, TypeError, UnicodeDecodeError, binascii.Error) as exc:
+        raise ValueError("invalid cursor") from exc

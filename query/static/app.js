@@ -9,7 +9,7 @@
    -- and navigating away loses the list you were working through.
    =========================================================================== */
 
-const S = { view: "overview", window: 60, trace: null, span: null, kind: "tool", tool: null };
+const S = { view: "overview", window: 60, trace: null, span: null, kind: "tool" };
 
 /* The API key, held in localStorage. A cookie would ride along automatically on
    every request the browser makes to this origin, which is what makes CSRF
@@ -18,10 +18,11 @@ const S = { view: "overview", window: 60, trace: null, span: null, kind: "tool",
 const KEY_STORAGE = "mcpobs.key";
 const readKey = () => localStorage.getItem(KEY_STORAGE) || "";
 
-async function api(path) {
+async function api(path, signal = null) {
   const sep = path.includes("?") ? "&" : "?";
   const r = await fetch(`/api/v1${path}${sep}window_minutes=${S.window}`, {
     headers: readKey() ? { "x-api-key": readKey() } : {},
+    signal,
   });
   if (r.status === 401) {
     // Not an error to render in a panel: it means we are not signed in, and
@@ -140,8 +141,8 @@ function kindOf(span) {
 /* ===========================================================================
    Views
    =========================================================================== */
-async function viewOverview() {
-  const o = await api("/overview");
+async function viewOverview(signal) {
+  const o = await api("/overview", signal);
   const bd = o.failure_breakdown;
   const rate = o.calls ? ((o.errors / o.calls) * 100).toFixed(1) : "0.0";
   const banners = [];
@@ -186,11 +187,11 @@ async function viewOverview() {
 
   el("foot-fresh").textContent = `${o.freshness_p95_seconds.toFixed(1)}s`;
   el("foot-class").textContent = `${Math.round(o.classified_ratio * 100)}%`;
-  bindAll("[data-cat]", (n) => go("errors", { cat: n.dataset.cat }));
+  bindAll("[data-cat]", (n) => go("errors", { failure_category: n.dataset.cat }));
 }
 
-async function viewServers() {
-  const rows = await api("/servers");
+async function viewServers(signal) {
+  const rows = await api("/servers", signal);
   el("content").innerHTML = rows.length ? `
     <div class="panel"><header><h3>MCP servers</h3></header><table>
       <thead><tr><th>Server</th><th>Env</th><th class="num">Tools</th><th class="num">Calls</th>
@@ -206,6 +207,62 @@ async function viewServers() {
   bindAll("[data-server]", (n) => go("capabilities", { kind: "tool", server: n.dataset.server }));
 }
 
+/* ===========================================================================
+   Filter bar
+   ===========================================================================
+   Composition borrowed from the Untitled UI filter-bar pattern -- Root holding
+   a wrapping Content region on the left and a fixed Actions region on the
+   right, plus dropdown menus and query-builder rows -- rebuilt in plain JS
+   because this console has no React and deliberately no build step.
+
+   Four rules it is built to:
+
+   1. EVERY filter runs in SQL. Narrowing a page after it is fetched means the
+      list shows 3 of 80 rows and the next page starts past the 80, so results
+      that match are simply never seen. The repository takes the filters and
+      builds one WHERE; nothing is filtered in the browser.
+
+   2. THE URL IS THE STATE. Every filter round-trips through the query string,
+      so a narrowed view is a link you can paste to a colleague. That is also
+      why the advanced rows are `where=field:op:value` triples rather than JSON
+      -- a shared link should be readable.
+
+   3. THE BAR SURVIVES A REDRAW. It lives outside #content, so the 30s
+      auto-refresh and every list re-render leave the search box, its focus and
+      its caret exactly where they were.
+
+   4. AN EMPTY RESULT SAYS WHY. A filtered list that comes back empty names the
+      filters responsible and offers to clear them. "No traces" when you forgot
+      about a filter set ten minutes ago is how people conclude data is missing.
+   =========================================================================== */
+
+function debounce(fn, ms) {
+  let timer = null;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}
+
+function filteredEmpty(noun) {
+  const active = activeFilterEntries();
+  if (!active.length) return `<div class="empty">No ${noun} in this window.</div>`;
+  return `<div class="empty">No ${noun} match the ${active.length} active filter${active.length > 1 ? "s" : ""}.<br>
+    <span class="mute" style="font-size:11.5px">${active.map((entry) => esc(entry.text)).join(" · ")}</span><br>
+    <button class="btn-ghost" id="empty-clear" type="button" style="margin-top:12px">Clear filters</button></div>`;
+}
+
+function bindFilteredEmpty() {
+  const button = el("empty-clear");
+  if (button) button.onclick = clearGenericFilters;
+}
+
+function setCount(shown, capped) {
+  const node = el("f-count");
+  if (!node) return;
+  node.textContent = shown === null ? ""
+    : capped ? `first ${shown}` : `${shown} result${shown === 1 ? "" : "s"}`;
+}
 /* Tools, prompts, resources and protocol methods share one view: they are the
    same question asked of different mcp_methods. `protocol` is the one that was
    missing entirely -- tools/list and server/discover were 38% of stored spans
@@ -217,15 +274,38 @@ const KINDS = [
   ["protocol", "Protocol", "tools/list, server/discover, subscriptions/listen …"],
 ];
 
-async function viewCapabilities() {
+/* Sort keys -> the phrase used in the truncation notice. Which rows got cut
+   depends entirely on the sort, so the notice has to name it. */
+const SORT_LABELS = {
+  calls: "most called", errors: "most errors", p95: "slowest p95",
+  name: "name", last_seen: "recently used",
+};
+
+async function viewCapabilities(signal) {
   const kind = S.kind || "tool";
-  const rows = await api(`/capabilities?kind=${kind}${S.server ? `&server=${encodeURIComponent(S.server)}` : ""}`);
+  const p = capParams();
+  p.set("kind", kind);
+  const page = await api(`/capabilities?${p}`, signal);
+  const rows = page.items;
+  setCount(rows.length, page.truncated);
   const tabs = KINDS.map(([k, label]) =>
     `<button class="tab ${k === kind ? "on" : ""}" data-kind="${k}">${label}</button>`).join("");
   const meta = KINDS.find(([k]) => k === kind);
 
+  /* Capabilities are aggregated by name, so there is no time cursor to page
+     through -- the bound is "the top N by whatever you sorted on". When it
+     bites, SAY SO: a table that silently stops at 200 is one where somebody
+     concludes a tool is not being called. The sort is named because which rows
+     were dropped depends entirely on it. */
+  const cut = page.truncated ? `<div class="note-bar"><span>&#9888;</span><div>
+    <b>Showing the first ${num(page.cap)}.</b> More ${esc(meta[1].toLowerCase())}
+    matched than fit in one table. These are the top ${num(page.cap)} by
+    <em>${esc(SORT_LABELS[valuesFromUrl().sort || "calls"])}</em> — narrow with search,
+    server or “at least N calls” to see the rest.</div></div>` : "";
+
   el("content").innerHTML = `
     <div class="tabs">${tabs}<span class="note mono">${esc(meta[2])}</span></div>
+    ${cut}
     ${rows.length ? `<div class="panel"><table>
       <thead><tr><th>${meta[1].replace(/s$/, "")}</th><th>Server</th><th class="num">Calls</th>
         <th class="num">Errors</th><th style="width:150px">Failures</th><th class="num">p50</th>
@@ -242,25 +322,22 @@ async function viewCapabilities() {
           <td>${worst ? badge(worst[0]) : '<span class="mute">—</span>'}</td>
           <td class="dim">${ago(r.last_seen)}</td></tr>`;
       }).join("")}</tbody></table></div>`
-    : `<div class="empty">No ${meta[1].toLowerCase()} in this window.</div>`}`;
+    : filteredEmpty(meta[1].toLowerCase())}`;
 
-  bindAll("[data-kind]", (n) => go("capabilities", { kind: n.dataset.kind, server: S.server }));
-  bindAll("[data-item]", (n) => go("traces", { tool: n.dataset.item }));
+  bindFilteredEmpty();
+  // The kind tabs reset the filters: "Server is X" carried from Tools to
+  // Protocol looks like the tab is broken when X exposes no protocol spans.
+  bindAll("[data-kind]", (n) => go("capabilities", { kind: n.dataset.kind }));
+  bindAll("[data-item]", (n) => {
+    // A capability reached through Servers is already scoped to that server.
+    // Keep that shared identity filter when drilling into its traces; capability-
+    // only controls (sort, minimum calls, error toggle) deliberately do not carry.
+    const server = new URLSearchParams(location.search).get("server");
+    go("traces", { tool: n.dataset.item, server });
+  });
 }
 
-async function viewTraces() {
-  const q = S.tool ? `/traces?tool=${encodeURIComponent(S.tool)}&limit=80` : "/traces?limit=80";
-  renderTraceList((await api(q)).items, S.tool ? `Traces · ${S.tool}` : "Recent traces",
-    "newest first · click a row to open it alongside");
-}
-
-async function viewErrors() {
-  const q = S.cat ? `/errors?failure_category=${encodeURIComponent(S.cat)}&limit=80` : "/errors?limit=80";
-  renderTraceList((await api(q)).items, S.cat ? `Failing · ${CAT[S.cat]?.l ?? S.cat}` : "Failing traces",
-    "awaiting-input rounds are not failures and are excluded");
-}
-
-function renderTraceList(items, heading, note) {
+function renderTraceList(items, heading, note, noun = "traces") {
   el("content").innerHTML = items.length ? `
     <div class="panel"><header><h3>${esc(heading)}</h3><span class="note">${esc(note)}</span></header><table>
       <thead><tr><th>Trace</th><th>Tool</th><th>Method</th><th>Status</th>
@@ -272,14 +349,20 @@ function renderTraceList(items, heading, note) {
         <td>${badge(t.failure_category || "ok")}</td>
         <td class="num">${t.span_count}</td><td class="num">${dur(t.duration_ms)}</td>
         <td class="dim">${ago(t.start_time)}</td></tr>`).join("")}</tbody>
-    </table></div>` : `<div class="empty">Nothing here in this window.</div>`;
+    </table></div>` : filteredEmpty(noun);
+  bindFilteredEmpty();
   bindAll("[data-trace]", (n) => openTrace(n.dataset.trace));
 }
 
 /* ===========================================================================
    The drawer: trace waterfall + full span detail, over the list
    =========================================================================== */
+let drawerController = null;
+
 async function openTrace(traceId, spanId = null) {
+  drawerController?.abort();
+  const controller = new AbortController();
+  drawerController = controller;
   S.trace = traceId;
   S.span = spanId;
   pushUrl();
@@ -292,11 +375,13 @@ async function openTrace(traceId, spanId = null) {
 
   let t;
   try {
-    t = await api(`/traces/${traceId}`);
+    t = await api(`/traces/${traceId}`, controller.signal);
   } catch (e) {
+    if (e.name === "AbortError") return;
     el("drawer-body").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
     return;
   }
+  if (controller.signal.aborted || S.trace !== traceId) return;
   S.traceData = t;
   renderDrawer(t, spanId || t.root_span_id);
 }
@@ -536,6 +621,8 @@ function renderSpanDetail(d) {
 }
 
 function closeDrawer() {
+  drawerController?.abort();
+  drawerController = null;
   el("drawer").classList.remove("open");
   S.trace = null; S.span = null;
   document.querySelectorAll(".sel").forEach((n) => n.classList.remove("sel"));
@@ -554,37 +641,77 @@ const VIEWS = {
 };
 
 function bindAll(sel, fn) {
-  document.querySelectorAll(sel).forEach((n) => (n.onclick = () => fn(n)));
+  // The event is passed through: a chip's remove button sits inside a row that
+  // has its own click handler, so it needs stopPropagation.
+  document.querySelectorAll(sel).forEach((n) => (n.onclick = (ev) => fn(n, ev)));
 }
 
+/* The URL carries the filters, so a narrowed view is a link. The parameter
+   names are EXACTLY the API's, so the address bar and the request agree and
+   there is no third naming scheme to keep in step. */
 function pushUrl() {
-  const q = new URLSearchParams({ view: S.view, w: S.window });
-  if (S.kind && S.view === "capabilities") q.set("kind", S.kind);
-  if (S.server) q.set("server", S.server);
-  if (S.tool) q.set("tool", S.tool);
-  if (S.cat) q.set("cat", S.cat);
+  const q = new URLSearchParams(location.search);
+  q.set("view", S.view);
+  q.set("w", S.window);
+  if (S.view === "capabilities") q.set("kind", S.kind);
+  else q.delete("kind");
   if (S.trace) q.set("trace", S.trace);
-  if (S.span) q.set("span", S.span);
+  else q.delete("trace");
+  if (S.span) q.set("span", S.span); else q.delete("span");
   history.replaceState(null, "", `?${q}`);
 }
 
+/** Navigate, resetting filters unless the caller passes some.
+ *
+ *  Filters reset on navigation because they belong to the list you set them
+ *  on. Carrying "Server is X" from Tools into Errors gives an empty error list
+ *  for a reason that is no longer on screen -- and an empty error view is the
+ *  single most dangerous thing this console can show incorrectly.
+ *
+ *  Drill-through is the exception: clicking a tool means "traces for this
+ *  tool", so it lands with exactly that filter set and visible as a chip.
+ */
 function go(view, params = {}) {
+  closeFilterPanel();
+  pageCursors = [];
+  invalidateFilterCatalog();
+  advancedRows = null;
   S.view = view;
-  S.tool = null; S.cat = null; S.server = null;
-  Object.assign(S, params);
+  const { tool, server, failure_category, kind } = params;
+  if (kind) S.kind = kind;
   closeDrawerSilently();
-  pushUrl();
+  const q = new URLSearchParams({ view, w: String(S.window) });
+  if (view === "capabilities") q.set("kind", S.kind);
+  for (const [key, value] of Object.entries({ tool, server, failure_category })) {
+    if (value) q.set(key, value);
+  }
+  history.replaceState(null, "", `?${q}`);
+  renderFilterBar();
   render();
 }
-function closeDrawerSilently() { el("drawer").classList.remove("open"); S.trace = null; S.span = null; }
+function closeDrawerSilently() {
+  drawerController?.abort();
+  drawerController = null;
+  el("drawer").classList.remove("open");
+  S.trace = null;
+  S.span = null;
+}
 
 /* What the content pane is currently showing. A REFRESH of the same thing must
-   not look like a navigation to a different one. */
-const viewKey = () =>
-  [S.view, S.kind, S.server, S.tool, S.cat, S.window].join("|");
+   not look like a navigation to a different one.
+ *
+ * Filters are deliberately NOT part of this key. Narrowing a list is a refine,
+ * not a navigation: blanking the pane to a spinner on every keystroke of a
+ * debounced search is the flicker we just spent a commit removing, in a place
+ * where it would fire far more often. */
+const viewKey = () => [S.view, S.kind, S.window].join("|");
 let renderedKey = null;
+let renderController = null;
 
 async function render() {
+  renderController?.abort();
+  const controller = new AbortController();
+  renderController = controller;
   const v = VIEWS[S.view] || VIEWS.overview;
   el("title").textContent = S.view === "capabilities"
     ? (KINDS.find(([k]) => k === S.kind)?.[1] ?? "Capabilities") : v.t;
@@ -607,7 +734,14 @@ async function render() {
   const scrollTop = refreshing ? el("content").scrollTop : 0;
 
   try {
-    await v.f();
+    if (filterView() && (!filterCatalog || filterCatalogView !== filterView()
+        || filterCatalogWindow !== S.window)) {
+      loadOptions()
+        .then((catalog) => { if (catalog && !controller.signal.aborted) renderFilterBar(); })
+        .catch(() => { if (!controller.signal.aborted) el("filters").innerHTML = ""; });
+    }
+    await v.f(controller.signal);
+    if (controller.signal.aborted) return;
     if (scrollTop) el("content").scrollTop = scrollTop;
     renderedKey = viewKey();
     // Stamped AFTER the fetch succeeds. Stamping before it would report
@@ -617,6 +751,7 @@ async function render() {
     el("health-dot").style.background = "var(--ok)";
     if (S.trace) openTrace(S.trace, S.span);
   } catch (e) {
+    if (e.name === "AbortError") return;
     el("health-dot").style.background = "var(--err)";
     // A failed BACKGROUND refresh keeps what is on screen rather than replacing
     // good data with an error. The health dot going red is the signal; wiping
@@ -636,13 +771,21 @@ el("range").onclick = (e) => {
   if (!b) return;
   S.window = +b.dataset.m;
   document.querySelectorAll("#range button").forEach((x) => x.classList.toggle("on", x === b));
+  pageCursors = [];
+  advancedRows = null;
+  invalidateFilterCatalog();
   pushUrl();
+  renderFilterBar();
   render();
 };
 
 el("drawer-close").onclick = closeDrawer;
 el("scrim").onclick = closeDrawer;
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (filterPanelOpen) closeFilterPanel();
+  else closeDrawer();
+});
 
 /* ===========================================================================
    Auto-refresh
@@ -719,27 +862,354 @@ function startAutoRefresh() {
   }, 1000);
 }
 
-(function boot() {
-  // No key, no console. Checked before anything renders, so a signed-out user
-  // sees the sign-in form rather than a dashboard that flashes empty panels and
-  // then replaces itself.
-  if (!readKey()) { signIn(false); return; }
+/* ===========================================================================
+   API-described filter panel and cursor pagination
 
+   The earlier filter-bar experiment was intentionally replaced rather than
+   extended: the browser now knows only control *kinds*. Labels, fields,
+   sections, help text and options come from /filters. Adding a select, search,
+   toggle or number filter is a single query/filters.py entry.
+   =========================================================================== */
+let filterCatalog = null;
+let filterCatalogView = null;
+let filterCatalogWindow = null;
+let filterPanelOpen = false;
+let pageCursors = [];
+let catalogController = null;
+let catalogGeneration = 0;
+let advancedRows = null;
+let filterReturnFocus = null;
+
+function filterView() {
+  return ["traces", "errors", "capabilities"].includes(S.view) ? S.view : null;
+}
+
+async function loadOptions() {
+  const view = filterView();
+  if (!view) return null;
+  if (filterCatalog && filterCatalogView === view && filterCatalogWindow === S.window) return filterCatalog;
+  catalogController?.abort();
+  const controller = new AbortController();
+  catalogController = controller;
+  const generation = ++catalogGeneration;
+  const windowAtStart = S.window;
+  const catalog = await api(`/filters?view=${encodeURIComponent(view)}`, controller.signal);
+  if (controller.signal.aborted || generation !== catalogGeneration
+      || view !== filterView() || windowAtStart !== S.window) return null;
+  filterCatalog = catalog;
+  filterCatalogView = view;
+  filterCatalogWindow = windowAtStart;
+  return filterCatalog;
+}
+
+function invalidateFilterCatalog() {
+  catalogController?.abort();
+  catalogController = null;
+  catalogGeneration += 1;
+  filterCatalog = null;
+  filterCatalogView = null;
+  filterCatalogWindow = null;
+}
+
+function valuesFromUrl() {
+  const p = new URLSearchParams(location.search);
+  const values = {};
+  for (const group of filterCatalog?.groups || []) {
+    for (const spec of group.filters) {
+      if (p.has(spec.key)) values[spec.key] = p.get(spec.key);
+    }
+  }
+  return values;
+}
+
+function genericParams() {
+  const p = new URLSearchParams(location.search);
+  for (const key of ["view", "w", "kind", "trace", "span", "cursor"]) p.delete(key);
+  return p;
+}
+
+function traceParams() { return genericParams(); }
+function capParams() { return genericParams(); }
+
+function renderFilterBar() {
+  const host = el("filters");
+  const view = filterView();
+  if (!view) { host.innerHTML = ""; return; }
+  if (!filterCatalog || filterCatalogView !== view) {
+    host.innerHTML = '<div class="filter-loading">Loading filters…</div>';
+    return;
+  }
+  const values = valuesFromUrl();
+  const active = activeFilterEntries(values);
+  const search = allFilterSpecs().find((spec) => spec.kind === "search" && spec.pinned);
+  host.innerHTML = `<div class="filter-summary">
+    ${search ? `<input id="generic-search" type="search" value="${esc(values[search.key] || "")}" placeholder="${esc(search.placeholder || search.label)}" aria-label="${esc(search.label)}">` : ""}
+    <button class="btn-ghost ${active.length ? "on" : ""}" id="open-filters" type="button" aria-expanded="${filterPanelOpen}">
+      Filters${active.length ? ` (${active.length})` : ""}
+    </button>
+    ${active.map((entry) => `<span class="chip">${esc(entry.text)}<button type="button" data-clear-filter="${esc(entry.key)}" aria-label="Clear ${esc(entry.text)}">&times;</button></span>`).join("")}
+    ${active.length ? '<button class="chip-clear" id="clear-filters" type="button">Clear all</button>' : ""}
+  </div>`;
+  el("open-filters").onclick = openFilterPanel;
+  el("clear-filters")?.addEventListener("click", clearGenericFilters);
+  document.querySelectorAll("[data-clear-filter]").forEach((node) => node.onclick = () => setGenericFilter(node.dataset.clearFilter, ""));
+  const input = el("generic-search");
+  if (input) input.oninput = debounce(() => setGenericFilter(search.key, input.value.trim()), 300);
+  if (filterPanelOpen) renderFilterPanel();
+}
+
+function allFilterSpecs() { return (filterCatalog?.groups || []).flatMap((group) => group.filters); }
+function readAdvancedRows() {
+  return new URLSearchParams(location.search).getAll("where").map((raw) => {
+    const [field, op, ...value] = raw.split(":");
+    return { field, op: op || "is", value: value.join(":") };
+  });
+}
+
+function activeFilterEntries(values = valuesFromUrl()) {
+  const entries = allFilterSpecs()
+    .filter((spec) => spec.show_chip && values[spec.key] && values[spec.key] !== "false")
+    .map((spec) => ({ ...spec, text: displayFilter(spec, values[spec.key]) }));
+  const fields = new Map((filterCatalog?.advanced?.fields || []).map((field) => [field.value, field.label]));
+  const operators = new Map((filterCatalog?.advanced?.operators || []).map((op) => [op.value, op.label]));
+  readAdvancedRows().forEach((row, index) => {
+    if (fields.has(row.field) && operators.has(row.op) && row.value.trim()) {
+      entries.push({
+        key: `where:${index}`,
+        text: `${fields.get(row.field)} ${operators.get(row.op)} ${row.value}`,
+      });
+    }
+  });
+  return entries;
+}
+function displayFilter(spec, value) {
+  if (spec.kind === "toggle") return spec.label;
+  const option = spec.options?.find((item) => item.value === value);
+  return spec.kind === "search" ? `matching “${value}”` : `${spec.label}: ${option?.label || value}`;
+}
+
+function renderFilterPanel() {
+  let panel = el("filter-panel");
+  if (!panel) {
+    panel = document.createElement("aside");
+    panel.id = "filter-panel";
+    panel.className = "filter-panel";
+    panel.setAttribute("aria-label", "Filters");
+    panel.setAttribute("aria-hidden", "true");
+    panel.inert = true;
+    document.body.append(panel);
+  }
+  if (advancedRows === null) advancedRows = readAdvancedRows();
+  const values = valuesFromUrl();
+  panel.innerHTML = `<div class="filter-panel-head"><div><strong>Filters</strong><span>Refine this ${esc(filterCatalog.view)} view</span></div><button id="close-filter-panel" type="button" aria-label="Close filters">×</button></div>
+    <div class="filter-panel-body">${filterCatalog.groups.map((group) => `<section class="filter-group"><h4>${esc(group.name)}</h4>${group.filters.map((spec) => genericControl(spec, values[spec.key])).join("")}</section>`).join("")}</div>
+    <div class="filter-panel-foot"><button class="chip-clear" id="panel-clear" type="button">Clear all</button><button class="btn-ghost" id="panel-done" type="button">Done</button></div>`;
+  panel.querySelector(".filter-panel-body").insertAdjacentHTML("beforeend", advancedPanel());
+  panel.inert = false;
+  panel.setAttribute("aria-hidden", "false");
+  panel.classList.add("open");
+  el("close-filter-panel").onclick = closeFilterPanel;
+  el("panel-done").onclick = closeFilterPanel;
+  el("panel-clear").onclick = clearGenericFilters;
+  panel.querySelectorAll("[data-generic-filter]").forEach((node) => {
+    const spec = allFilterSpecs().find((item) => item.key === node.dataset.genericFilter);
+    node.addEventListener("change", () => setGenericFilter(spec.key, spec.kind === "toggle" ? String(node.checked) : node.value));
+  });
+  bindAdvancedPanel(panel);
+}
+
+function genericControl(spec, value) {
+  const help = spec.help ? `<small>${esc(spec.help)}</small>` : "";
+  if (spec.kind === "toggle") return `<label class="generic-toggle"><input data-generic-filter="${esc(spec.key)}" type="checkbox" ${value === "true" ? "checked" : ""}><span>${esc(spec.label)}</span>${help}</label>`;
+  if (spec.kind === "select") return `<label class="generic-control"><span>${esc(spec.label)}</span><select data-generic-filter="${esc(spec.key)}"><option value="">Any ${esc(spec.label.toLowerCase())}</option>${(spec.options || []).filter((option) => option.value !== "").map((option) => `<option value="${esc(option.value)}" ${option.value === value ? "selected" : ""}>${esc(option.label)}</option>`).join("")}</select>${help}</label>`;
+  const type = spec.kind === "number" ? "number" : "search";
+  const bounds = spec.kind === "number"
+    ? ` min="${esc(spec.minimum)}"${spec.maximum == null ? "" : ` max="${esc(spec.maximum)}"`}` : "";
+  return `<label class="generic-control"><span>${esc(spec.label)}</span><input data-generic-filter="${esc(spec.key)}" type="${type}"${bounds} value="${esc(value || "")}" placeholder="${esc(spec.placeholder || "")}">${help}</label>`;
+}
+
+function advancedPanel() {
+  const advanced = filterCatalog?.advanced;
+  if (!advanced?.fields?.length) return "";
+  const rows = advancedRows.map((row, index) => `<div class="generic-advanced-row" data-advanced-row="${index}">
+    <select data-advanced-part="field" aria-label="Filter field">${advanced.fields.map((field) => `<option value="${esc(field.value)}" ${field.value === row.field ? "selected" : ""}>${esc(field.label)}</option>`).join("")}</select>
+    <select data-advanced-part="op" aria-label="Filter operator">${advanced.operators.map((operator) => `<option value="${esc(operator.value)}" ${operator.value === row.op ? "selected" : ""}>${esc(operator.label)}</option>`).join("")}</select>
+    <input data-advanced-part="value" value="${esc(row.value)}" placeholder="Value" aria-label="Filter value">
+    <button type="button" data-remove-advanced="${index}" aria-label="Remove condition">&times;</button>
+  </div>`).join("");
+  return `<section class="filter-group generic-advanced"><h4>Advanced</h4>
+    ${rows || '<p class="generic-empty">Add a field condition when the standard controls are not specific enough.</p>'}
+    <button class="btn-ghost" id="add-advanced" type="button" ${advancedRows.length >= advanced.max ? "disabled" : ""}>Add condition</button>
+  </section>`;
+}
+
+function bindAdvancedPanel(panel) {
+  panel.querySelectorAll("[data-advanced-row]").forEach((row) => {
+    const index = Number(row.dataset.advancedRow);
+    const targetRow = advancedRows[index];
+    row.querySelectorAll("[data-advanced-part]").forEach((node) => {
+      const update = () => {
+        if (!advancedRows?.includes(targetRow)) return;
+        targetRow[node.dataset.advancedPart] = node.value;
+        commitAdvancedRows();
+      };
+      node.addEventListener(node.tagName === "INPUT" ? "input" : "change",
+        node.tagName === "INPUT" ? debounce(update, 300) : update);
+    });
+  });
+  panel.querySelectorAll("[data-remove-advanced]").forEach((button) => {
+    button.onclick = () => {
+      advancedRows.splice(Number(button.dataset.removeAdvanced), 1);
+      commitAdvancedRows();
+      renderFilterPanel();
+    };
+  });
+  el("add-advanced")?.addEventListener("click", () => {
+    const field = filterCatalog.advanced.fields[0]?.value;
+    const op = filterCatalog.advanced.operators[0]?.value;
+    if (!field || !op || advancedRows.length >= filterCatalog.advanced.max) return;
+    advancedRows.push({ field, op, value: "" });
+    renderFilterPanel();
+    el("filter-panel").querySelector("[data-advanced-row]:last-of-type input")?.focus();
+  });
+}
+
+function commitAdvancedRows() {
+  const p = new URLSearchParams(location.search);
+  p.delete("where");
+  for (const row of advancedRows) {
+    if (row.field && row.op && row.value.trim()) {
+      p.append("where", `${row.field}:${row.op}:${row.value.trim()}`);
+    }
+  }
+  p.delete("cursor");
+  history.replaceState(null, "", `?${p}`);
+  pageCursors = [];
+  renderFilterBar();
+  render();
+}
+
+function openFilterPanel() {
+  filterReturnFocus = document.activeElement;
+  filterPanelOpen = true;
+  renderFilterPanel();
+  el("close-filter-panel")?.focus();
+}
+
+function closeFilterPanel() {
+  filterPanelOpen = false;
+  const panel = el("filter-panel");
+  panel?.classList.remove("open");
+  if (panel) {
+    panel.inert = true;
+    panel.setAttribute("aria-hidden", "true");
+  }
+  renderFilterBar();
+  const target = filterReturnFocus?.isConnected ? filterReturnFocus : el("open-filters");
+  target?.focus();
+  filterReturnFocus = null;
+}
+
+function setGenericFilter(key, value) {
+  const p = new URLSearchParams(location.search);
+  if (key.startsWith("where:")) {
+    const rows = readAdvancedRows();
+    rows.splice(Number(key.slice(6)), 1);
+    advancedRows = rows;
+    p.delete("where");
+    rows.forEach((row) => p.append("where", `${row.field}:${row.op}:${row.value}`));
+  } else if (!value || value === "false") p.delete(key); else p.set(key, value);
+  p.delete("cursor");
+  history.replaceState(null, "", `?${p}`);
+  pageCursors = [];
+  renderFilterBar();
+  render();
+}
+
+function clearGenericFilters() {
+  const p = new URLSearchParams(location.search);
+  allFilterSpecs().forEach((spec) => p.delete(spec.key));
+  p.delete("where"); p.delete("cursor");
+  advancedRows = [];
+  history.replaceState(null, "", `?${p}`);
+  pageCursors = [];
+  renderFilterBar();
+  render();
+}
+
+function pagination(page) {
+  if (!page.next_cursor && !pageCursors.length) return "";
+  return `<nav class="pagination" aria-label="Trace pages"><button class="btn-ghost" id="page-prev" type="button" ${pageCursors.length ? "" : "disabled"}>Previous</button><span>Page ${pageCursors.length + 1}</span><button class="btn-ghost" id="page-next" type="button" ${page.next_cursor ? "" : "disabled"}>Next</button></nav>`;
+}
+
+function bindPagination(page) {
+  el("page-prev")?.addEventListener("click", () => { pageCursors.pop(); render(); });
+  el("page-next")?.addEventListener("click", () => { if (page.next_cursor) { pageCursors.push(page.next_cursor); render(); } });
+}
+
+async function viewTraces(signal) {
+  const p = traceParams(); p.set("limit", "80");
+  if (pageCursors.at(-1)) p.set("cursor", pageCursors.at(-1));
+  const page = await api(`/traces?${p}`, signal);
+  setCount(page.items.length, !!page.next_cursor);
+  renderTraceList(page.items, "Recent traces", "newest first · click a row to open it alongside", "traces");
+  el("content").insertAdjacentHTML("beforeend", pagination(page)); bindPagination(page);
+}
+
+async function viewErrors(signal) {
+  const p = traceParams(); p.set("limit", "80");
+  if (pageCursors.at(-1)) p.set("cursor", pageCursors.at(-1));
+  const page = await api(`/errors?${p}`, signal);
+  setCount(page.items.length, !!page.next_cursor);
+  renderTraceList(page.items, "Failing traces", "awaiting-input rounds are not failures and are excluded", "failing traces");
+  el("content").insertAdjacentHTML("beforeend", pagination(page)); bindPagination(page);
+}
+
+function restoreRoute() {
   const p = new URLSearchParams(location.search);
   S.view = p.get("view") || "overview";
   S.kind = p.get("kind") || "tool";
-  S.server = p.get("server"); S.tool = p.get("tool"); S.cat = p.get("cat");
-  S.trace = p.get("trace"); S.span = p.get("span");
-  if (p.get("w")) {
-    S.window = +p.get("w");
-    document.querySelectorAll("#range button").forEach((b) =>
-      b.classList.toggle("on", +b.dataset.m === S.window));
+  S.trace = p.get("trace");
+  S.span = p.get("span");
+  const windowMinutes = Number(p.get("w"));
+  if (windowMinutes > 0) S.window = windowMinutes;
+  document.querySelectorAll("#range button").forEach((button) =>
+    button.classList.toggle("on", Number(button.dataset.m) === S.window));
+}
+
+window.addEventListener("popstate", () => {
+  closeFilterPanel();
+  closeDrawerSilently();
+  pageCursors = [];
+  advancedRows = null;
+  invalidateFilterCatalog();
+  restoreRoute();
+  renderFilterBar();
+  render();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Tab" || !filterPanelOpen) return;
+  const panel = el("filter-panel");
+  const focusable = [...panel.querySelectorAll("button:not(:disabled), input:not(:disabled), select:not(:disabled)")];
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
   }
+});
+
+(function boot() {
+  if (!readKey()) { signIn(false); return; }
+  restoreRoute();
+  renderFilterBar();
   render();
   startAutoRefresh();
-
-  const out = document.getElementById("sign-out");
-  if (out) out.onclick = signOut;
-  const refresh = el("refresh-now");
-  if (refresh) refresh.onclick = () => render();
+  el("sign-out").onclick = signOut;
+  el("refresh-now").onclick = () => render();
 })();

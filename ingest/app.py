@@ -57,6 +57,9 @@ from control.quota import QuotaEnforcer, Verdict
 log = logging.getLogger("ingest")
 
 COLLECTOR_ENDPOINT = os.getenv("COLLECTOR_ENDPOINT", "http://otel-collector:4318/v1/traces")
+COLLECTOR_HEALTH_ENDPOINT = os.getenv(
+    "COLLECTOR_HEALTH_ENDPOINT", "http://otel-collector:13133/"
+)
 
 #: Stamped on every span of a request that arrived while the tenant was over its
 #: SOFT threshold. A soft quota that only appears in our logs is a warning the
@@ -252,11 +255,15 @@ async def traces(
     # Acking before the Collector accepted would move the ack boundary in front
     # of the queue that makes it durable, which is precisely the line
     # Architecture.md §5.1 says nothing may cross.
-    upstream = client().post(
-        COLLECTOR_ENDPOINT,
-        content=stamped,
-        headers={"content-type": "application/x-protobuf"},
-    )
+    try:
+        upstream = client().post(
+            COLLECTOR_ENDPOINT,
+            content=stamped,
+            headers={"content-type": "application/x-protobuf"},
+        )
+    except httpx.RequestError as exc:
+        log.warning("collector unavailable for tenant %s: %s", principal.tenant, exc)
+        raise HTTPException(status_code=503, detail="telemetry collector unavailable") from exc
     control.touch(principal.key_id)
     return Response(
         content=upstream.content,
@@ -268,3 +275,25 @@ async def traces(
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/ready")
+def ready() -> dict[str, str]:
+    """Report readiness only when every required ingest dependency responds."""
+    unavailable: list[str] = []
+    try:
+        control.ping()
+    except Exception:  # noqa: BLE001
+        unavailable.append("control-plane")
+    try:
+        quotas.store.client.ping()
+    except Exception:  # noqa: BLE001
+        unavailable.append("quota-store")
+    try:
+        response = client().get(COLLECTOR_HEALTH_ENDPOINT, timeout=1.0)
+        response.raise_for_status()
+    except (httpx.RequestError, httpx.HTTPStatusError):
+        unavailable.append("collector")
+    if unavailable:
+        raise HTTPException(status_code=503, detail={"unavailable": unavailable})
+    return {"status": "ready"}

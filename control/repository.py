@@ -85,12 +85,16 @@ class ControlPlane:
         last: Exception | None = None
         while time.time() < deadline:
             try:
-                self._one("SELECT 1")
+                self.ping()
                 return
             except Exception as exc:  # noqa: BLE001
                 last = exc
                 time.sleep(1.0)
         raise RuntimeError(f"control plane not ready: {last}")
+
+    def ping(self) -> None:
+        """Fail fast when the control-plane database is unavailable."""
+        self._one("SELECT 1")
 
     # -- authentication ----------------------------------------------------
     def authenticate(self, token: str | None) -> Principal | None:

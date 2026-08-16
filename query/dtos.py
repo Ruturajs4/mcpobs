@@ -303,6 +303,23 @@ class TraceSummary(BaseModel):
     failure_category: str = ""
 
 
+class CapabilityPage(BaseModel):
+    """Capability rows, plus whether the list was cut short.
+
+    An envelope rather than a bare list because truncation has to be VISIBLE.
+    Capabilities are aggregated by name, so there is no time cursor to page
+    through -- the natural bound is "the top N by whatever you sorted on", and
+    the console says so when it applies. A truncated table that looks complete
+    is how someone concludes a tool is not being called.
+    """
+
+    items: list[CapabilityRow] = Field(default_factory=list)
+    #: True when more rows matched than `cap`. The extra row that proves it is
+    #: fetched and discarded server-side.
+    truncated: bool = False
+    cap: int = 0
+
+
 class Page(BaseModel):
     """Keyset pagination, never OFFSET (V2 §13.1).
 
@@ -312,6 +329,20 @@ class Page(BaseModel):
 
     items: list[TraceSummary] = Field(default_factory=list)
     next_cursor: str | None = None
+
+
+class FilterOptions(BaseModel):
+    """The values a filter dropdown can offer, from the data actually present.
+
+    Fetched rather than hardcoded, so a dropdown never offers a server that
+    stopped reporting three weeks ago, and never omits one that appeared an
+    hour ago. Scoped to the same tenant and window as the list it filters.
+    """
+
+    servers: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory=list)
+    methods: list[str] = Field(default_factory=list)
+    categories: list[str] = Field(default_factory=list)
 
 
 class TenantRow(BaseModel):

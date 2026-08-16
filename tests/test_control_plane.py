@@ -9,7 +9,9 @@ versions live in `scripts/verify.py` as the F-series.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+from types import SimpleNamespace
 from typing import Any
 
 from control import keys
@@ -781,6 +783,101 @@ class TestQuotaAtTheGateway:
             )
         assert caught.value.status_code == 429
         assert caught.value.headers["Retry-After"] == "42"
+
+
+class TestIngestAvailability:
+    def test_readiness_checks_all_required_dependencies(self, monkeypatch) -> None:
+        import ingest.app as gateway
+
+        calls: list[str] = []
+        monkeypatch.setattr(gateway, "control", SimpleNamespace(ping=lambda: calls.append("pg")))
+        monkeypatch.setattr(
+            gateway,
+            "quotas",
+            SimpleNamespace(
+                store=SimpleNamespace(client=SimpleNamespace(ping=lambda: calls.append("redis")))
+            ),
+        )
+
+        class Client:
+            def get(self, _url, timeout):
+                calls.append(f"collector:{timeout}")
+                return SimpleNamespace(raise_for_status=lambda: None)
+
+        monkeypatch.setattr(gateway, "client", lambda: Client())
+        assert gateway.ready() == {"status": "ready"}
+        assert calls == ["pg", "redis", "collector:1.0"]
+
+    def test_readiness_names_unavailable_dependencies(self, monkeypatch) -> None:
+        import pytest
+        from fastapi import HTTPException
+
+        import ingest.app as gateway
+
+        def unavailable() -> None:
+            raise RuntimeError("down")
+
+        monkeypatch.setattr(gateway, "control", SimpleNamespace(ping=unavailable))
+        monkeypatch.setattr(
+            gateway,
+            "quotas",
+            SimpleNamespace(store=SimpleNamespace(client=SimpleNamespace(ping=unavailable))),
+        )
+        monkeypatch.setattr(
+            gateway,
+            "client",
+            lambda: SimpleNamespace(
+                get=lambda _url, timeout: SimpleNamespace(raise_for_status=lambda: None)
+            ),
+        )
+        with pytest.raises(HTTPException) as caught:
+            gateway.ready()
+        assert caught.value.status_code == 503
+        assert caught.value.detail == {"unavailable": ["control-plane", "quota-store"]}
+
+    def test_collector_connection_failure_is_a_retryable_503(self, monkeypatch) -> None:
+        import httpx
+        import pytest
+        from fastapi import HTTPException
+        from starlette.requests import Request
+
+        import ingest.app as gateway
+        from control.models import Principal
+        from control.quota import Verdict
+
+        principal = Principal(
+            key_id=1,
+            org_id=1,
+            tenant="acme",
+            project="default",
+            environment="production",
+            scopes=("ingest",),
+        )
+        monkeypatch.setattr(gateway, "principal_from", lambda *_: principal)
+        monkeypatch.setattr(
+            gateway.quotas,
+            "check",
+            lambda *_args, **_kwargs: Verdict(allowed=True),
+        )
+
+        class Client:
+            def post(self, *_args, **_kwargs):
+                raise httpx.ConnectError("down")
+
+        monkeypatch.setattr(gateway, "client", lambda: Client())
+        body = gateway.ExportTraceServiceRequest().SerializeToString()
+
+        async def receive():
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        request = Request(
+            {"type": "http", "method": "POST", "path": "/v1/traces", "headers": []},
+            receive,
+        )
+        with pytest.raises(HTTPException) as caught:
+            asyncio.run(gateway.traces(request, x_api_key="key"))
+        assert caught.value.status_code == 503
+        assert caught.value.detail == "telemetry collector unavailable"
 
 
 class TestAdminScopeIsolation:

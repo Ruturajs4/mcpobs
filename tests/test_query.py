@@ -7,11 +7,16 @@ that encode decisions someone could otherwise undo without noticing.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
 
-from query.dtos import FailureBreakdown
+from query.dtos import FailureBreakdown, Page
+from query.filters import HAVING, WHERE, catalog, parse
 from query.repository import (
+    CAPABILITY_ROW_CAP,
     LATEST_SPANS,
     SpanDTO,
+    SpanRepository,
     _detail,
     _number,
     _order_tree,
@@ -21,6 +26,17 @@ from query.repository import (
 )
 
 BASE = datetime(2026, 8, 15, 12, 0, 0)
+
+
+def test_capability_drilldown_keeps_the_active_server_filter() -> None:
+    """Server -> Tool -> Traces must retain both identity dimensions."""
+    source = (Path(__file__).parents[1] / "query" / "static" / "app.js").read_text(
+        encoding="utf-8"
+    )
+    handler = source.split('bindAll("[data-item]"', 1)[1].split("\n  });", 1)[0]
+
+    assert 'get("server")' in handler
+    assert 'go("traces", { tool: n.dataset.item, server })' in handler
 
 
 def span(span_id: str, parent: str = "", offset_ms: int = 0, **kw) -> SpanDTO:
@@ -78,12 +94,202 @@ class TestDepth:
 
 class TestCursor:
     def test_round_trip(self) -> None:
-        assert decode_cursor(encode_cursor(BASE)) == BASE
+        assert decode_cursor(encode_cursor(BASE, "trace-b")) == (BASE, "trace-b")
 
     def test_opaque(self) -> None:
         """Opaque on purpose: a readable cursor invites clients to build their
         own, and then the sort key can never change."""
-        assert "2026" not in encode_cursor(BASE)
+        assert "2026" not in encode_cursor(BASE, "trace-b")
+
+    def test_malformed_cursor_is_a_value_error(self) -> None:
+        import pytest
+
+        with pytest.raises(ValueError, match="invalid cursor"):
+            decode_cursor("definitely-not-a-cursor")
+
+
+class TestTracePagination:
+    def test_cursor_uses_trace_id_to_seek_across_equal_timestamps(self) -> None:
+        """Timestamp-only pagination drops every tied row after the boundary."""
+        repo = object.__new__(SpanRepository)
+        captured: dict[str, object] = {}
+
+        def rows(sql: str, params: dict[str, object]) -> list[tuple[object, ...]]:
+            captured["sql"] = sql
+            captured["params"] = params
+            return []
+
+        repo._rows = rows  # type: ignore[method-assign]
+        repo.traces(
+            "tenant",
+            "project",
+            BASE,
+            cursor=encode_cursor(BASE, "trace-b"),
+        )
+
+        assert (
+            "start_time = {cursor_time:DateTime64(9)} "
+            "AND trace_id < {cursor_trace_id:String}"
+        ) in str(captured["sql"])
+        assert "ORDER BY start_time DESC, trace_id DESC" in str(captured["sql"])
+        assert captured["params"]["cursor_trace_id"] == "trace-b"  # type: ignore[index]
+
+
+class TestFilterEndpointValidation:
+    def test_invalid_number_and_cursor_are_422_responses(self) -> None:
+        from fastapi.testclient import TestClient
+
+        import query.app as query_app
+
+        class Repo:
+            def traces(self, *args: object, **kwargs: object) -> Page:
+                return Page(items=[])
+
+        scope = SimpleNamespace(
+            tenant="tenant",
+            project="project",
+            since=BASE,
+            window_minutes=60,
+        )
+        query_app.app.dependency_overrides[query_app.Scope] = lambda: scope
+        query_app.app.dependency_overrides[query_app.repository] = Repo
+        try:
+            client = TestClient(query_app.app)
+            bad_number = client.get("/api/v1/traces?min_duration_ms=not-a-number")
+            bad_cursor = client.get("/api/v1/traces?cursor=definitely-not-a-cursor")
+        finally:
+            query_app.app.dependency_overrides.clear()
+
+        assert bad_number.status_code == 422
+        assert bad_number.json() == {"detail": "min_duration_ms must be a number"}
+        assert bad_cursor.status_code == 422
+        assert bad_cursor.json() == {"detail": "invalid cursor"}
+
+    def test_advanced_category_filter_overrides_the_default_error_set(self) -> None:
+        from fastapi.testclient import TestClient
+
+        import query.app as query_app
+
+        captured: dict[str, object] = {}
+
+        class Repo:
+            def traces(self, *args: object, **kwargs: object) -> Page:
+                captured.update(kwargs)
+                return Page(items=[])
+
+        scope = SimpleNamespace(
+            tenant="tenant",
+            project="project",
+            since=BASE,
+            window_minutes=60,
+        )
+        query_app.app.dependency_overrides[query_app.Scope] = lambda: scope
+        query_app.app.dependency_overrides[query_app.repository] = Repo
+        try:
+            response = TestClient(query_app.app).get(
+                "/api/v1/errors?where=failure_category:is:pending_input"
+            )
+        finally:
+            query_app.app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        assert captured["failures_only"] is False
+
+
+def test_rollup_replacement_waits_for_all_active_replicas() -> None:
+    """The repair command must not return while old aggregate parts are visible."""
+    from scripts.recompute_rollups import RollupRecomputer
+
+    class Result:
+        def __init__(self, rows: list[tuple[object, ...]]) -> None:
+            self.result_rows = rows
+
+    class Client:
+        def __init__(self) -> None:
+            self.commands: list[tuple[str, dict[str, int] | None]] = []
+
+        def query(self, sql: str, parameters: object = None) -> Result:
+            if "sorting_key" in sql:
+                return Result([("tenant_id, project_id, bucket",)])
+            return Result([(1,)])
+
+        def command(
+            self,
+            sql: str,
+            parameters: object = None,
+            settings: dict[str, int] | None = None,
+        ) -> None:
+            self.commands.append((sql, settings))
+
+    recomputer = RollupRecomputer.__new__(RollupRecomputer)
+    recomputer._client = Client()
+    recomputer.recompute_table("tool_metrics_1m", "2026-08-16")
+    replace = next(item for item in recomputer.client.commands if "REPLACE PARTITION" in item[0])
+    assert replace[1] == {"alter_sync": 2}
+
+
+class TestGenericFilters:
+    """The browser receives a catalog, while SQL receives only bound values."""
+
+    def test_catalog_contains_controls_and_resolved_options(self) -> None:
+        options = type("Options", (), {"servers": ["alpha"], "tools": ["fetch"],
+                                        "methods": [], "categories": ["tool_error"]})()
+        result = catalog("traces", options)
+        server = next(f for g in result["groups"] for f in g["filters"] if f["key"] == "server")
+        assert server["label"] == "Server"
+        assert server["options"] == [{"value": "alpha", "label": "alpha"}]
+        minimum = next(
+            f for g in result["groups"] for f in g["filters"]
+            if f["key"] == "min_duration_ms"
+        )
+        assert minimum["minimum"] == 0
+        assert "column" not in server
+
+    def test_one_config_drives_parsing_and_bound_sql(self) -> None:
+        filters = parse("traces", {"server": "'; DROP", "min_duration_ms": "5", "q": "fetch"})
+        params: dict[str, object] = {}
+        clauses = filters.clauses(WHERE, params)
+        assert "service_name = {f_server:String}" in clauses
+        assert params["f_server"] == "'; DROP"
+        assert params["f_min_duration_ms"] == 5.0
+        assert "DROP" not in " ".join(clauses)
+
+    def test_capability_having_and_sort_are_allowlisted(self) -> None:
+        filters = parse("capabilities", {"min_calls": "3", "sort": "p95"})
+        params: dict[str, object] = {}
+        assert filters.clauses(HAVING, params) == ["calls >= {f_min_calls:UInt32}"]
+        assert params["f_min_calls"] == 3
+        assert filters.order_by() == "p95_sort DESC"
+
+    def test_invalid_numeric_input_is_rejected_before_sql(self) -> None:
+        import pytest
+
+        with pytest.raises(ValueError, match="min_calls is too large"):
+            parse("capabilities", {"min_calls": "1000001"})
+
+
+class TestQueryClientConcurrency:
+    def test_shared_client_does_not_create_a_shared_clickhouse_session(self, monkeypatch) -> None:
+        """FastAPI runs sync endpoints in parallel worker threads.
+
+        clickhouse-connect rejects overlapping requests when one client sends
+        the same generated session_id for both, so the shared query client must
+        use the HTTP pool without a server session.
+        """
+        import query.app as query_app
+
+        captured: dict[str, object] = {}
+
+        class FakeRepository:
+            def __init__(self, **connect: object) -> None:
+                captured.update(connect)
+
+        monkeypatch.setattr(query_app, "SpanRepository", FakeRepository)
+        monkeypatch.setattr(query_app, "_repository", None)
+
+        query_app.repository()
+
+        assert captured["autogenerate_session_id"] is False
 
 
 class TestSqlGuards:
@@ -459,3 +665,73 @@ class TestTraceHeadline:
         spans = [SpanDTO(span_id="a", name="GET", start_time=datetime(2026, 8, 16),
                          duration_ms=1.0)]
         assert _headline(spans) is None
+
+
+class TestCapabilityQueryCost:
+    """The capability tables must not re-introduce a per-row query.
+
+    They used to run a failure-breakdown query AND a latency query for every
+    row, so a page cost 2N+1 round trips: measured at ~16ms each, a tenant with
+    a thousand capabilities crossed the 20s `max_execution_time` and the view
+    simply stopped working. The fix is only a fix while it stays constant, and
+    nothing about three grouped queries LOOKS different from three per-row ones
+    at twelve rows -- which is why this asserts the count rather than the shape.
+    """
+
+    @staticmethod
+    def _repo_returning(row_count: int) -> tuple[SpanRepository, list[str]]:
+        repo = object.__new__(SpanRepository)
+        issued: list[str] = []
+        names = [f"tool_{i}" for i in range(row_count)]
+
+        def rows(sql: str, params: dict[str, object]) -> list[tuple[object, ...]]:
+            issued.append(sql)
+            if "GROUP BY item, failure_category" in sql:
+                return [(n, "tool_error", 1) for n in names]
+            # Not `is_latency_eligible` -- the main aggregate mentions it too,
+            # inside the p95 sort key. `countIf(duration_ns = 0)` appears only
+            # in the latency select.
+            if "countIf(duration_ns = 0)" in sql:
+                return [(n, 1, 1e6, 2e6, 3e6, 4e6, 0, 1e6) for n in names]
+            # The main aggregate: item, service, method, calls, errors, seen, p95
+            return [(n, "svc", "tools/call", 5, 1, BASE, 1.0) for n in names]
+
+        repo._rows = rows  # type: ignore[method-assign]
+        return repo, issued
+
+    def test_query_count_is_constant_in_the_number_of_rows(self) -> None:
+        for row_count in (1, 12, 200):
+            repo, issued = self._repo_returning(row_count)
+            page = repo.capabilities("tenant", "project", BASE, kind="tool")
+            assert len(page.items) == row_count
+            assert len(issued) == 3, (
+                f"{row_count} rows issued {len(issued)} queries; "
+                "capabilities must stay at three regardless of row count"
+            )
+
+    def test_follow_up_queries_reapply_the_row_filter(self) -> None:
+        """Otherwise a breakdown counts spans the row's own total excludes.
+
+        The per-row versions omitted the WHERE, so with two servers exposing the
+        same tool name a row's failure bar could sum to more than its `calls`.
+        """
+        repo, issued = self._repo_returning(2)
+        repo.capabilities("tenant", "project", BASE, kind="tool")
+        follow_ups = [s for s in issued if "IN {items:Array(String)}" in s]
+        assert len(follow_ups) == 2
+        for sql in follow_ups:
+            assert "mcp_method = {method:String}" in sql
+
+    def test_rows_beyond_the_cap_are_dropped_and_reported(self) -> None:
+        repo, _ = self._repo_returning(CAPABILITY_ROW_CAP + 1)
+        page = repo.capabilities("tenant", "project", BASE, kind="tool")
+        assert page.truncated is True
+        assert len(page.items) == CAPABILITY_ROW_CAP
+        assert page.cap == CAPABILITY_ROW_CAP
+
+    def test_an_exactly_full_page_is_not_reported_as_truncated(self) -> None:
+        """`cap` rows is ambiguous unless one extra row is fetched to prove it."""
+        repo, _ = self._repo_returning(CAPABILITY_ROW_CAP)
+        page = repo.capabilities("tenant", "project", BASE, kind="tool")
+        assert page.truncated is False
+        assert len(page.items) == CAPABILITY_ROW_CAP

@@ -196,8 +196,14 @@ class RollupRecomputer:
             )
             rows = self.client.query(f"SELECT count() FROM {staging}").result_rows[0][0]
             # Atomic: readers see the old numbers or the new ones, never a gap.
+            # Replicated tables otherwise acknowledge the ALTER after it is
+            # queued locally. A caller that queries immediately can briefly see
+            # both the replaced and replacement parts and conclude the repair
+            # failed. `alter_sync=2` waits for every active replica, making the
+            # command's return value the operational completion boundary.
             self.client.command(
-                f"ALTER TABLE {table} REPLACE PARTITION '{day}' FROM {staging}"
+                f"ALTER TABLE {table} REPLACE PARTITION '{day}' FROM {staging}",
+                settings={"alter_sync": 2},
             )
             return int(rows)
         finally:
