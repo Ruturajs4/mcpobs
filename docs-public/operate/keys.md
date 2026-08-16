@@ -10,11 +10,19 @@ mints a key.
 | `ingest` | Your MCP server, sending telemetry | Server process, deployment config |
 | `read` | The console and the Query API | A browser |
 | `admin` | The operator console | Issued out of band |
+| `session` | Your backend, minting [session tokens](session-tokens.md) | Your servers only |
 
 The three are deliberately separate. An ingest key and a read key identify the
 same organisation, but they live in different places — so one being compromised
 must not imply the other. The console refuses an ingest key; the ingest endpoint
 refuses a read key.
+
+!!! tip "Running over stdio?"
+
+    Then the client launches your server on your user's machine, and none of
+    these keys should be there. Use
+    [session tokens](session-tokens.md) instead: your backend keeps the
+    long-lived key and the laptop only ever holds a 3-hour one.
 
 ## Storage
 

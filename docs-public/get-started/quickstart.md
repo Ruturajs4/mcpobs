@@ -31,6 +31,12 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4319
 export OTEL_EXPORTER_OTLP_HEADERS="x-api-key=<your ingest key>"
 ```
 
+!!! warning "If your server runs over stdio, stop here"
+
+    The client launches it on your **user's** machine, so a key in that config
+    is a permanent credential on someone else's laptop. Use
+    [session tokens](../operate/session-tokens.md) instead.
+
 !!! note "Ingest keys and read keys are different"
 
     An ingest key lives in your server process and deployment config. A read key

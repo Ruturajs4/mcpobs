@@ -118,6 +118,10 @@ to somebody else.
 | `tenant_label` | |
 | `session_label` | |
 
+They appear on your spans under a `mcpobs.session.` prefix, so `user_id`
+becomes `mcpobs.session.user_id`. The prefix keeps them from colliding with
+anything your own instrumentation sets.
+
 An unsupported key is refused by name rather than silently dropped, and the set
 is capped at 512 bytes because it travels on every request.
 

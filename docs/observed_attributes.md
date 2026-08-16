@@ -4,7 +4,7 @@
 
 This report is the source of truth for what the MCP Python SDK actually emits. Where it disagrees with the Day-1 engineering document, **this report wins** (Day-1 doc D10).
 
-Captured: 2026-08-16 15:40 UTC
+Captured: 2026-08-16 18:47 UTC
 
 ## Resolved versions
 
@@ -25,10 +25,10 @@ Captured: 2026-08-16 15:40 UTC
 | Property | Value |
 | --- | --- |
 | Platform | `Windows 10` |
-| `time.time_ns()` smallest tick | `1.505 ms` |
+| `time.time_ns()` smallest tick | `0.531 ms` |
 | `monotonic` resolution | `15.625 ms` |
 | `perf_counter` resolution | `0.100 us` |
-| Consequence | Spans shorter than ~1.50 ms record as `duration_ns = 0` |
+| Consequence | Spans shorter than ~0.53 ms record as `duration_ns = 0` |
 
 > **Latency percentiles for fast tools are not trustworthy on this platform.**
 > OpenTelemetry timestamps spans with `time.time_ns()`, so the clock tick above is
@@ -63,7 +63,7 @@ Captured: 2026-08-16 15:40 UTC
 | `stdio` | `tools/call cache_warm` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `stdio` | `tools/call partner_health` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `stdio` | `tools/call place_order` | `SpanKind.SERVER` | `UNSET` | — | 0 |
-| `stdio` | `tools/call place_order` | `SpanKind.SERVER` | `ERROR` | `tool_error` | 0 |
+| `stdio` | `tools/call place_order` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `stdio` | `prompts/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `stdio` | `prompts/get triage_error` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `stdio` | `prompts/get summarize_incident` | `SpanKind.SERVER` | `UNSET` | — | 0 |
@@ -114,7 +114,7 @@ Captured: 2026-08-16 15:40 UTC
 | `http` | `tools/call cache_warm` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `http` | `tools/call partner_health` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `http` | `tools/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
-| `http` | `tools/call place_order` | `SpanKind.SERVER` | `ERROR` | `tool_error` | 0 |
+| `http` | `tools/call place_order` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `http` | `tools/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `http` | `tools/call place_order` | `SpanKind.SERVER` | `UNSET` | — | 0 |
 | `http` | `prompts/list` | `SpanKind.SERVER` | `UNSET` | — | 0 |
@@ -135,7 +135,7 @@ Captured: 2026-08-16 15:40 UTC
 
 | Attribute | Python type | Spans | Example |
 | --- | --- | --- | --- |
-| `error.type` | `str` | 10/89 | `tool_error` |
+| `error.type` | `str` | 8/89 | `tool_error` |
 | `gen_ai.operation.name` | `str` | 48/89 | `execute_tool` |
 | `gen_ai.prompt.name` | `str` | 4/89 | `triage_error` |
 | `gen_ai.tool.call.arguments` | `str` | 85/89 | `{
@@ -154,9 +154,9 @@ Captured: 2026-08-16 15:40 UTC
 | `mcpobs.cancelled` | `bool` | 4/89 | `True` |
 | `mcpobs.client.name` | `str` | 83/89 | `mcp` |
 | `mcpobs.client.version` | `str` | 83/89 | `0.1.0` |
-| `mcpobs.failure.detail` | `str` | 10/89 | `upstream rejected the request` |
-| `mcpobs.failure.kind` | `str` | 10/89 | `tool_error` |
-| `mcpobs.failure.kind.version` | `int` | 10/89 | `2` |
+| `mcpobs.failure.detail` | `str` | 8/89 | `upstream rejected the request` |
+| `mcpobs.failure.kind` | `str` | 8/89 | `tool_error` |
+| `mcpobs.failure.kind.version` | `int` | 8/89 | `2` |
 | `mcpobs.mrtr.state.in` | `str` | 2/89 | `e973cab711cdcb3d` |
 | `mcpobs.mrtr.state.out` | `str` | 2/89 | `e973cab711cdcb3d` |
 | `mcpobs.request.size` | `int` | 85/89 | `411` |
@@ -182,7 +182,7 @@ These appear in Day-1 doc §4.2. The SDK does not emit them; the corresponding c
 
 Distinct `error.type` values observed across all failure scenarios: `tool_error`
 
-Failing spans: 10 · spans carrying `rpc.response.status_code`: 0 · spans carrying exception events: 0
+Failing spans: 8 · spans carrying `rpc.response.status_code`: 0 · spans carrying exception events: 0
 
 > ### FINDING: the failure taxonomy is not reachable from span attributes
 >
@@ -244,16 +244,13 @@ Failing spans: 10 · spans carrying `rpc.response.status_code`: 0 · spans carry
 | `stdio` | `GET` | `GET` | `200` |
 | `stdio` | `GET` | `GET` | `200` |
 | `stdio` | `SELECT` | `` | `` |
+| `stdio` | `SELECT` | `` | `` |
 | `stdio` | `UPDATE` | `` | `` |
 | `stdio` | `POST` | `POST` | `200` |
 | `stdio` | `POST` | `POST` | `200` |
 | `stdio` | `POST` | `POST` | `200` |
 | `stdio` | `INSERT` | `` | `` |
 | `stdio` | `DEL` | `` | `` |
-| `stdio` | `SELECT` | `` | `` |
-| `stdio` | `UPDATE` | `` | `` |
-| `stdio` | `POST` | `POST` | `200` |
-| `stdio` | `POST` | `POST` | `503` |
 | `stdio` | `mcp.subscription.event` | `` | `` |
 | `stdio` | `mcp.progress` | `` | `` |
 | `stdio` | `mcp.progress` | `` | `` |
@@ -286,7 +283,10 @@ Failing spans: 10 · spans carrying `rpc.response.status_code`: 0 · spans carry
 | `http` | `SELECT` | `` | `` |
 | `http` | `UPDATE` | `` | `` |
 | `http` | `POST` | `POST` | `200` |
-| `http` | `POST` | `POST` | `503` |
+| `http` | `POST` | `POST` | `200` |
+| `http` | `POST` | `POST` | `200` |
+| `http` | `INSERT` | `` | `` |
+| `http` | `DEL` | `` | `` |
 | `http` | `SELECT` | `` | `` |
 | `http` | `mcp.subscription.event` | `` | `` |
 | `http` | `mcp.progress` | `` | `` |

@@ -83,6 +83,10 @@ SOFT_QUOTA_ATTRIBUTE = "mcpobs.quota.soft_exceeded"
 #: Written by us, from the authenticated key, over anything the customer sent.
 TENANT_ATTRIBUTE = "tenant.id"
 PROJECT_ATTRIBUTE = "project.id"
+#: Namespaced so a session attribute can never collide with, or be mistaken
+#: for, an attribute the customer's own instrumentation set.
+SESSION_ATTRIBUTE_PREFIX = "mcpobs.session."
+
 REGION_ATTRIBUTE = "data.region"
 REGION = os.getenv("DATA_REGION", "local")
 
@@ -245,6 +249,12 @@ def stamp_parsed(
         PROJECT_ATTRIBUTE: principal.project,
         REGION_ATTRIBUTE: REGION,
     }
+    # Session attributes (ADR-011) join the TRUSTED set, which is the whole
+    # point of binding them to the token: they are stamped from the credential,
+    # and any value the caller sent under the same key is dropped with the rest.
+    # A user cannot attribute their traffic to somebody else.
+    for key, value in principal.session_attributes:
+        trusted[f"{SESSION_ATTRIBUTE_PREFIX}{key}"] = value
     for resource_spans in request.resource_spans:
         attributes = resource_spans.resource.attributes
         kept = [kv for kv in attributes if kv.key not in trusted]

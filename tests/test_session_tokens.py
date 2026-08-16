@@ -255,3 +255,70 @@ class TestSigningKey:
         monkeypatch.setenv("MCPOBS_SESSION_SIGNING_KEY", "")
         with pytest.raises(SessionError, match="not configured"):
             mint(customer_key(), subject="u_931")
+
+
+class TestAttributesReachTheSpan:
+    """The promise the customer documentation makes.
+
+    It said attributes are "stamped onto every span from the token", and they
+    were not: `Principal` had no field for them, so `principal_for()` validated
+    them at mint, re-filtered them on verify, and then dropped them. Everything
+    about the feature worked except the part a customer would see.
+
+    Documentation ahead of implementation is the worst kind, because it is a
+    promise someone builds on. This asserts the whole path, not the pieces.
+    """
+
+    def test_a_session_principal_carries_its_attributes(self) -> None:
+        claims = verify(
+            mint(
+                customer_key(),
+                subject="u_931",
+                attributes={"user_id": "u_931", "workspace": "eu"},
+            )[0]
+        )
+        principal = principal_for(claims)
+        assert dict(principal.session_attributes) == {
+            "user_id": "u_931",
+            "workspace": "eu",
+        }
+
+    def test_an_api_key_principal_carries_none(self) -> None:
+        """Only session tokens bind attributes; an ordinary key must not gain a
+        field full of someone else's user ids."""
+        assert customer_key().session_attributes == ()
+
+    def test_the_gateway_stamps_them_as_trusted(self) -> None:
+        """They join the TRUSTED set, which is the entire point of binding them
+        to the credential: a value the caller sent under the same key is dropped
+        with the rest, so a user cannot attribute traffic to somebody else."""
+        from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+            ExportTraceServiceRequest,
+        )
+        from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
+
+        from ingest.app import SESSION_ATTRIBUTE_PREFIX, stamp_parsed
+
+        claims = verify(
+            mint(customer_key(), subject="u_931", attributes={"user_id": "u_931"})[0]
+        )
+        principal = principal_for(claims)
+
+        request = ExportTraceServiceRequest()
+        resource_spans = request.resource_spans.add()
+        # The client claims someone else's id under the same key.
+        resource_spans.resource.attributes.append(
+            KeyValue(
+                key=f"{SESSION_ATTRIBUTE_PREFIX}user_id",
+                value=AnyValue(string_value="somebody-else"),
+            )
+        )
+
+        stamped = ExportTraceServiceRequest()
+        stamped.ParseFromString(stamp_parsed(request, principal))
+        values = {
+            kv.key: kv.value.string_value
+            for kv in stamped.resource_spans[0].resource.attributes
+        }
+        assert values[f"{SESSION_ATTRIBUTE_PREFIX}user_id"] == "u_931"
+        assert "somebody-else" not in values.values()

@@ -61,6 +61,20 @@ if an internal file, or internal text, appears in the public tree.
 - [`docs/deferred.md`](docs/deferred.md) — everything knowingly postponed, and what forces it back
 - [`docs/alpha-readiness.md`](docs/alpha-readiness.md) — current release verdict, blockers, and alpha gate
 
+## Credentials
+
+Two models, and which one you need depends on where your server runs:
+
+- **Your own infrastructure (HTTP transport)** — a long-lived ingest key. It
+  never leaves your servers, which is the property that matters.
+- **The user's machine (stdio, ~half of MCP servers)** — a **session token**.
+  The client launches your server, so a key in that config is a permanent
+  credential on someone else's laptop. Your backend mints a 3-hour token
+  instead (ADR-011, `docs-public/operate/session-tokens.md`).
+
+`session` is its own scope: a key that can mint sessions can mint one for any of
+your users, so it is deliberately not something an `ingest` key can do.
+
 ## Getting a key
 
 The platform is **invite-only**. There is no signup page, and there is no

@@ -79,6 +79,15 @@ class Principal(_Row):
     quota_spans_per_minute: int | None = None
     quota_spans_per_day: int | None = None
 
+    #: Attributes bound to a SESSION token at mint time (ADR-011), stamped onto
+    #: every span the request carries. Empty for an ordinary API key.
+    #:
+    #: They live here rather than being passed alongside because they are part
+    #: of "who this request is" -- and because the stamping code already has a
+    #: Principal and would otherwise need a second, parallel argument that a
+    #: future caller could forget.
+    session_attributes: tuple[tuple[str, str], ...] = ()
+
     def can(self, scope: str) -> bool:
         return scope in self.scopes
 

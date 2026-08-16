@@ -299,4 +299,7 @@ def principal_for(
         plan=plan,
         quota_spans_per_minute=spans_per_minute,
         quota_spans_per_day=spans_per_day,
+        # Carried through to the stamping. Validated at mint AND re-filtered on
+        # verify, so what arrives here is already only allow-listed keys.
+        session_attributes=tuple(sorted(claims.attributes.items())),
     )
