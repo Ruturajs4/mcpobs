@@ -61,9 +61,12 @@ function signIn(rejected) {
         <input id="key-input" type="password" placeholder="mcpo_..." autocomplete="off"
                spellcheck="false">
         <button id="key-go">Continue</button>
-        <p class="signin-hint">Admin keys are issued only from the database side:
-          <code>python scripts/admin.py key --org &lt;org&gt; --scopes admin</code>.
-          There is no endpoint that mints one.</p>
+        <!-- Same reasoning as the customer console, and more so: this page is
+             the operator surface. Naming the tool that mints admin keys, and
+             confirming they come "from the database side", is reconnaissance
+             for anyone who reaches this URL without a key. -->
+        <p class="signin-hint">Admin access is issued out of band.
+          There is no endpoint that mints an admin key.</p>
       </div>
     </div>`;
   const submit = () => {

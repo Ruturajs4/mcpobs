@@ -46,10 +46,14 @@ function signIn(rejected) {
         <input id="key-input" type="password" placeholder="mcpo_..." autocomplete="off"
                spellcheck="false" value="">
         <button id="key-go">Continue</button>
-        <p class="signin-hint">Invite-only. An operator issues keys with
-          <code>python scripts/admin.py key --org &lt;org&gt; --scopes read</code>.
-          Locally, <code>make devkeys</code> writes one to
-          <code>.mcpobs-keys.env</code>.</p>
+        <!-- This page is served to ANYONE who finds the URL, so it says only
+             what a legitimate user without a key needs: who to ask. It used to
+             print the exact admin CLI invocation, its --org/--scopes flags, and
+             the dotfile that dev keys are written to -- a map of the key-issuing
+             surface, handed out pre-authentication. None of that helped the
+             person actually locked out, because they cannot run it anyway. -->
+        <p class="signin-hint">Access is invite-only. If you do not have a key,
+          ask the person who administers your workspace.</p>
       </div>
     </div>`;
   const submit = () => {

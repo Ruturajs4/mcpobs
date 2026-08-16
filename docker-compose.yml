@@ -196,6 +196,9 @@ services:
     environment:
       CONTROL_PLANE_DSN: postgresql://mcpobs:mcpobs@postgres:5432/mcpobs_control
       COLLECTOR_ENDPOINT: http://otel-collector:4318/v1/traces
+      # Local stack only. The API docs enumerate every route including the
+      # admin surface, so they stay off unless something switches them on.
+      EXPOSE_API_DOCS: "true"
       DATA_REGION: local
       REDIS_URL: redis://redis:6379/0
     depends_on:
@@ -235,6 +238,9 @@ services:
       CLICKHOUSE_PORT: "8123"
       CLICKHOUSE_DB: mcpobs
       CONTROL_PLANE_DSN: postgresql://mcpobs:mcpobs@postgres:5432/mcpobs_control
+      # Local stack only. The API docs enumerate every route including the
+      # admin surface, so they stay off unless something switches them on.
+      EXPOSE_API_DOCS: "true"
     depends_on:
       clickhouse: { condition: service_healthy }
       postgres: { condition: service_healthy }

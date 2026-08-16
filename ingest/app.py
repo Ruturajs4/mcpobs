@@ -91,7 +91,23 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="mcpobs ingest", version="0.1.0", lifespan=lifespan)
+def _docs_enabled() -> bool:
+    """See query/app.py. Same reasoning, and this one faces customer servers.
+
+    Default-off: forgetting to set a variable must leave the exposed thing
+    closed rather than open.
+    """
+    return os.getenv("EXPOSE_API_DOCS", "").lower() in ("1", "true", "yes")
+
+
+app = FastAPI(
+    title="mcpobs ingest",
+    version="0.1.0",
+    lifespan=lifespan,
+    docs_url="/docs" if _docs_enabled() else None,
+    redoc_url="/redoc" if _docs_enabled() else None,
+    openapi_url="/openapi.json" if _docs_enabled() else None,
+)
 _client: httpx.Client | None = None
 
 

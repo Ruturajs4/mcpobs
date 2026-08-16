@@ -19,6 +19,7 @@ TENANCY COMES FROM THE KEY, NEVER FROM A PARAMETER.
 # `Annotated[str, Query(...)]` into a string ForwardRef that FastAPI cannot
 # resolve, and the failure surfaces as an opaque PydanticUserError at request
 # time rather than at import. Python 3.11 handles `X | None` natively anyway.
+import logging
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -42,11 +43,34 @@ from query.dtos import (
 from query.filters import Filters, catalog, openapi_parameters, parse
 from query.repository import SpanRepository, decode_cursor
 
+
+def _docs_enabled() -> bool:
+    """Whether to publish OpenAPI, Swagger and ReDoc.
+
+    OFF unless explicitly switched on, because these are served to anyone who
+    finds the host. `/openapi.json` enumerated every route including
+    `/api/v1/admin/keys/{prefix}/revoke`, `/api/v1/admin/tenants/{tenant}/quota`
+    and `/api/v1/admin/invites` -- a complete map of the operator surface,
+    handed to unauthenticated callers. Knowing a route is not the same as
+    reaching one, but it is the first thing an attacker would otherwise have to
+    guess.
+
+    Default-off rather than default-on-with-a-flag-to-disable: forgetting to set
+    a variable should leave the exposed thing closed, not open.
+    """
+    return os.getenv("EXPOSE_API_DOCS", "").lower() in ("1", "true", "yes")
+
+
 app = FastAPI(
     title="MCP Observability Query API",
     version="0.1.0",
     description="MCP-native observability: servers, tools, failures and traces.",
+    docs_url="/docs" if _docs_enabled() else None,
+    redoc_url="/redoc" if _docs_enabled() else None,
+    openapi_url="/openapi.json" if _docs_enabled() else None,
 )
+
+log = logging.getLogger("mcpobs.query")
 
 STATIC = Path(__file__).parent / "static"
 
@@ -157,10 +181,24 @@ def validated_cursor(cursor: str | None) -> str | None:
 
 @app.get("/health")
 def health(repo: RepoDep) -> dict[str, str]:
+    """Liveness. Unauthenticated, so it says whether -- never why.
+
+    The failure body used to interpolate the driver exception, which carries the
+    ClickHouse hostname and port:
+
+        clickhouse unavailable: Error HTTPConnectionPool(
+            host='clickhouse-internal.prod.local', port=8123) ...
+
+    That is internal topology, published to anyone who can reach the load
+    balancer while the database is down -- which is exactly when someone is
+    probing. The detail goes to the log, where an operator can read it and a
+    stranger cannot.
+    """
     try:
         repo.client.query("SELECT 1")
     except Exception as exc:
-        raise HTTPException(503, f"clickhouse unavailable: {exc}") from exc
+        log.warning("health check failed: %s", exc)
+        raise HTTPException(503, "dependency unavailable") from exc
     return {"status": "ok"}
 
 
