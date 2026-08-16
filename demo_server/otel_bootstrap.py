@@ -86,6 +86,9 @@ def init_telemetry(
     )
     provider = TracerProvider(resource=resource)
 
+    from mcpobs.exporter import SessionSpanExporter
+    from mcpobs.session import SessionProvider
+
     if mode == "console":
         provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
     elif mode == "file":
@@ -117,13 +120,23 @@ def init_telemetry(
             if key:
                 headers["x-api-key"] = key
 
+        # A session endpoint takes precedence over a static key (ADR-011). This
+        # is the stdio case: the server runs on the END USER's machine, so it
+        # must not hold a long-lived credential -- it fetches a 3-hour token
+        # from an endpoint the customer hosts, and the exporter rotates it.
+        target = endpoint or os.getenv(
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", DEFAULT_OTLP_ENDPOINT
+        )
+        session_provider = SessionProvider()
+        exporter: OTLPSpanExporter
+        if session_provider.configured:
+            exporter = SessionSpanExporter(session_provider, endpoint=target)
+        else:
+            exporter = OTLPSpanExporter(endpoint=target, headers=headers or None)
+
         provider.add_span_processor(
             BatchSpanProcessor(
-                OTLPSpanExporter(
-                    endpoint=endpoint
-                    or os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", DEFAULT_OTLP_ENDPOINT),
-                    headers=headers or None,
-                ),
+                exporter,
                 schedule_delay_millis=int(os.getenv("OTEL_BSP_SCHEDULE_DELAY", "1000")),
             )
         )
