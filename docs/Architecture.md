@@ -447,6 +447,147 @@ One raw topic, not one per signal or per tenant. Per-tenant topics do not scale 
 
 ---
 
+### ADR-011: Short-lived session tokens for client-launched servers
+
+**Status.** Accepted. Not yet implemented.
+
+**Context.** Roughly half of MCP servers run on **stdio**, which means the
+*client* launches them — Claude Desktop, an IDE, another agent — on the end
+user's own machine. The only way to give such a server an ingest credential
+today is the client's config file:
+
+```json
+{"mcpServers": {"acme": {"command": "...", "env": {
+  "OTEL_EXPORTER_OTLP_HEADERS": "x-api-key=mcpo_live_..."}}}}
+```
+
+That file is plaintext on a laptop. It is synced, backed up, pasted into
+support tickets, and readable by every process running as that user. And the
+credential in it is **org-wide and permanent**: one copy lets anyone write
+telemetry into that tenant indefinitely — exhausting its quota, poisoning its
+error rates, and populating its console with servers that do not exist.
+
+The exposure is not "a key leaked". It is "a key leaked and nothing expires".
+
+**Decision.** The customer hosts a **session endpoint**. Our SDK calls it,
+receives a short-lived token (default 3h), and uses that to export. The
+customer's long-lived key stays on the customer's servers and is never present
+on an end user's machine.
+
+```
+end user ──auth the customer already has──▶ customer's session endpoint
+                                                    │ long-lived mint key,
+                                                    │ server-side only
+                                                    ▼
+                                          POST /api/v1/sessions
+                                                    │
+                                          session token (3h) ──▶ SDK
+```
+
+The contract the SDK expects from the customer's endpoint:
+
+```json
+{
+  "token": "...",
+  "expires_in": 10800,
+  "endpoint": "https://ingest.eu.example.io",
+  "attributes": {"user_id": "u_931", "workspace": "acme-eu"}
+}
+```
+
+`expires_in` rather than `expires_at` because laptop clocks are wrong — the
+same reason latency percentiles here carry a measured-clock caveat. A relative
+TTL cannot be misread by a skewed clock.
+
+Session tokens are **JWTs**, verified locally by the ingest gateway. They carry
+`aud`, `kid`, `jti` and a revocation `epoch` from the first release.
+
+**Why the customer hosts the endpoint.** We have no relationship with the end
+user; the customer does. They already authenticate that user — session cookie,
+OAuth, whatever their product uses. Minting per-user credentials ourselves would
+require us to hold their user directory or share a per-user secret, which
+recreates the leak we are removing. This design borrows an authentication
+relationship that already exists rather than inventing a second one.
+
+**Why JWT rather than opaque tokens in Redis.** Not storage — a session entry
+is a few hundred bytes, so ten thousand concurrent users is a few megabytes in a
+Redis that is already running. Two other reasons decide it:
+
+* **Availability coupling.** Ingest is the highest-volume path in the system. An
+  opaque token means a lookup on every span batch, and Redis being unavailable
+  becomes total ingest failure for every customer. Local verification has no
+  such dependency.
+* **Cache locality collapses.** The existing 30-second principal cache works
+  because an *org* key is shared by thousands of requests. A *per-user* session
+  key is used by one laptop. The same cache would hit almost never, so the
+  lookup would be paid nearly every time.
+
+**Why `jti` and `epoch` ship before anything reads them.** A blacklist can only
+reject a token it can name, and revocation is added precisely when it is
+urgently needed. Tokens minted without these claims would be permanently
+unrevocable. Two unused claims cost nothing now and cannot be retrofitted.
+
+When revocation arrives it bumps a per-user or per-org **epoch** rather than
+listing individual tokens: one entry kills every outstanding session for that
+subject, which is what "deprovision this employee" actually requires. The epoch
+map is small enough to cache locally for a minute, so revocation does not
+reintroduce the hot-path dependency this ADR exists to avoid.
+
+**What the gateway trusts.** Attributes are bound to the token when it is minted
+and stamped onto spans **from the token**, never from what the client sends.
+This is the same rule the ingest gateway already applies to tenancy (ADR-003,
+and the `?tenant=` parameter removed rather than deprecated in the query API):
+a value the caller can choose is not an identity.
+
+**Scope.** Minting sessions is its own scope, distinct from `ingest`. A key that
+can mint for any user is more powerful than one that can write spans, and
+reusing the ingest scope would turn a leaked server-side key into a session
+factory. `aud` prevents an ingest session token from being accepted by the query
+API — without it, a token that can write telemetry could also read the org's
+data by being pointed at the wrong host.
+
+**This does not replace long-lived keys.** Both paths are permanent:
+
+| Deployment | Credential |
+| --- | --- |
+| HTTP transport, on the customer's own infrastructure | Long-lived ingest key — it never leaves their servers |
+| **stdio, on an end user's machine** | **Session token** |
+| Local development | Direct key, documented as development-only |
+
+Requiring an HTTP endpoint from customers who do not need one would be a worse
+trade for them than the problem it solves.
+
+**Considered and rejected.** The customer could run their own Collector and
+forward with their key, which solves the same problem and needs no new protocol
+from us. Rejected because it asks them to operate a piece of infrastructure
+rather than write an HTTP handler — but it remains the right answer for a
+customer who already runs one.
+
+**Known consequences.**
+
+* Telemetry must degrade, never block: a server whose session endpoint is
+  unreachable starts **without** telemetry and retries. Our outage must not
+  become their product's outage.
+* Refresh happens at ~75% of TTL **with jitter**. Ten thousand laptops opened at
+  09:00 would otherwise refresh together at 12:00 and flood the customer's own
+  authentication service — a thundering herd we would have caused.
+* Spans emitted before the first token must be buffered, with a hard bound. An
+  unbounded buffer waiting on an endpoint that never answers is a memory leak
+  inside the customer's process.
+* That buffer inherits the stdio teardown problem: a client-launched server is
+  killed when the client is finished with it, so anything held for credentials
+  is lost unless it flushes on the same path (see the SIGTERM handler, currently
+  unexercised on POSIX).
+* Rotating credentials is not a configuration change. `OTLPSpanExporter` takes
+  headers at construction, so the SDK must wrap its session rather than pass a
+  header once.
+* `user_id` and similar attributes are personal data and unbounded cardinality.
+  They are stored and exact-match filterable, deliberately **not** offered as
+  dropdown values, and they make a documented archive retention and erasure
+  policy a prerequisite rather than a nicety.
+
+---
+
 ## 8. Failure modes
 
 | Failure | Blast radius | Behaviour | Recovery |

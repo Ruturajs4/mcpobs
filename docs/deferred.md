@@ -80,3 +80,4 @@ today, will bite at scale) · `CLOSED` (kept for the record).
 *Reviewed at the end of each engineering day. An entry that has not been looked
 at in two weeks is either genuinely fine or genuinely forgotten — and the
 difference matters.*
+| DF-25 | Session tokens for client-launched (stdio) servers | ADR-011 is accepted and unimplemented. Until it ships, a stdio server can only be given a long-lived org-wide ingest key, and for stdio that key lives in a config file on the END USER's machine -- roughly half of MCP deployments. The exposure is not that a key can leak but that nothing expires when it does: quota exhaustion, poisoned error rates, and fabricated servers in the customer's console, indefinitely. Forced back by the first design partner shipping a stdio server to users they do not control. |
