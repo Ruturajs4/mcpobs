@@ -228,6 +228,10 @@ class SpanDetail(BaseModel):
     db_system: str = ""
     db_operation: str = ""
     db_collection: str = ""
+    #: Messaging: the queue or topic a publish/consume touched.
+    messaging_system: str = ""
+    messaging_destination: str = ""
+    messaging_operation: str = ""
     #: The downstream analogue of a request: the URL called, the SQL run.
     #: Redacted at normalize time, not at render (D59).
     http_url: str = ""

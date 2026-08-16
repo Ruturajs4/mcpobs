@@ -114,6 +114,10 @@ class SpanRow(_Row):
     gen_ai_input_tokens: int | None = None
     gen_ai_output_tokens: int | None = None
     downstream_kind: str = ""
+    # Messaging: what a queue publish or consume was talking to.
+    messaging_system: str = ""
+    messaging_destination: str = ""
+    messaging_operation: str = ""
     # Error text from a FAILING result only. Distinct from the payload columns
     # above, which stay NULL unless payload capture is switched on (DF-8).
     failure_detail: str = ""

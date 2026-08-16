@@ -1287,6 +1287,21 @@ def main() -> int:
         if pipeline else "unavailable",
     )
 
+    # B10c: the messaging downstream kind, with data behind it.
+    queue = ch.query(
+        "SELECT count(), countIf(messaging_system != ''), "
+        "       countIf(messaging_destination != '') "
+        "FROM spans_raw WHERE downstream_kind = 'messaging' "
+        "  AND normalization_version = (SELECT max(normalization_version) FROM spans_raw)"
+    ).result_rows[0]
+    record(
+        "B10c queue publishes are attributed, not just classified",
+        queue[0] > 0 and queue[1] == queue[0] and queue[2] == queue[0],
+        f"{queue[0]} messaging span(s), {queue[1]} with a system, "
+        f"{queue[2]} with a destination"
+        + ("  -- none at all, so this proved nothing" if not queue[0] else ""),
+    )
+
     # ---------------- J: ingest quotas (Architecture 5.1, ADR-008) ---------
     print()
     print("--- J: ingest quotas ---")
@@ -1500,7 +1515,13 @@ def main() -> int:
         [sys.executable, "-m", "demo_server.server", "--http", "--port", str(auth_port)],
         cwd=REPO_ROOT,
         env={**os.environ, "DEMO_AUTH": "1", "DEMO_HTTP_PORT": str(auth_port)},
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        # DISCARDED, not piped. Nothing here ever read these, so once the demo
+        # server wrote ~64KB of startup logging it blocked forever -- before
+        # binding its port. G1 then found no 401s and reported that transport
+        # authorization was broken, which it was not. The output grew past the
+        # buffer when `instrument_downstream()` started logging skipped
+        # instrumentors, so this failed intermittently and then permanently.
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:
         from demo_server.scenarios import _wait_for_port, run_auth_scenario

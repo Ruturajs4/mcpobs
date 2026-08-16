@@ -250,6 +250,7 @@ class ControlPlane:
         scopes: tuple[str, ...] = (keys.INGEST,),
         name: str = "",
         created_by: int | None = None,
+        expires_in_days: int | None = None,
     ) -> IssuedKey:
         project = self._one(
             "SELECT slug, environment FROM projects WHERE id = %s AND org_id = %s",
@@ -258,11 +259,24 @@ class ControlPlane:
         if project is None:
             raise ValueError("project does not belong to this org")
         token, prefix, secret_hash = keys.mint(project["environment"])
+        # `expires_at` has been in the schema since 001 and nothing ever set it,
+        # so every key issued was immortal. Authentication already rejected
+        # expired keys -- the check existed and had nothing to check.
+        # `is not None`, NOT truthiness. `0` is a meaningful value here -- a
+        # key that expires immediately, which is how you test the expiry path --
+        # and `if expires_in_days` would silently turn that into "never". The
+        # same 0-vs-None trap the quota overrides handle deliberately (D138).
+        expires_at = (
+            datetime.now(UTC) + timedelta(days=expires_in_days)
+            if expires_in_days is not None
+            else None
+        )
         self._rows(
             """INSERT INTO api_keys (org_id, project_id, name, prefix, secret_hash,
-                                     scopes, created_by)
-               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-            (org_id, project_id, name, prefix, secret_hash, ",".join(scopes), created_by),
+                                     scopes, created_by, expires_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (org_id, project_id, name, prefix, secret_hash, ",".join(scopes),
+             created_by, expires_at),
         )
         return IssuedKey(
             prefix=prefix,

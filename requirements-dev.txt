@@ -12,3 +12,4 @@ psycopg[binary]==3.2.3
 opentelemetry-instrumentation-asgi==0.65b0
 opentelemetry-instrumentation-psycopg==0.65b0
 redis==5.2.1
+opentelemetry-instrumentation-confluent-kafka==0.65b0

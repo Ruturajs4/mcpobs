@@ -61,6 +61,8 @@ def main() -> int:
     key.add_argument("--project", default="default")
     key.add_argument("--scopes", default="ingest")
     key.add_argument("--name", default="")
+    key.add_argument("--expires-in-days", type=int, default=None,
+                     help="key stops working after N days; omit for no expiry")
 
     quota = sub.add_parser("quota", help="show or override an org's ingest limits")
     quota.add_argument("--org", required=True)
@@ -133,10 +135,17 @@ def main() -> int:
         scopes = parse_scopes(args.scopes)
         if not scopes:
             raise SystemExit("no valid scopes given (ingest, read)")
-        issued = cp.issue_key(org_id, int(project["id"]), scopes=scopes, name=args.name)
+        issued = cp.issue_key(
+            org_id, int(project["id"]), scopes=scopes, name=args.name,
+            expires_in_days=args.expires_in_days,
+        )
         print(f"  project   {args.org}/{issued.project} ({issued.environment})")
         print(f"  scopes    {', '.join(issued.scopes)}")
         print(f"  prefix    {issued.prefix}   <- use this to revoke")
+        print(
+            f"  expires   "
+            f"{f'in {args.expires_in_days} day(s)' if args.expires_in_days is not None else 'never'}"
+        )
         print()
         print(f"  API key (shown once): {issued.token}")
         return 0

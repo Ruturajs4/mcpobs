@@ -250,6 +250,29 @@ async def slow_export(ctx: Context, rows: int = 3) -> str:
 
 
 @mcp.tool()
+def enqueue_job(job: str = "reindex", customer: str = "acme") -> str:
+    """Publish a job to Kafka -- the messaging downstream kind.
+
+    Exists so `downstream_kind = 'messaging'` is exercised with real data. It
+    had been classified correctly since U6 and rendered as a grey tag with
+    nothing behind it, because the demo had no queue and nobody had ever seen
+    the branch with data in it.
+    """
+    from confluent_kafka import Producer
+
+    producer = Producer({
+        "bootstrap.servers": os.getenv("KAFKA_HOST_BOOTSTRAP", "localhost:29092"),
+        # Fail fast: a demo tool must not block for a minute on an unreachable
+        # broker, because then the SCENARIO's latency is the broker's timeout.
+        "message.timeout.ms": 4000,
+        "socket.timeout.ms": 3000,
+    })
+    producer.produce("mcpobs.demo.jobs", key=customer.encode(), value=job.encode())
+    producer.flush(5)
+    return f"queued {job} for {customer}"
+
+
+@mcp.tool()
 async def publish_change(kind: str = "tools") -> str:
     """Publish a change event to every open `subscriptions/listen` stream.
 

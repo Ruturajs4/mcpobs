@@ -176,17 +176,42 @@ class AttributeRedactor:
 
 #: Leading keyword -> operation name. Deliberately small: these are the
 #: statements that actually appear in a tool's hot path.
-_SQL_OPERATIONS: Final[tuple[str, ...]] = (
+_SQL_OPERATIONS: Final[frozenset[str]] = frozenset({
     "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER",
     "REPLACE", "MERGE", "TRUNCATE", "WITH",
-)
+})
+
+#: Redis commands. Added because a REAL redis span carries `db.statement =
+#: "GET user:1042"` and no `db.operation` on the older semconv, so "which
+#: command is slow" was unanswerable for exactly the store people reach for
+#: when something is slow.
+#:
+#: Kept SEPARATE from the SQL set rather than merged, because the two are
+#: disambiguated by `db.system` and merging them would let a SQL statement
+#: beginning `SET` be read as a Redis write. The list is the commands a tool's
+#: hot path actually issues -- not all 240 of them, because an unrecognised
+#: command yields "" and that is the status quo, never a wrong answer.
+_REDIS_OPERATIONS: Final[frozenset[str]] = frozenset({
+    "GET", "SET", "SETEX", "SETNX", "GETSET", "APPEND", "STRLEN",
+    "MGET", "MSET", "INCR", "INCRBY", "DECR", "DECRBY",
+    "DEL", "UNLINK", "EXISTS", "EXPIRE", "TTL", "PERSIST", "TYPE", "SCAN",
+    "HGET", "HSET", "HMGET", "HMSET", "HGETALL", "HDEL", "HEXISTS", "HINCRBY",
+    "LPUSH", "RPUSH", "LPOP", "RPOP", "LRANGE", "LLEN", "LREM", "BLPOP", "BRPOP",
+    "SADD", "SREM", "SMEMBERS", "SISMEMBER", "SCARD", "SPOP",
+    "ZADD", "ZREM", "ZRANGE", "ZRANGEBYSCORE", "ZSCORE", "ZCARD", "ZINCRBY",
+    "PUBLISH", "SUBSCRIBE", "PSUBSCRIBE", "XADD", "XREAD", "XLEN",
+    "EVAL", "EVALSHA", "PING", "MULTI", "EXEC", "WATCH", "PIPELINE",
+})
+
+#: `db.system` values that speak Redis rather than SQL.
+_REDIS_SYSTEMS: Final[frozenset[str]] = frozenset({"redis", "valkey"})
 
 _SQL_TABLE: Final = re.compile(
     r"\b(?:FROM|INTO|UPDATE|TABLE|JOIN)\s+[\"'`\[]?([A-Za-z_][\w.]*)", re.I
 )
 
 
-def parse_statement(statement: str) -> tuple[str, str]:
+def parse_statement(statement: str, system: str = "") -> tuple[str, str]:
     """(operation, collection) from a SQL statement -- closes DF-12.
 
     `opentelemetry-instrumentation-dbapi` emits `db.system` and `db.statement`
@@ -201,7 +226,18 @@ def parse_statement(statement: str) -> tuple[str, str]:
     if not statement:
         return "", ""
     stripped = statement.lstrip()
-    head = stripped.split(None, 1)[0].upper().strip("(") if stripped else ""
+    if not stripped:
+        return "", ""
+    head = stripped.split(None, 1)[0].upper().strip("(")
+
+    if system.lower() in _REDIS_SYSTEMS:
+        # Redis has no tables, so the collection stays empty rather than being
+        # filled with a key name. A key like `user:1042:profile` is per-USER
+        # data: promoting it to a low-cardinality label would both explode the
+        # cardinality and leak an identifier into a dimension that a metrics
+        # backend exports beyond our redaction.
+        return (head if head in _REDIS_OPERATIONS else ""), ""
+
     operation = head if head in _SQL_OPERATIONS else ""
     match = _SQL_TABLE.search(stripped)
     return operation, (match.group(1) if match else "")

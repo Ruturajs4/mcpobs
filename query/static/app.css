@@ -269,3 +269,10 @@ tbody tr.sel td { border-bottom-color: transparent; }
 #sign-out { background: none; border: 0; color: var(--text-mute); font-size: 12px;
   cursor: pointer; padding: 4px 8px; }
 #sign-out:hover { color: var(--text-dim); }
+
+
+/* Queue spans. Its own colour, because "which downstream kind" is the first
+   thing scanned in a waterfall and a queue publish behaves nothing like an
+   HTTP call. */
+.k-msg { background: #ec489922; color: #f9a8d4; }
+.bar-msg { background: var(--pink); }

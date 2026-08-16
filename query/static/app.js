@@ -130,7 +130,9 @@ function distBar(bd) {
 
 function kindOf(span) {
   if (span.mcp_method) return { cls: "k-mcp", bar: "bar-mcp", tag: "MCP" };
-  const map = { http: ["k-http", "bar-http", "HTTP"], db: ["k-db", "bar-db", "DB"], llm: ["k-llm", "bar-llm", "LLM"] };
+  const map = { http: ["k-http", "bar-http", "HTTP"], db: ["k-db", "bar-db", "DB"],
+                llm: ["k-llm", "bar-llm", "LLM"],
+                messaging: ["k-msg", "bar-msg", "QUEUE"] };
   const [cls, bar, tag] = map[span.downstream_kind] || ["k-int", "bar-int", (span.downstream_kind || "int").toUpperCase()];
   return { cls, bar, tag };
 }
@@ -437,6 +439,16 @@ function renderSpanDetail(d) {
       request = d.db_statement;
       response = "";
       footnote = "literals redacted; placeholders preserved";
+    } else if (d.downstream_kind === "messaging") {
+      /* Classified correctly since U6 and rendered as a grey tag with nothing
+         in it, because no messaging attribute was ever promoted to a column.
+         A publish's "request" IS its destination and operation. */
+      reqLabel = "Publish"; respLabel = "";
+      request = [d.messaging_operation, d.messaging_system, d.messaging_destination]
+        .filter(Boolean).join(" · ");
+      response = "";
+      footnote = "message bodies are not captured — a queue payload is the "
+        + "customer's data, and nothing here opts into it";
     } else if (d.downstream_kind === "llm") {
       reqLabel = "Request"; respLabel = "Response";
       request = [d.gen_ai_system, d.gen_ai_model,
@@ -502,6 +514,8 @@ function renderSpanDetail(d) {
         row("kind", d.downstream_kind),
         row("http", [d.http_method, d.http_status_code, d.http_host].filter(Boolean).join(" ")),
         row("db", [d.db_system, d.db_operation, d.db_collection].filter(Boolean).join(" ")),
+        row("queue", [d.messaging_system, d.messaging_operation, d.messaging_destination]
+          .filter(Boolean).join(" ")),
         row("llm", [d.gen_ai_system, d.gen_ai_model].filter(Boolean).join(" ")),
         row("tokens", d.gen_ai_input_tokens || d.gen_ai_output_tokens
           ? `${d.gen_ai_input_tokens ?? 0} in → ${d.gen_ai_output_tokens ?? 0} out` : ""),

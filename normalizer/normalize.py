@@ -20,7 +20,7 @@ from normalizer.taxonomy import FailureTaxonomy
 class SpanNormalizer:
     """Extracts MCP fields and derives the failure category."""
 
-    normalization_version: Final[int] = 14
+    normalization_version: Final[int] = 16
 
     # span attributes
     MCP_METHOD: Final = "mcp.method.name"
@@ -43,6 +43,11 @@ class SpanNormalizer:
     RESULT_TYPE: Final = ("mcp.result.type", "mcpobs.result.type")
     TRANSPORT: Final = "network.transport"
     HELPER_VERSION: Final = "mcpobs.failure.kind.version"
+    MESSAGING_SYSTEM: Final = ("messaging.system",)
+    MESSAGING_DESTINATION: Final = (
+        "messaging.destination.name", "messaging.destination", "messaging.topic",
+    )
+    MESSAGING_OPERATION: Final = ("messaging.operation.name", "messaging.operation")
     HTTP_REQ_BODY: Final = "mcpobs.http.request.body"
     HTTP_REQ_HEADERS: Final = "mcpobs.http.request.headers"
     HTTP_RESP_HEADERS: Final = "mcpobs.http.response.headers"
@@ -109,7 +114,9 @@ class SpanNormalizer:
         statement = self.redactor.value(
             "db.statement", self._first(attrs, self.DB_STATEMENT)
         )
-        parsed_operation, parsed_collection = parse_statement(statement)
+        parsed_operation, parsed_collection = parse_statement(
+            statement, self._first(attrs, self.DB_SYSTEM)
+        )
         http_method, http_status, http_host = self._http(attrs)
         session_id = attrs.get(self.MCP_SESSION_ID)
         rpc_status = attrs.get(self.RPC_STATUS)
@@ -158,6 +165,9 @@ class SpanNormalizer:
             gen_ai_input_tokens=self._opt_int(attrs, self.GEN_AI_IN_TOKENS),
             gen_ai_output_tokens=self._opt_int(attrs, self.GEN_AI_OUT_TOKENS),
             downstream_kind=self._downstream_kind(attrs, is_mcp),
+            messaging_system=self._first(attrs, self.MESSAGING_SYSTEM),
+            messaging_destination=self._first(attrs, self.MESSAGING_DESTINATION),
+            messaging_operation=self._first(attrs, self.MESSAGING_OPERATION),
             failure_detail=self._str(attrs.get(self.FAILURE_DETAIL)),
             client_name=self._str(attrs.get(self.CLIENT_NAME)),
             client_version=self._str(attrs.get(self.CLIENT_VERSION)),

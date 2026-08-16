@@ -42,6 +42,7 @@ SCENARIOS: list[tuple[str, dict, str]] = [
     ("confirm_deploy", {"service": "checkout"}, "pending_input"),
     # U6: downstream dimensions beyond HTTP.
     ("submit_order", {"customer": "acme", "sku": "widget-1"}, "ok"),
+    ("enqueue_job", {"job": "reindex", "customer": "acme"}, "ok"),
     ("query_orders", {"customer": "acme"}, "ok"),
     ("summarize", {"text": "quarterly numbers"}, "ok"),
 ]
@@ -254,11 +255,16 @@ async def http_session(
         env["OTEL_SPAN_FILE"] = str(span_file)
     env["DOWNSTREAM_PORT"] = str(port + 899)
 
+    # stdout is DISCARDED, not piped. A pipe nobody reads fills its ~64KB
+    # buffer and then blocks the child forever -- before it ever binds its port,
+    # so the symptom is "the server never started" rather than anything
+    # mentioning a pipe. stderr stays piped because the error path below reads
+    # it, and it is drained on every exit route.
     proc = subprocess.Popen(
         [_python(), "-m", "demo_server.server", "--http", "--port", str(port)],
         cwd=str(REPO_ROOT),
         env=env,
-        stdout=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
     try:
@@ -275,7 +281,10 @@ async def http_session(
     finally:
         proc.terminate()
         try:
-            proc.wait(timeout=10)
+            # `communicate()` rather than `wait()`: it DRAINS stderr. `wait()`
+            # on a process whose stderr pipe is full deadlocks -- the child
+            # cannot exit until someone reads, and nobody is reading.
+            proc.communicate(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
 

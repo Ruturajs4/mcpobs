@@ -400,3 +400,90 @@ class TestCredentialRedaction:
         """It runs on every span in the ingest path. An exception here would
         stop normalization for a whole batch."""
         assert self.apply({"a": None, "b": 42, "c": ""}) == {"a": None, "b": 42, "c": ""}
+
+
+class TestRedisStatementParsing:
+    """Redis commands, disambiguated from SQL by `db.system`.
+
+    Added because a real redis span carries `db.statement = "GET user:1042"` and
+    no `db.operation` on the older semconv -- so "which command is slow" was
+    unanswerable for exactly the store people reach for when something is slow.
+    """
+
+    def parse(self, statement: str, system: str = "") -> tuple[str, str]:
+        from normalizer.redact import parse_statement
+
+        return parse_statement(statement, system)
+
+    def test_common_commands_are_recognised(self) -> None:
+        assert self.parse("GET user:1042:profile", "redis")[0] == "GET"
+        assert self.parse("HGETALL session:abc", "redis")[0] == "HGETALL"
+        assert self.parse("ZADD leaderboard 1 x", "redis")[0] == "ZADD"
+
+    def test_the_key_is_never_promoted_to_a_collection(self) -> None:
+        """`user:1042:profile` is per-USER data. Promoting it to a
+        low-cardinality label would explode the cardinality AND leak an
+        identifier into a dimension a metrics backend exports beyond our
+        redaction."""
+        assert self.parse("GET user:1042:profile", "redis")[1] == ""
+
+    def test_sql_and_redis_are_disambiguated_by_system(self) -> None:
+        """THE reason the two command sets are kept separate. `SET` is a Redis
+        write and a Postgres session command; merging the lists would make
+        `SET search_path = x` look like a Redis write."""
+        assert self.parse("SET foo bar", "redis")[0] == "SET"
+        assert self.parse("SET search_path = public", "postgresql")[0] == ""
+
+    def test_sql_still_parses_normally(self) -> None:
+        assert self.parse("SELECT id FROM orders", "postgresql") == ("SELECT", "orders")
+
+    def test_an_unknown_command_yields_nothing_not_a_guess(self) -> None:
+        """The list is the commands a hot path issues, not all 240. An
+        unrecognised one returns the status quo, never a wrong answer."""
+        assert self.parse("BITFIELD_RO key", "redis") == ("", "")
+
+    def test_valkey_is_treated_as_redis(self) -> None:
+        assert self.parse("GET k", "valkey")[0] == "GET"
+
+
+class TestMessagingDimensions:
+    """`downstream_kind = 'messaging'` with data behind it.
+
+    It had been classified correctly since U6 and rendered as a grey tag with
+    nothing in it, because no messaging attribute was ever promoted to a column
+    -- the same gap DF-12 named for `db.operation`, one span kind over.
+    """
+
+    def row(self, attrs: dict):
+        from normalizer.models import DecodedSpan
+        from normalizer.normalize import SpanNormalizer
+
+        return SpanNormalizer().to_row(
+            DecodedSpan(trace_id="a" * 32, span_id="b" * 16, span_attributes=attrs)
+        )
+
+    def test_a_kafka_publish_is_fully_attributed(self) -> None:
+        """Attributes copied from what `opentelemetry-instrumentation-
+        confluent-kafka` actually emitted, not from the spec."""
+        row = self.row({
+            "messaging.system": "kafka",
+            "messaging.destination.name": "mcpobs.demo.jobs",
+            "messaging.operation.name": "publish",
+        })
+        assert row.downstream_kind == "messaging"
+        assert row.messaging_system == "kafka"
+        assert row.messaging_destination == "mcpobs.demo.jobs"
+        assert row.messaging_operation == "publish"
+
+    def test_older_attribute_names_are_read_too(self) -> None:
+        row = self.row({
+            "messaging.system": "rabbitmq",
+            "messaging.destination": "jobs",
+            "messaging.operation": "receive",
+        })
+        assert (row.messaging_destination, row.messaging_operation) == ("jobs", "receive")
+
+    def test_a_non_messaging_span_stays_empty(self) -> None:
+        row = self.row({"http.request.method": "GET"})
+        assert row.messaging_system == ""
+        assert row.downstream_kind == "http"
