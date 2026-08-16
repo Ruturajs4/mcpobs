@@ -236,7 +236,7 @@ Everything downstream depends on this contract. Changes here are breaking change
 
 | Topic | Key | Value | Partitions | RF | Retention | Consumers |
 | --- | --- | --- | --- | --- | --- | --- |
-| `otlp.spans.raw` | `tenant_id` (salted for whales) | OTLP `ExportTraceServiceRequest`, protobuf | 24 to start, sized per [§9](#9-scaling-model-and-capacity) | 3 | 72h + tiered to S3 | normalizer, archiver, billing, (future) alerting |
+| `otlp.spans.raw` | `tenant_id` (salted for whales) — **not implemented, see [ADR-004](#adr-004-partition-by-tenant-never-require-trace-locality); the key is null today** | OTLP `ExportTraceServiceRequest`, protobuf | 24 to start, sized per [§9](#9-scaling-model-and-capacity) | 3 | 72h + tiered to S3 | normalizer, archiver, billing, (future) alerting |
 | `otlp.spans.dlq` | `tenant_id` | Original payload + failure reason envelope | 6 | 3 | 14d | manual triage, replay tooling |
 
 One raw topic, not one per signal or per tenant. Per-tenant topics do not scale — partition count is a cluster-wide resource and thousands of topics wreck rebalance times.
@@ -341,6 +341,27 @@ One raw topic, not one per signal or per tenant. Per-tenant topics do not scale 
 **Consequences.** Batches stay intact and cheap. Tenant-level isolation is natural, and per-tenant lag is measurable. Trace assembly moves to ClickHouse ([ADR-005](#adr-005-trace-assembly-in-clickhouse-not-a-stream-processor)). Whale tenants need salting, which requires monitoring partition skew — the one real operational burden this creates.
 
 **Rejected.** Keying by `trace_id` (batch explosion, and it still needs windowing). Round-robin with no key (loses tenant isolation and makes per-tenant lag unmeasurable).
+
+> **AS BUILT (2026-08-16): this decision is NOT IMPLEMENTED, and what runs today is the option rejected above.**
+>
+> Every message on `otlp.spans.raw` carries a **null key** and is round-robined across partitions. Measured directly from the topic, not inferred:
+>
+> ```
+> $ kafka-console-consumer --property print.key=true --property print.value=false
+> null
+> null
+> null
+> ```
+>
+> The cause is upstream. The Collector's `kafkaexporter` has no option to key a trace message by a resource attribute, so nothing in the current pipeline can set it. Tested against the running images rather than assumed — `partition_by_resource_attributes`, `partition_traces_by_resource_attributes` and `partition_logs_by_resource_attributes` are all rejected as invalid keys by **0.115.1** and by **0.130.0**:
+>
+> ```
+> '' has invalid keys: partition_by_resource_attributes
+> ```
+>
+> **What this costs, in the terms this ADR itself uses.** There is no tenant-level isolation and no per-tenant lag — the two consequences the "Rejected" line above says round-robin loses. It also makes the whale-salting operational burden moot: there is nothing to salt until there is a key, so [DF-16](deferred.md) cannot be worked on before [DF-19](deferred.md).
+>
+> **The decision stands as the target.** Closing the gap needs one of: an upstream option in `kafkaexporter`, a custom exporter, or the ingest gateway producing to Kafka itself — which [ADR-003](#adr-003-the-collector-writes-to-kafka-directly) rejects, and that rejection is still right. Tracked as DF-19.
 
 ---
 
@@ -487,12 +508,16 @@ The same architecture at three scales. What changes is managed-versus-container 
 | Collector | 1 container | 2 replicas | Autoscaled fleet |
 | Kafka | 1 node, KRaft, RF=1 | 3 nodes, RF=3 | Managed, RF=3, multi-AZ |
 | Normalizer | 1 process | 2 replicas | Autoscaled to partition count |
-| ClickHouse | 1 node, `MergeTree` | 1 node, `ReplicatedMergeTree` | Cluster, `ReplicatedMergeTree` |
-| Archiver / billing | Off | S3 sink only | All consumer groups |
-| Postgres | Off (hard-coded tenant) | 1 node | Managed, HA |
-| Auth | None | API keys | API keys + quotas |
+| ClickHouse | 1 node, `ReplicatedMergeTree` + embedded Keeper | 1 node, `ReplicatedMergeTree` | Cluster, `ReplicatedMergeTree` |
+| Archiver / billing | Archiver on (MinIO) | S3 sink only | All consumer groups |
+| Postgres | 1 container | 1 node | Managed, HA |
+| Redis | 1 container (quota counters) | 1 node | Managed, HA |
+| Auth | API keys + quotas | API keys + quotas | API keys + quotas |
+| Ingest gateway | 1 container | 2 replicas | Autoscaled fleet |
 
-> **Local dev caveat.** `insert_deduplication_token` requires `ReplicatedMergeTree`, so plain `MergeTree` on a single local node does **not** deduplicate. Idempotency must therefore be tested in staging, not on a laptop — and the local schema file must carry a comment saying so, or someone will assume Day-1 behaviour is production behaviour.
+> **The local rung runs the real engines, deliberately.** ClickHouse runs `ReplicatedMergeTree` with embedded Keeper, so `insert_deduplication_token` is exercised locally rather than deferred to staging; MinIO speaks the real S3 API; Redis holds the real quota counters; auth and tenancy are on. An earlier version of this note said idempotency "must be tested in staging, not on a laptop" — removing that deferral found two real defects within an hour (see `docs/deferred.md`), which is why the ladder now differs in SCALE rather than in kind.
+>
+> What is still genuinely different: one Kafka broker at RF=1, so `acks=all` under broker loss is untested (DF-2).
 
 ---
 
