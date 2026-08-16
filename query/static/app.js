@@ -184,8 +184,8 @@ async function viewOverview() {
           <td>${distBar({ [k]: v, _rest: Math.max(0, o.calls - v) })}</td></tr>`).join("")}
       </tbody></table></div>`;
 
-  el("foot-fresh").textContent = `freshness ${o.freshness_p95_seconds.toFixed(1)}s`;
-  el("foot-class").textContent = `classified ${Math.round(o.classified_ratio * 100)}%`;
+  el("foot-fresh").textContent = `${o.freshness_p95_seconds.toFixed(1)}s`;
+  el("foot-class").textContent = `${Math.round(o.classified_ratio * 100)}%`;
   bindAll("[data-cat]", (n) => go("errors", { cat: n.dataset.cat }));
 }
 
@@ -689,10 +689,27 @@ function startAutoRefresh() {
   // auto-refresh, it is the only thing telling them it is not.
   setInterval(() => {
     const stamp = el("foot-updated");
+    const dot = el("live-dot");
     if (!stamp || !lastRendered) return;
     const seconds = Math.round((Date.now() - lastRendered) / 1000);
-    const live = shouldRefresh() ? "" : " · paused";
-    stamp.textContent = seconds < 5 ? "updated just now" : `updated ${seconds}s ago${live}`;
+    const age = seconds < 5 ? "just now" : seconds < 60 ? `${seconds}s ago`
+      : `${Math.floor(seconds / 60)}m ago`;
+
+    /* Says WHY it is not updating, not just that it is not. "paused" alone
+       reads as a fault; the reason turns it into something the reader can act
+       on -- or correctly ignore. */
+    if (shouldRefresh()) {
+      stamp.textContent = `Live · ${age}`;
+      stamp.title = "This view refreshes automatically every 15 seconds.";
+      dot?.classList.remove("paused");
+    } else {
+      const why = document.visibilityState !== "visible" ? "tab in background"
+        : S.trace ? "trace open"
+        : "click Refresh to update";
+      stamp.textContent = `Paused · ${age}`;
+      stamp.title = `Not refreshing: ${why}.`;
+      dot?.classList.add("paused");
+    }
   }, 1000);
 }
 

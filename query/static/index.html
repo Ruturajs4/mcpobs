@@ -29,17 +29,33 @@
       <a data-view="traces"><span class="ic">≡</span> Traces</a>
       <a data-view="errors"><span class="ic">▲</span> Errors</a>
     </nav>
+    <!-- Four unlabelled numbers in 10px mono used to live here: "freshness
+         19.9s", "classified 92%", a bare timestamp and two lowercase buttons.
+         Every one of them was jargon or an abbreviation of jargon, and none
+         said what it was for. Now: one status line about whether the page is
+         live, two LABELLED metrics that explain themselves on hover, and the
+         account action set apart from both. -->
     <div class="side-foot">
-      <!-- Staleness is shown rather than assumed: Traces and Errors no longer
-           auto-refresh, so this is the only thing telling a reader how old the
-           numbers are. -->
-      <div id="foot-updated">—</div>
-      <button id="refresh-now" type="button">refresh</button>
-      <div id="foot-fresh">freshness —</div>
-      <div id="foot-class">classified —</div>
+      <div class="foot-status">
+        <span class="live-dot" id="live-dot"></span>
+        <span id="foot-updated">Loading…</span>
+        <button id="refresh-now" type="button" title="Fetch the latest data now">
+          Refresh
+        </button>
+      </div>
+
+      <dl class="foot-stats">
+        <div title="How long a span takes to travel from happening in your server to being queryable here. Under a minute is healthy.">
+          <dt>Ingest lag</dt><dd id="foot-fresh">—</dd>
+        </div>
+        <div title="Share of failures classified precisely, rather than reported as a generic tool error. Below 100% means some of your servers are not running the mcpobs helper.">
+          <dt>Error detail</dt><dd id="foot-class">—</dd>
+        </div>
+      </dl>
+
       <!-- Sign out clears the key from localStorage. Present because a shared
            machine is the normal case for an ops console. -->
-      <button id="sign-out" type="button">sign out</button>
+      <button id="sign-out" type="button">Sign out</button>
     </div>
   </aside>
 

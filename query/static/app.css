@@ -41,9 +41,49 @@ nav a .ic { width: 14px; text-align: center; opacity: .85; font-size: 12px; }
 nav .grp { padding: 13px 10px 5px; font-size: 10px; text-transform: uppercase;
   letter-spacing: .07em; color: var(--text-mute); font-weight: 600; }
 
+/* The sidebar footer answers two different questions and they are separated
+   accordingly: "is what I am looking at current?" (status) and "is the pipeline
+   healthy?" (stats). Mixing them in one column of 10px mono made both
+   unreadable, which is what they were before. */
 .side-foot { margin-top: auto; padding: 12px 14px; border-top: 1px solid var(--border);
-  font-size: 10.5px; color: var(--text-mute); font-family: var(--mono);
-  display: flex; flex-direction: column; gap: 3px; }
+  font-size: 11px; color: var(--text-mute);
+  display: flex; flex-direction: column; gap: 12px; }
+
+.foot-status { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+/* Green when refreshing, amber when paused. The colour carries the state so the
+   word beside it is confirmation rather than the only signal. */
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok);
+  box-shadow: 0 0 8px var(--ok); flex: none; }
+.live-dot.paused { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+#foot-updated { flex: 1; min-width: 0; }
+
+#refresh-now { background: var(--raised); border: 1px solid var(--border);
+  border-radius: 4px; color: var(--text-dim); font-size: 11px; cursor: pointer;
+  padding: 3px 9px; font-family: inherit; }
+#refresh-now:hover { border-color: var(--accent); color: var(--text); }
+
+/* A label above each number, because "19.9s" alone is not a fact anyone can
+   act on. The full explanation is on hover rather than in the sidebar, which
+   has no room for a sentence. */
+.foot-stats { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.foot-stats > div { display: flex; justify-content: space-between; align-items: baseline;
+  gap: 8px; cursor: help; border-bottom: 1px dotted transparent; }
+.foot-stats > div:hover { border-bottom-color: var(--border); }
+.foot-stats dt { color: var(--text-mute); }
+.foot-stats dd { margin: 0; font-family: var(--mono); color: var(--text-dim); }
+
+/* The admin footer pairs sign-out with a link to the customer console; both are
+   navigation away from here, so they share one separated block. */
+.foot-actions { display: flex; flex-direction: column; gap: 8px;
+  border-top: 1px solid var(--border-lo); padding-top: 8px; }
+.foot-actions .link-out { color: var(--text-mute); text-decoration: none; font-size: 11px; }
+.foot-actions .link-out:hover { color: var(--accent); }
+.foot-actions #sign-out { border-top: 0; padding-top: 0; }
+
+#sign-out { background: none; border: 0; border-top: 1px solid var(--border-lo);
+  padding: 8px 0 0; margin: 0; color: var(--text-mute); font-size: 11px;
+  font-family: inherit; cursor: pointer; text-align: left; }
+#sign-out:hover { color: var(--err); }
 
 .main { display: flex; flex-direction: column; overflow: hidden; }
 .top { height: 52px; flex: none; border-bottom: 1px solid var(--border);
@@ -276,12 +316,3 @@ tbody tr.sel td { border-bottom-color: transparent; }
    HTTP call. */
 .k-msg { background: #ec489922; color: #f9a8d4; }
 .bar-msg { background: var(--pink); }
-
-
-/* Refresh control in the sidebar footer. Deliberately quiet -- it is a fallback
-   for the views that no longer poll, not a primary action. */
-#refresh-now { background: none; border: 1px solid var(--border); border-radius: 4px;
-  color: var(--text-mute); font-size: 11px; cursor: pointer; padding: 2px 8px;
-  margin: 4px 0; }
-#refresh-now:hover { border-color: var(--accent); color: var(--text-dim); }
-#foot-updated { color: var(--text-mute); }

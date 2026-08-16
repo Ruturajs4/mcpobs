@@ -26,11 +26,22 @@
       <a data-view="invites"><span class="ic">✉</span> Invites</a>
       <a data-view="audit"><span class="ic">⎘</span> Audit</a>
     </nav>
+    <!-- Same shape as the customer console footer: labelled stats that explain
+         themselves on hover, then the account actions set apart from them. -->
     <div class="side-foot">
-      <div id="foot-spans">—</div>
-      <div id="foot-fresh">—</div>
-      <a href="/" class="link-out">customer console →</a>
-      <button id="sign-out" type="button">sign out</button>
+      <dl class="foot-stats">
+        <div title="Spans accepted across all tenants in the last 15 minutes. Zero means nothing is being ingested.">
+          <dt>Ingested</dt><dd id="foot-spans">—</dd>
+        </div>
+        <div title="How long a span takes to travel from happening in a customer's server to being queryable here. Under a minute is healthy.">
+          <dt>Ingest lag</dt><dd id="foot-fresh">—</dd>
+        </div>
+      </dl>
+
+      <div class="foot-actions">
+        <a href="/" class="link-out">Customer console →</a>
+        <button id="sign-out" type="button">Sign out</button>
+      </div>
     </div>
   </aside>
 

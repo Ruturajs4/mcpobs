@@ -329,8 +329,9 @@ async function render() {
     if (scrollTop) el("content").scrollTop = scrollTop;
     adminRenderedKey = key;
     const health = await api("/pipeline");
-    el("foot-spans").textContent = `${num(health.spans_recent)} spans / 15m`;
-    el("foot-fresh").textContent = `freshness ${health.freshness_p95_seconds.toFixed(1)}s`;
+    // Labels live in the markup now, so these carry the value alone.
+    el("foot-spans").textContent = `${num(health.spans_recent)} / 15m`;
+    el("foot-fresh").textContent = `${health.freshness_p95_seconds.toFixed(1)}s`;
   } catch (e) {
     if (e.message !== "unauthorized") {
       el("content").innerHTML = `<div class="note-bar"><span>&#9888;</span><div>
