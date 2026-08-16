@@ -779,6 +779,56 @@ def main() -> int:
         except Exception as exc:
             record("C5 a different org's key sees none of this org's data", False, f"{exc}")
 
+    # C6: the waterfall invariant, on REAL traces.
+    #
+    # `_order_tree` has unit tests, and they pass against fixtures somebody
+    # wrote. This checks the property that actually matters -- every parent
+    # appears before its children in what the API RETURNS -- across every trace
+    # in the window, using whatever shapes the pipeline really produced. The
+    # bug it guards was found by eye in the console, and C4 (which asserts a
+    # trace "resolves a root and nests downstream spans") stayed green
+    # throughout: it checked that nesting EXISTS, never that the order presents
+    # it correctly.
+    #
+    # The browser renders `t.spans` in the order given, so this is the last
+    # place the invariant can be checked before it becomes pixels.
+    listing = api("/api/v1/traces?window_minutes=180&limit=25")
+    checked = 0
+    violations: list[str] = []
+    deepest = 0
+    for summary in listing.get("items", [])[:25]:
+        detail = api(f"/api/v1/traces/{summary['trace_id']}?window_minutes=180")
+        seen: set[str] = set()
+        for span in detail["spans"]:
+            parent = span["parent_span_id"]
+            # A parent present in the trace must already have been emitted.
+            present = any(s["span_id"] == parent for s in detail["spans"])
+            if parent and present and parent not in seen:
+                violations.append(
+                    f"{summary['trace_id'][:8]}:{span['name']} precedes its parent"
+                )
+            seen.add(span["span_id"])
+            deepest = max(deepest, span["depth"])
+        checked += 1
+
+    record(
+        "C6 every parent is returned before its children, in every trace",
+        checked > 0 and not violations,
+        f"{checked} trace(s) checked, deepest nesting {deepest}, "
+        f"{len(violations)} violation(s)"
+        + (f": {violations[:3]}" if violations else "")
+        + ("  -- NO TRACES CHECKED, so this proved nothing" if not checked else ""),
+    )
+
+    # And the nesting must be REAL, not a flat list that trivially satisfies
+    # the above. A trace where nothing has a parent passes an ordering check
+    # by having no order to get wrong.
+    record(
+        "C6b the traces checked actually nest",
+        deepest >= 2,
+        f"deepest nesting {deepest} (needs >= 2 for the check to mean anything)",
+    )
+
     # ---------------- D5: payload capture ----------------------------------
     print("\n--- D5: request/response capture ---")
     captured = ch.query(

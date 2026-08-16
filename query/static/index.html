@@ -30,6 +30,11 @@
       <a data-view="errors"><span class="ic">▲</span> Errors</a>
     </nav>
     <div class="side-foot">
+      <!-- Staleness is shown rather than assumed: Traces and Errors no longer
+           auto-refresh, so this is the only thing telling a reader how old the
+           numbers are. -->
+      <div id="foot-updated">—</div>
+      <button id="refresh-now" type="button">refresh</button>
       <div id="foot-fresh">freshness —</div>
       <div id="foot-class">classified —</div>
       <!-- Sign out clears the key from localStorage. Present because a shared

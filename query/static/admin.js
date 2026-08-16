@@ -354,5 +354,10 @@ async function render() {
     location.reload();
   };
   render();
-  setInterval(render, 30000);
+  // Same rule as the customer console: a hidden tab refetches nothing. This one
+  // polls unconditionally otherwise -- it has no drawer to protect, and every
+  // view on it is a monitoring view.
+  setInterval(() => {
+    if (document.visibilityState === "visible") render();
+  }, 30000);
 })();

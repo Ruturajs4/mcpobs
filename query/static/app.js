@@ -587,6 +587,10 @@ async function render() {
   el("content").innerHTML = '<div class="spin">Loading…</div>';
   try {
     await v.f();
+    // Stamped AFTER the fetch succeeds. Stamping before it would report
+    // "updated just now" over data that failed to load -- a staleness
+    // indicator that lies is worse than none, because it is believed.
+    lastRendered = Date.now();
     el("health-dot").style.background = "var(--ok)";
     if (S.trace) openTrace(S.trace, S.span);
   } catch (e) {
@@ -612,6 +616,58 @@ el("drawer-close").onclick = closeDrawer;
 el("scrim").onclick = closeDrawer;
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
 
+/* ===========================================================================
+   Auto-refresh
+   ===========================================================================
+   Three rules, each removing waste that was real:
+
+   1. NOT WHILE A TAB IS HIDDEN. Every 15s the old timer refetched 80 trace
+      summaries and re-ran the rollup for tabs nobody was looking at -- which is
+      most open tabs, most of the time. This is the single biggest saving and
+      costs one event listener.
+
+   2. NOT WHILE A DRAWER IS OPEN. Redrawing under someone mid-investigation is
+      hostile, and it discards the span they had selected.
+
+   3. ONLY ON MONITORING VIEWS. Overview and Servers answer "is it healthy
+      NOW". Traces and Errors are investigation surfaces -- the ground should
+      not move while you read them, and a list that reorders under the cursor
+      is worse than a stale one.
+
+   The interval stays slower than the ~5s ingest floor: refreshing faster than
+   data can arrive only makes the page flicker with identical numbers. */
+const REFRESH_MS = 15000;
+const LIVE_VIEWS = new Set(["overview", "servers"]);
+let refreshTimer = null;
+let lastRendered = 0;
+
+function shouldRefresh() {
+  return document.visibilityState === "visible" && !S.trace && LIVE_VIEWS.has(S.view);
+}
+
+function startAutoRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => { if (shouldRefresh()) render(); }, REFRESH_MS);
+
+  // Coming back to a hidden tab, refresh ONCE immediately rather than waiting
+  // out the interval -- otherwise the first thing a returning user sees is up
+  // to 15s stale while claiming to be live.
+  document.addEventListener("visibilitychange", () => {
+    if (shouldRefresh() && Date.now() - lastRendered > REFRESH_MS) render();
+  });
+
+  // Staleness is SHOWN, not assumed. A number with no timestamp beside it is a
+  // number someone will quote as current -- and on the views that no longer
+  // auto-refresh, it is the only thing telling them it is not.
+  setInterval(() => {
+    const stamp = el("foot-updated");
+    if (!stamp || !lastRendered) return;
+    const seconds = Math.round((Date.now() - lastRendered) / 1000);
+    const live = shouldRefresh() ? "" : " · paused";
+    stamp.textContent = seconds < 5 ? "updated just now" : `updated ${seconds}s ago${live}`;
+  }, 1000);
+}
+
 (function boot() {
   // No key, no console. Checked before anything renders, so a signed-out user
   // sees the sign-in form rather than a dashboard that flashes empty panels and
@@ -629,11 +685,10 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawe
       b.classList.toggle("on", +b.dataset.m === S.window));
   }
   render();
-  // Slower than the ~5s ingest floor: refreshing faster than data can arrive
-  // only makes the page flicker with identical numbers. Never while a drawer is
-  // open -- redrawing under someone mid-investigation is hostile.
-  setInterval(() => { if (!S.trace) render(); }, 15000);
+  startAutoRefresh();
 
   const out = document.getElementById("sign-out");
   if (out) out.onclick = signOut;
+  const refresh = el("refresh-now");
+  if (refresh) refresh.onclick = () => render();
 })();

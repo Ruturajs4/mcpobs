@@ -276,3 +276,12 @@ tbody tr.sel td { border-bottom-color: transparent; }
    HTTP call. */
 .k-msg { background: #ec489922; color: #f9a8d4; }
 .bar-msg { background: var(--pink); }
+
+
+/* Refresh control in the sidebar footer. Deliberately quiet -- it is a fallback
+   for the views that no longer poll, not a primary action. */
+#refresh-now { background: none; border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text-mute); font-size: 11px; cursor: pointer; padding: 2px 8px;
+  margin: 4px 0; }
+#refresh-now:hover { border-color: var(--accent); color: var(--text-dim); }
+#foot-updated { color: var(--text-mute); }
