@@ -153,6 +153,7 @@ nav:
   - Operate:
       - operate/index.md
       - API keys and access: operate/keys.md
+      - Session tokens for stdio: operate/session-tokens.md
       - Quotas: operate/quotas.md
 
 extra:
