@@ -23,7 +23,21 @@ BRAND: Final = "mcpo"
 
 INGEST: Final = "ingest"
 READ: Final = "read"
-VALID_SCOPES: Final[frozenset[str]] = frozenset({INGEST, READ})
+
+ADMIN: Final = "admin"
+"""Operator scope: reads ACROSS tenants.
+
+Deliberately a third scope rather than a flag on a read key. Every other scope
+is bounded by one org -- `read` answers "my data", `ingest` writes "my data" --
+and this one is not, which makes it a different KIND of credential rather than a
+bigger version of the same one.
+
+It is issued only by `scripts/admin.py`, never through any HTTP endpoint. An API
+that can mint a cross-tenant credential is one authorization bug away from a
+customer minting one, and there is no product reason for that endpoint to exist.
+"""
+
+VALID_SCOPES: Final[frozenset[str]] = frozenset({INGEST, READ, ADMIN})
 
 
 def _hash(secret: str) -> str:

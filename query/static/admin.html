@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mcpobs · operator</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/admin.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <!-- The banner is not decoration. This page shows EVERY tenant, and an
+         operator with two console tabs open needs to know at a glance which one
+         they are typing into. -->
+    <div class="brand admin-brand">
+      <h1>Operator</h1>
+      <div class="sub mono">cross-tenant · admin scope</div>
+    </div>
+    <nav>
+      <div class="grp">Fleet</div>
+      <a data-view="tenants" class="on"><span class="ic">▦</span> Tenants</a>
+      <a data-view="pipeline"><span class="ic">◈</span> Pipeline</a>
+      <div class="grp">Access</div>
+      <a data-view="keys"><span class="ic">⚿</span> API keys</a>
+      <a data-view="invites"><span class="ic">✉</span> Invites</a>
+    </nav>
+    <div class="side-foot">
+      <div id="foot-spans">—</div>
+      <div id="foot-fresh">—</div>
+      <a href="/" class="link-out">customer console →</a>
+      <button id="sign-out" type="button">sign out</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="top">
+      <h2 id="title">Tenants</h2>
+      <div class="range" id="range">
+        <button data-m="60">1h</button>
+        <button data-m="1440" class="on">24h</button>
+        <button data-m="10080">7d</button>
+      </div>
+    </header>
+    <div id="content" class="content"></div>
+  </main>
+</div>
+<script src="/static/admin.js"></script>
+</body>
+</html>

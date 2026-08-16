@@ -9,6 +9,7 @@ versions live in `scripts/verify.py` as the F-series.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from control import keys
@@ -63,8 +64,15 @@ class TestKeyMinting:
 
     def test_unknown_scopes_are_dropped_not_passed_through(self) -> None:
         """A scope string is data. Data reaching an authorisation check must
-        never be able to grant something the code does not recognise."""
-        assert keys.parse_scopes("ingest,admin,superuser,read") == ("ingest", "read")
+        never be able to grant something the code does not recognise.
+
+        This used `admin` as its example of an unknown scope, and broke the day
+        `admin` became a real one -- correctly. A test that names a specific
+        invalid value has to be revisited when the valid set grows, which is the
+        point of naming it rather than asserting a count.
+        """
+        assert keys.parse_scopes("ingest,superuser,root,read") == ("ingest", "read")
+        assert keys.parse_scopes("ingest,admin,read") == ("ingest", "admin", "read")
 
     def test_invite_codes_are_hashed_like_keys(self) -> None:
         """An invite code is a bearer credential: whoever holds it becomes a
@@ -770,3 +778,192 @@ class TestQuotaAtTheGateway:
             )
         assert caught.value.status_code == 429
         assert caught.value.headers["Retry-After"] == "42"
+
+
+class TestAdminScopeIsolation:
+    """The admin console spans every tenant, so its credential is the boundary.
+
+    These are the tests that matter most in this file. Everything else the
+    dashboard does is a table; this is the part where a mistake shows one
+    customer another customer's name.
+    """
+
+    def principal(self, *scopes: str):
+        from control.models import Principal
+
+        return Principal(
+            key_id=1, org_id=1, tenant="acme", project="default",
+            environment="production", scopes=tuple(scopes),
+        )
+
+    def test_admin_is_its_own_scope_not_a_bigger_read(self) -> None:
+        """`read` is bounded by one org and `admin` is not, which makes them
+        different KINDS of credential. Treating admin as "read, but more" would
+        put every read key one bug away from a cross-tenant view."""
+        from control.keys import ADMIN, READ
+
+        assert ADMIN != READ
+        assert not self.principal(READ).can(ADMIN)
+        assert not self.principal(ADMIN).can(READ)
+
+    def test_a_read_key_cannot_reach_the_admin_api(self) -> None:
+        import pytest
+        from fastapi import HTTPException
+
+        from query.admin import operator
+
+        request = _FakeRequest({"x-api-key": "read-key"})
+        with _patched_control(self.principal("read")), pytest.raises(HTTPException) as caught:
+            operator(request)
+        assert caught.value.status_code == 401
+
+    def test_an_ingest_key_cannot_reach_the_admin_api(self) -> None:
+        import pytest
+        from fastapi import HTTPException
+
+        from query.admin import operator
+
+        with _patched_control(self.principal("ingest")), pytest.raises(HTTPException) as caught:
+            operator(_FakeRequest({"x-api-key": "ingest-key"}))
+        assert caught.value.status_code == 401
+
+    def test_an_admin_key_is_accepted(self) -> None:
+        from query.admin import operator
+
+        with _patched_control(self.principal("admin")):
+            assert operator(_FakeRequest({"x-api-key": "admin-key"})).can("admin")
+
+    def test_no_credential_is_refused(self) -> None:
+        import pytest
+        from fastapi import HTTPException
+
+        from query.admin import operator
+
+        with _patched_control(None), pytest.raises(HTTPException) as caught:
+            operator(_FakeRequest({}))
+        assert caught.value.status_code == 401
+
+    def test_every_admin_route_carries_the_scope_dependency(self) -> None:
+        """A check repeated per endpoint is a check that will eventually be
+        forgotten on one of them. This asserts the dependency is on ALL of them,
+        so adding a route without it fails here rather than in production."""
+        from query.admin import operator, router
+
+        for route in router.routes:
+            deps = [
+                getattr(d.call, "__name__", "")
+                for d in getattr(route, "dependant", None).dependencies
+            ] if getattr(route, "dependant", None) else []
+            nested = [
+                getattr(sub.call, "__name__", "")
+                for d in (getattr(route, "dependant", None).dependencies if
+                          getattr(route, "dependant", None) else [])
+                for sub in d.dependencies
+            ]
+            assert operator.__name__ in deps + nested, route.path
+
+    def test_the_admin_scope_cannot_be_granted_over_http(self) -> None:
+        """An API able to mint a cross-tenant credential is one authorization
+        bug away from a customer minting one. There is no product reason for
+        that endpoint, so its absence is asserted rather than assumed."""
+        from query.admin import router
+
+        paths = " ".join(r.path for r in router.routes)
+        assert "issue" not in paths
+        assert "scopes" not in paths
+
+
+class TestAdminQuotaAndRevoke:
+    """The two emergency levers Architecture 8 names."""
+
+    def test_quota_null_and_zero_are_different_values(self) -> None:
+        """`null` restores the plan limit, `0` means unlimited. Collapsing them
+        would make "give this tenant unlimited ingest" indistinguishable from
+        "put them back on their plan"."""
+        from control.quota import QuotaEnforcer, QuotaStore
+
+        class Store(QuotaStore):
+            def __init__(self) -> None:
+                self._local, self.degraded, self.url = {}, False, ""
+
+            def incr(self, key: str, amount: int, ttl: int) -> int:
+                return self._incr_local(key, amount, ttl)
+
+        enforcer = QuotaEnforcer(store=Store())
+        # None -> plan limit applies (trial caps at 2000/min)
+        assert not enforcer.check("t1", "trial", spans=2_001, override_minute=None).allowed
+        # 0 -> unlimited
+        assert enforcer.check("t2", "trial", spans=10_000_000, override_minute=0,
+                              override_day=0).allowed
+
+    def test_revoking_an_unknown_prefix_is_a_404_not_a_silent_success(self) -> None:
+        """A revoke that reports success without revoking anything is the worst
+        possible outcome for the one operation you run in an emergency."""
+        import pytest
+        from fastapi import HTTPException
+
+        from query.admin import revoke
+
+        class Plane:
+            def revoke_key(self, prefix: str) -> bool:
+                return False
+
+        import query.app as app_module
+
+        original = app_module.control_plane
+        app_module.control_plane = lambda: Plane()
+        try:
+            with pytest.raises(HTTPException) as caught:
+                revoke("nope", None)
+        finally:
+            app_module.control_plane = original
+        assert caught.value.status_code == 404
+
+
+class TestAdminRepositoryShape:
+    """Cross-tenant reads live in their own module, deliberately."""
+
+    def test_the_span_repository_never_gained_a_crosstenant_read(self) -> None:
+        """`query/repository.py` opens with a rule: tenant scoping happens in
+        that layer and nowhere else. A file where MOST queries are scoped is
+        more dangerous than one where none are, because the reader's eye stops
+        checking."""
+        import inspect
+
+        import query.repository as repo
+
+        source = inspect.getsource(repo)
+        # Every span read still goes through the tenant-scoped CTE.
+        assert "tenant_id = {tenant:String}" in source
+
+    def test_orphaned_tenants_are_surfaced_not_filtered(self) -> None:
+        """Telemetry under a tenant with no org row should be impossible now
+        that the gateway authenticates. If it appears, either a key outlived its
+        org or something bypassed the gateway -- both worth a page, neither
+        worth hiding."""
+        import inspect
+
+        from query.admin_repository import AdminRepository
+
+        assert "orphaned=True" in inspect.getsource(AdminRepository.tenants)
+
+
+class _FakeRequest:
+    def __init__(self, headers: dict) -> None:
+        self.headers = headers
+
+
+@contextlib.contextmanager
+def _patched_control(principal):
+    import query.app as app_module
+
+    class Plane:
+        def authenticate(self, token):
+            return principal
+
+    original = app_module.control_plane
+    app_module.control_plane = lambda: Plane()
+    try:
+        yield
+    finally:
+        app_module.control_plane = original

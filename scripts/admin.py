@@ -160,7 +160,7 @@ def main() -> int:
 
         usable = all(
             cp.authenticate(existing.get(name)) is not None
-            for name in ("MCPOBS_INGEST_KEY", "MCPOBS_READ_KEY")
+            for name in ("MCPOBS_INGEST_KEY", "MCPOBS_READ_KEY", "MCPOBS_ADMIN_KEY")
         )
         if usable:
             print(f"  reusing keys in {cache.name}")
@@ -170,17 +170,26 @@ def main() -> int:
         project = cp.create_project(org.id, args.project, environment="local")
         ingest = cp.issue_key(org.id, project.id, scopes=("ingest",), name="dev ingest")
         read = cp.issue_key(org.id, project.id, scopes=("read",), name="dev read")
+        # An admin key is cross-tenant, so locally it is convenient and in
+        # production it is a credential an operator holds deliberately. It is
+        # minted here ONLY because `devkeys` already requires database access --
+        # the same bar the CLI enforces everywhere else.
+        admin = cp.issue_key(org.id, project.id, scopes=("admin",), name="dev admin")
         cache.write_text(
             "\n".join([
                 "# Local development keys. Gitignored -- these are credentials.",
                 "# Regenerate with: python scripts/admin.py devkeys",
                 f"MCPOBS_INGEST_KEY={ingest.token}",
                 f"MCPOBS_READ_KEY={read.token}",
+                f"MCPOBS_ADMIN_KEY={admin.token}",
                 "",
             ]),
             encoding="utf-8",
         )
-        print(f"  wrote {cache.name}: ingest {ingest.prefix}, read {read.prefix}")
+        print(
+            f"  wrote {cache.name}: ingest {ingest.prefix}, "
+            f"read {read.prefix}, admin {admin.prefix}"
+        )
         return 0
 
     if args.command == "quota":

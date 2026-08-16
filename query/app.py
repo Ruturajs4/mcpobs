@@ -236,6 +236,12 @@ def errors(
     )
 
 
+# The admin router is mounted, not merged: its routes carry their own scope
+# dependency and none of the customer endpoints can reach it (query/admin.py).
+from query.admin import router as admin_router  # noqa: E402
+
+app.include_router(admin_router)
+
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -248,3 +254,14 @@ def ui() -> FileResponse:
     would be the largest thing in the repo by a wide margin.
     """
     return FileResponse(STATIC / "index.html")
+
+
+@app.get("/admin", include_in_schema=False)
+def admin_ui() -> FileResponse:
+    """The operator console. A SEPARATE page, not a mode of the customer one.
+
+    A toggle inside the customer console would be one rendering bug away from
+    showing a customer everyone else's tenants. Two pages, two credentials, and
+    no code path from one to the other.
+    """
+    return FileResponse(STATIC / "admin.html")

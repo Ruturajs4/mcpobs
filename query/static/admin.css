@@ -1,0 +1,44 @@
+/* Operator console. Reuses app.css wholesale and adds only what distinguishes
+   the two, because two stylesheets that drift are two products.
+
+   The one deliberate visual difference is the amber sidebar. This page shows
+   EVERY tenant, and an operator with both consoles open in adjacent tabs must
+   be able to tell them apart before reading a word -- an accidental screenshot
+   of the wrong one leaks every customer's name at once. */
+.admin-brand { border-left: 3px solid var(--warn); padding-left: 11px; }
+.admin-brand h1 { color: var(--warn); }
+
+.link-out { display: block; color: var(--text-mute); font-size: 12px;
+  text-decoration: none; padding: 4px 8px; }
+.link-out:hover { color: var(--accent); }
+
+/* A tenant over its soft threshold, or orphaned. Status colour reserved for
+   status, as everywhere else. */
+.flag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 3px;
+  font-weight: 600; letter-spacing: .02em; }
+.flag-soft { background: #f59e0b22; color: #fcd34d; }
+.flag-orphan { background: #ef444422; color: #fca5a5; }
+.flag-quiet { background: #6b728022; color: var(--text-mute); }
+.flag-override { background: #4e74f822; color: #93b4ff; }
+
+.limit { font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
+.limit .unl { color: var(--text-mute); }
+
+/* Inline quota editing, on the row it belongs to. The alternative -- a modal --
+   hides the number you are comparing against while you type the new one. */
+.quota-edit { display: flex; gap: 6px; align-items: center; }
+.quota-edit input { width: 92px; padding: 4px 7px; background: var(--raised);
+  border: 1px solid var(--border); border-radius: 4px; color: var(--text);
+  font-family: var(--mono); font-size: 12px; }
+.quota-edit button { padding: 4px 9px; font-size: 12px; border-radius: 4px;
+  border: 1px solid var(--border); background: var(--raised); color: var(--text-dim);
+  cursor: pointer; }
+.quota-edit button:hover { border-color: var(--accent); color: var(--text); }
+.danger { color: #fca5a5 !important; }
+.danger:hover { border-color: var(--err) !important; }
+
+.kv { display: grid; grid-template-columns: 200px 1fr; gap: 6px 14px; font-size: 13px; }
+.kv dt { color: var(--text-dim); }
+.kv dd { margin: 0; font-family: var(--mono); }
+
+.stale { color: var(--text-mute); }

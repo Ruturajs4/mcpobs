@@ -308,3 +308,61 @@ class Page(BaseModel):
 
     items: list[TraceSummary] = Field(default_factory=list)
     next_cursor: str | None = None
+
+
+class TenantRow(BaseModel):
+    """One tenant, joining ClickHouse volume to Postgres identity.
+
+    Two databases, joined in Python rather than pretending one can see the
+    other. A tenant present on only one side is a finding, not a gap to hide:
+    an org with no telemetry has not onboarded, and telemetry with no org
+    should be impossible now that the gateway authenticates.
+    """
+
+    tenant: str
+    name: str = ""
+    plan: str = ""
+    projects: int = 0
+    users: int = 0
+    active_keys: int = 0
+    open_invites: int = 0
+
+    spans: int = 0
+    errors: int = 0
+    servers: int = 0
+    last_seen: datetime | None = None
+
+    #: Spans that arrived while the tenant was over its SOFT threshold.
+    soft_quota_spans: int = 0
+    #: 0 means unlimited, matching `control/quota.py`.
+    limit_minute: int = 0
+    limit_day: int = 0
+    #: True when an operator has overridden the plan for this org.
+    limit_overridden: bool = False
+
+    #: Has any telemetry ever arrived? Distinguishes "quiet" from "never set up".
+    onboarded: bool = False
+    #: Telemetry under a tenant with no org row -- should be impossible.
+    orphaned: bool = False
+
+
+class PipelineHealth(BaseModel):
+    freshness_p50_seconds: float = 0.0
+    freshness_p95_seconds: float = 0.0
+    spans_recent: int = 0
+    dead_letters_24h: int = 0
+    dead_letter_reasons: dict[str, int] = Field(default_factory=dict)
+    #: Several live versions means a deploy is rolling or a replay is in
+    #: flight. Neither is wrong; both are worth knowing before trusting an
+    #: aggregate, because argMax resolution is what hides the difference (D24).
+    normalization_versions: dict[str, int] = Field(default_factory=dict)
+
+
+class AdminOverview(BaseModel):
+    window_minutes: int
+    tenants: list[TenantRow] = Field(default_factory=list)
+    pipeline: PipelineHealth = Field(default_factory=PipelineHealth)
+    total_spans: int = 0
+    total_errors: int = 0
+    orphaned: int = 0
+    never_onboarded: int = 0

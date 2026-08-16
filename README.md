@@ -147,6 +147,32 @@ tool stopping.
 > Span *events* would not work here. They ride on their span and are exported
 > when it ends — which is exactly the moment that is too late.
 
+## Operator console
+
+A separate dashboard at `/admin`, for people who run the platform rather than
+people who use it:
+
+```bash
+python scripts/admin.py key --org acme --scopes admin
+open http://localhost:8080/admin
+```
+
+- **Tenants** — every org, joined to its telemetry volume, with quota headroom
+  and one-click hard-quota. Flags tenants over a soft threshold, tenants that
+  never sent a span, and telemetry with no organisation behind it.
+- **Pipeline** — freshness, dead letters by reason, and which normalization
+  versions are live (more than one means a deploy or replay is in flight).
+- **API keys** — prefixes, last use, and revoke.
+- **Invites** — invite-only, so this *is* the signup queue.
+
+`admin` is a **third scope**, not a flag on a read key: every other scope is
+bounded by one org and this one is not. A read key is refused here, and no HTTP
+endpoint can grant `admin` — only the CLI, which needs database access.
+
+It is a separate page with a separate stored credential, not a mode of the
+customer console. A toggle would be one rendering bug away from showing a
+customer everyone else's tenants.
+
 ## Quotas
 
 Ingest is metered per tenant, in **spans** — a request can carry one span or ten

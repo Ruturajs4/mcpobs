@@ -1233,6 +1233,60 @@ def main() -> int:
     except Exception as exc:
         record("F6 every user exists because an invite was redeemed", False, f"{exc}")
 
+    # ---------------- K: the operator console (cross-tenant) ---------------
+    print()
+    print("--- K: operator console ---")
+
+    def admin_api(path: str, key: str | None = "") -> tuple[int, Any]:
+        token = _dev_key("MCPOBS_ADMIN_KEY") if key == "" else key
+        request = urllib.request.Request(f"http://localhost:8080/api/v1/admin{path}")
+        if token:
+            request.add_header("x-api-key", token)
+        try:
+            with urllib.request.urlopen(request, timeout=25) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            return exc.code, None
+
+    status, overview = admin_api("/overview?window_minutes=10080")
+    record(
+        "K1 the operator console sees every tenant",
+        status == 200 and overview is not None and len(overview["tenants"]) > 1,
+        f"{len(overview['tenants']) if overview else 0} tenant(s) visible to an admin key",
+    )
+
+    # THE assertion. A read key authenticates perfectly well and must still be
+    # refused here: `read` is bounded by one org and this surface is not.
+    read_status, _ = admin_api("/overview", key=_dev_key("MCPOBS_READ_KEY"))
+    anon_status, _ = admin_api("/overview", key=None)
+    record(
+        "K2 a read key and an anonymous caller are both refused",
+        read_status == 401 and anon_status == 401,
+        f"read key -> {read_status}, no key -> {anon_status}"
+        if read_status == 401 and anon_status == 401
+        else f"CROSS-TENANT DATA IS REACHABLE: read={read_status} anon={anon_status}",
+    )
+
+    # And the converse: the admin key must not become a skeleton key for the
+    # CUSTOMER endpoints, which scope by the key's own tenant either way.
+    admin_on_customer, _ = admin_api("/../overview", key=_dev_key("MCPOBS_ADMIN_KEY"))
+    record(
+        "K3 an admin key is not a skeleton key for the customer API",
+        admin_on_customer in (401, 404),
+        f"admin key on the customer endpoint -> {admin_on_customer} "
+        "(admin does not imply read; the scopes are disjoint)",
+    )
+
+    status, pipeline = admin_api("/pipeline")
+    record(
+        "K4 pipeline health is reported to the operator",
+        status == 200 and pipeline is not None and pipeline["spans_recent"] >= 0,
+        f"freshness p95 {pipeline['freshness_p95_seconds']}s, "
+        f"{pipeline['dead_letters_24h']} dead letter(s), "
+        f"{len(pipeline['normalization_versions'])} normalization version(s) live"
+        if pipeline else "unavailable",
+    )
+
     # ---------------- J: ingest quotas (Architecture 5.1, ADR-008) ---------
     print()
     print("--- J: ingest quotas ---")
