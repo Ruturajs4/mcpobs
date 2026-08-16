@@ -12,9 +12,9 @@ from query.dtos import FailureBreakdown
 from query.repository import (
     LATEST_SPANS,
     SpanDTO,
-    _assign_depths,
     _detail,
     _number,
+    _order_tree,
     _resolve_root,
     decode_cursor,
     encode_cursor,
@@ -61,19 +61,19 @@ class TestRootResolution:
 class TestDepth:
     def test_depth_follows_parentage(self) -> None:
         spans = [span("a"), span("b", "a", 1), span("c", "b", 2)]
-        _assign_depths(spans, _resolve_root(spans))
-        assert [s.depth for s in spans] == [0, 1, 2]
+        ordered = _order_tree(spans, _resolve_root(spans))
+        assert [s.depth for s in ordered] == [0, 1, 2]
 
     def test_siblings_share_depth(self) -> None:
         spans = [span("a"), span("b", "a", 1), span("c", "a", 2)]
-        _assign_depths(spans, _resolve_root(spans))
-        assert {s.span_id: s.depth for s in spans} == {"a": 0, "b": 1, "c": 1}
+        ordered = _order_tree(spans, _resolve_root(spans))
+        assert {s.span_id: s.depth for s in ordered} == {"a": 0, "b": 1, "c": 1}
 
     def test_cycle_does_not_hang(self) -> None:
         """Telemetry is untrusted input; a malformed trace must not spin."""
         spans = [span("a", "b"), span("b", "a", 1)]
-        _assign_depths(spans, spans[0])
-        assert all(s.depth >= 0 for s in spans)
+        ordered = _order_tree(spans, spans[0])
+        assert all(s.depth >= 0 for s in ordered)
 
 
 class TestCursor:
@@ -317,3 +317,145 @@ class TestClockVerdict:
                                          80_000_000, 0])
         assert stats.clock_tick_ms == 0.0
         assert stats.clock_warning == ""
+
+
+class TestWaterfallOrdering:
+    """A parent must be rendered before its children, always.
+
+    Indentation is only meaningful if the row above a child is its ancestor.
+    Depths were computed correctly for days while the list came back in
+    TIMESTAMP order, so a child could sit above its own parent and the tree read
+    as a lie -- caught by eye in the console, not by any assertion.
+    """
+
+    def span(self, span_id: str, parent: str, offset_ms: float):
+        from datetime import datetime, timedelta
+
+        from query.dtos import SpanDTO
+
+        return SpanDTO(
+            span_id=span_id, parent_span_id=parent, name=span_id,
+            start_time=datetime(2026, 8, 16) + timedelta(milliseconds=offset_ms),
+            duration_ms=1.0,
+        )
+
+    def order(self, spans):
+        from query.repository import _order_tree, _resolve_root
+
+        return _order_tree(spans, _resolve_root(spans))
+
+    def test_a_child_never_precedes_its_parent(self) -> None:
+        """THE regression. `tools/list` and its parent `POST /mcp` started in
+        the same millisecond, so the child sorted first."""
+        spans = [
+            self.span("child", "root", 0),   # same start time as its parent
+            self.span("root", "", 0),
+        ]
+        ordered = self.order(spans)
+        assert [s.span_id for s in ordered] == ["root", "child"]
+        assert [s.depth for s in ordered] == [0, 1]
+
+    def test_a_parent_that_starts_later_still_comes_first(self) -> None:
+        """Architecture U2: a child routinely lands before its parent. Ordering
+        by time misrenders that too, not just the tie."""
+        spans = [
+            self.span("child", "root", 0),
+            self.span("root", "", 5),        # parent starts AFTER the child
+        ]
+        assert [s.span_id for s in self.order(spans)] == ["root", "child"]
+
+    def test_siblings_stay_in_start_time_order(self) -> None:
+        """Tree order is the primary key; time is what makes one level
+        readable."""
+        spans = [
+            self.span("root", "", 0),
+            self.span("late", "root", 9),
+            self.span("early", "root", 1),
+        ]
+        assert [s.span_id for s in self.order(spans)] == ["root", "early", "late"]
+
+    def test_a_grandchild_follows_its_own_parent_not_its_uncle(self) -> None:
+        spans = [
+            self.span("root", "", 0),
+            self.span("a", "root", 1),
+            self.span("b", "root", 2),
+            self.span("a1", "a", 3),         # starts after `b`, belongs under `a`
+        ]
+        assert [s.span_id for s in self.order(spans)] == ["root", "a", "a1", "b"]
+
+    def test_an_unreachable_span_is_appended_not_dropped(self) -> None:
+        """A parent that has not arrived yet is normal. A span missing from the
+        waterfall is worse than one drawn at the wrong indent."""
+        spans = [
+            self.span("root", "", 0),
+            self.span("orphan", "never-arrived", 1),
+        ]
+        ordered = self.order(spans)
+        assert {s.span_id for s in ordered} == {"root", "orphan"}
+
+    def test_a_cycle_cannot_hang_the_renderer(self) -> None:
+        """Telemetry is untrusted input; two spans naming each other as parent
+        must not spin forever."""
+        spans = [
+            self.span("root", "", 0),
+            self.span("a", "b", 1),
+            self.span("b", "a", 2),
+        ]
+        ordered = self.order(spans)
+        assert len(ordered) == 3
+
+    def test_every_span_appears_exactly_once(self) -> None:
+        spans = [self.span("root", "", 0)] + [
+            self.span(f"c{i}", "root", i) for i in range(5)
+        ]
+        ordered = self.order(spans)
+        assert len(ordered) == len(spans)
+        assert len({s.span_id for s in ordered}) == len(spans)
+
+
+class TestTraceHeadline:
+    """The trace header names ONE operation."""
+
+    def spans(self):
+        from datetime import datetime
+
+        from query.dtos import SpanDTO
+
+        def make(name, method="", tool=""):
+            return SpanDTO(
+                span_id=name, name=name, start_time=datetime(2026, 8, 16),
+                duration_ms=1.0, mcp_method=method, tool=tool,
+            )
+
+        # A real trace: the client's handshake, then the actual work.
+        return [make("POST /mcp"), make("tools/list", "tools/list"),
+                make("tools/call slow_export", "tools/call", "slow_export")]
+
+    def test_the_header_describes_the_tool_call_not_the_handshake(self) -> None:
+        """Picked independently, `tool` and `mcp_method` came from DIFFERENT
+        spans: the header read "slow_export" with "METHOD tools/list" beside
+        it -- a method that tool was never called by."""
+        from query.repository import _headline
+
+        headline = _headline(self.spans())
+        assert (headline.tool, headline.mcp_method) == ("slow_export", "tools/call")
+
+    def test_a_trace_with_no_tool_falls_back_to_its_method(self) -> None:
+        from datetime import datetime
+
+        from query.dtos import SpanDTO
+        from query.repository import _headline
+
+        spans = [SpanDTO(span_id="a", name="tools/list", start_time=datetime(2026, 8, 16),
+                         duration_ms=1.0, mcp_method="tools/list")]
+        assert _headline(spans).mcp_method == "tools/list"
+
+    def test_a_trace_with_no_mcp_span_has_no_headline(self) -> None:
+        from datetime import datetime
+
+        from query.dtos import SpanDTO
+        from query.repository import _headline
+
+        spans = [SpanDTO(span_id="a", name="GET", start_time=datetime(2026, 8, 16),
+                         duration_ms=1.0)]
+        assert _headline(spans) is None

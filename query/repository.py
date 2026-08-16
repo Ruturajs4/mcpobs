@@ -795,15 +795,26 @@ class SpanRepository:
             )
 
         root = _resolve_root(spans)
-        _assign_depths(spans, root)
+        # Reassigned, because the ordering IS the tree: a waterfall that returns
+        # spans in timestamp order can put a child above its parent.
+        spans = _order_tree(spans, root)
         for span in spans:
             detail[span.span_id].depth = span.depth
 
+        headline = _headline(spans)
         return TraceDetail(
             trace_id=trace_id,
             server=raw[0]["service_name"] or "",
-            tool=next((s.tool for s in spans if s.tool), ""),
-            mcp_method=next((s.mcp_method for s in spans if s.mcp_method), ""),
+            # BOTH from the SAME span. Picked independently, they described
+            # different operations: a trace carrying `tools/list` and
+            # `tools/call slow_export` rendered a header reading "slow_export"
+            # with "METHOD tools/list" beside it -- a method that tool was never
+            # called by. The header names ONE operation, so it takes one span.
+            #
+            # A span with a tool wins, because that is the work the trace is
+            # about; `tools/list` is the client's handshake around it.
+            tool=headline.tool if headline else "",
+            mcp_method=headline.mcp_method if headline else "",
             start_time=trace_start,
             duration_ms=total_ms,
             span_count=len(spans),
@@ -858,23 +869,78 @@ def _resolve_root(spans: list[SpanDTO]) -> SpanDTO | None:
     return min(orphans, key=lambda s: s.start_time) if orphans else None
 
 
-def _assign_depths(spans: list[SpanDTO], root: SpanDTO | None) -> None:
-    """Depth for waterfall indentation, without recursion."""
-    if root is None:
-        return
+def _headline(spans: list[SpanDTO]) -> SpanDTO | None:
+    """The span a trace's header should describe.
+
+    A tool call if there is one -- that is the work the trace is about, and
+    `tools/list` is the handshake the client wraps around it. Otherwise the
+    first span carrying any MCP method.
+    """
+    return (
+        next((s for s in spans if s.tool), None)
+        or next((s for s in spans if s.mcp_method), None)
+    )
+
+
+def _order_tree(spans: list[SpanDTO], root: SpanDTO | None) -> list[SpanDTO]:
+    """Depth-first order with depths: parents before children, siblings by time.
+
+    THE BUG THIS FIXES
+        Depths were computed correctly and the list was still returned in
+        TIMESTAMP order, so a child could be rendered before its own parent.
+        Measured on a real trace: `tools/list` (depth 1) and `POST /mcp`
+        (depth 0, its parent) start in the same millisecond, so the child sorted
+        first and the waterfall drew
+
+            tools/list                 <- depth 1, no parent above it
+            POST /mcp          ROOT
+              tools/call
+                mcp.progress
+
+        which reads as "tools/list is a root and POST /mcp is something else".
+        The indentation was right and the ORDER made it a lie -- and indentation
+        is only meaningful if the row above a child is its ancestor.
+
+        Timestamp order is not a near-miss for tree order, either. Architecture
+        U2 says a child routinely lands before its parent, so this misrenders
+        whenever two spans share a start time OR a parent starts late -- both
+        normal, neither rare.
+
+    Siblings are still ordered by start time, which is what makes a waterfall
+    readable within one level.
+    """
     by_parent: dict[str, list[SpanDTO]] = {}
     for span in spans:
         by_parent.setdefault(span.parent_span_id, []).append(span)
+    for children in by_parent.values():
+        children.sort(key=lambda s: s.start_time)
 
-    stack = [(root, 0)]
-    seen = set()
-    while stack:
-        span, depth = stack.pop()
-        if span.span_id in seen:  # cycle guard: telemetry is untrusted input
-            continue
-        seen.add(span.span_id)
-        span.depth = depth
-        stack.extend((child, depth + 1) for child in by_parent.get(span.span_id, []))
+    ordered: list[SpanDTO] = []
+    seen: set[str] = set()
+    if root is not None:
+        stack = [(root, 0)]
+        while stack:
+            span, depth = stack.pop()
+            if span.span_id in seen:  # cycle guard: telemetry is untrusted input
+                continue
+            seen.add(span.span_id)
+            span.depth = depth
+            ordered.append(span)
+            # Reversed, because a stack pops last-first and siblings must come
+            # out in the start-time order they were just sorted into.
+            stack.extend(
+                (child, depth + 1)
+                for child in reversed(by_parent.get(span.span_id, []))
+            )
+
+    # Anything unreachable from the root. A parent that has not arrived yet is
+    # NORMAL, not an error (Architecture U2), so these are appended in time
+    # order rather than dropped -- a span missing from the waterfall is worse
+    # than one drawn at the wrong indent.
+    leftover = [span for span in spans if span.span_id not in seen]
+    leftover.sort(key=lambda s: s.start_time)
+    ordered.extend(leftover)
+    return ordered
 
 
 def encode_cursor(value: datetime) -> str:
