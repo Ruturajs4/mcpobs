@@ -53,6 +53,12 @@ from control import ControlPlane
 from control.keys import INGEST
 from control.models import Principal
 from control.quota import QuotaEnforcer, Verdict
+from control.session import (
+    SessionError,
+    is_session_token,
+)
+from control.session import principal_for as principal_for_session
+from control.session import verify as verify_session
 
 log = logging.getLogger("ingest")
 
@@ -129,6 +135,35 @@ def principal_from(authorization: str | None, api_key: str | None) -> Principal:
     token = api_key
     if not token and authorization and authorization.lower().startswith("bearer "):
         token = authorization[7:]
+
+    # A session token (ADR-011) is verified locally -- no database, no cache, no
+    # network. That is the whole reason it is a JWT: this is the highest-volume
+    # path in the system, and a lookup here would turn an unavailable Redis or
+    # Postgres into an ingest-wide outage.
+    #
+    # Routed by SHAPE rather than by trying both verifiers, so a failure reports
+    # what the caller actually presented instead of whichever check happened to
+    # run second.
+    if is_session_token(token):
+        assert token is not None
+        try:
+            claims = verify_session(token)
+        except SessionError:
+            # Deliberately the same message as a bad API key below. Telling a
+            # prober that their token was well-formed but expired, or valid but
+            # for the wrong audience, narrows their search for them.
+            raise HTTPException(
+                status_code=401, detail="invalid or insufficient API key"
+            ) from None
+        # Quota rides on the ORG's principal, so a session's traffic counts
+        # against the same budget as everything else. Looked up by tenant rather
+        # than trusted from the token: the token proves who the user is, not
+        # what the org is currently allowed.
+        plan, per_minute, per_day = control.quota_for_tenant(claims.tenant)
+        return principal_for_session(
+            claims, plan=plan, spans_per_minute=per_minute, spans_per_day=per_day
+        )
+
     principal = control.authenticate(token)
     if principal is None or not principal.can(INGEST):
         # One message for every failure. Distinguishing "unknown key" from

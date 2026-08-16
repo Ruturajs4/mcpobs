@@ -47,6 +47,9 @@ class ControlPlane:
         #: prefix -> (expiry, secret_hash, principal). The hash is cached so a
         #: hit can verify the secret without touching Postgres.
         self._cache: dict[str, tuple[float, str, Principal | None]] = {}
+        #: Plan and quota by tenant slug, for session tokens. Separate from
+        #: `_cache` because it is keyed by ORG rather than by key prefix.
+        self._quota_cache: dict[str, tuple[float, tuple[str, int | None, int | None]]] = {}
 
     # -- plumbing ----------------------------------------------------------
     @property
@@ -162,6 +165,41 @@ class ControlPlane:
         )
         self._cache[prefix] = (now + CACHE_TTL_SECONDS, row["secret_hash"], principal)
         return principal
+
+    def quota_for_tenant(self, tenant: str) -> tuple[str, int | None, int | None]:
+        """The org's plan and quota limits, by tenant slug.
+
+        For session tokens (ADR-011), which carry identity but must not carry
+        their own quota -- a limit the client presents is a limit the client
+        chooses.
+
+        THIS IS A LOOKUP, AND IT DOES NOT CONTRADICT ADR-011. The argument
+        against opaque tokens was that a PER-USER lookup has no cache locality:
+        one laptop, one entry, a miss almost every time. This is a PER-ORG
+        lookup, so every session for one customer shares a single cache entry --
+        the same locality that makes the API-key cache work.
+
+        Falls back to plan defaults rather than to unlimited when the org cannot
+        be read. Failing open on a quota is how one compromised laptop bills an
+        entire organisation.
+        """
+        now = time.monotonic()
+        cached = self._quota_cache.get(tenant)
+        if cached and cached[0] > now:
+            return cached[1]
+
+        row = self._one(
+            """SELECT plan, quota_spans_per_minute, quota_spans_per_day
+               FROM orgs WHERE slug = %s""",
+            (tenant,),
+        )
+        resolved = (
+            (row["plan"] or "trial", row["quota_spans_per_minute"], row["quota_spans_per_day"])
+            if row
+            else ("trial", None, None)
+        )
+        self._quota_cache[tenant] = (now + CACHE_TTL_SECONDS, resolved)
+        return resolved
 
     def touch(self, key_id: int) -> None:
         """Record last use, best-effort.
