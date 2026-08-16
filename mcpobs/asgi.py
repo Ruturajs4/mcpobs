@@ -39,6 +39,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from mcpobs import transport as _transport
+
 log = logging.getLogger(__name__)
 
 
@@ -59,6 +61,10 @@ def instrument_asgi(app: Any, **kwargs: Any) -> Any:
     observability helper must not stop a server from serving because an optional
     dependency is missing.
     """
+    # Only an HTTP transport is ever wrapped in ASGI, and servers that build
+    # the app themselves never call `run()` -- so this is the only signal for
+    # the deployment shape a real customer most often has.
+    _transport.set_transport("streamable-http")
     try:
         from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
     except ImportError:

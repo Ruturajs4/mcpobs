@@ -24,6 +24,7 @@ from typing import Any
 
 from opentelemetry.trace import get_current_span
 
+from mcpobs import transport as _transport
 from mcpobs.classifier import (
     ATTRIBUTE,
     CANCELLED_ATTRIBUTE,
@@ -99,6 +100,14 @@ class FailureClassifierMiddleware:
             span = get_current_span()
             if span.is_recording():
                 span.set_attribute(CANCELLED_ATTRIBUTE, True)
+                # The transport too. Cancellation takes this branch INSTEAD of
+                # `_annotate`, so stamping only there left every cancelled call
+                # with a blank transport -- measured: 2 of the 4 unattributed
+                # spans in a demo run were cancelled `slow_export` calls. A
+                # dimension that is populated except on the failure paths is
+                # worse than useless, because the gap correlates with the thing
+                # you are looking for.
+                _transport.annotate(span)
         except Exception as exc:  # noqa: BLE001
             log.debug("cancellation annotation skipped: %s", exc)
 
@@ -118,6 +127,13 @@ class FailureClassifierMiddleware:
         span = get_current_span()
         if not span.is_recording():
             return
+
+        # Which transport carried this call. The SDK does not emit
+        # `network.transport`, so without this every stored span was blank and
+        # nothing could tell a stdio server from an HTTP one -- which matters
+        # because stdio is the common deployment, and a stdio-only regression
+        # would otherwise hide behind healthy HTTP traffic.
+        _transport.annotate(span)
 
         # Tool request/response. OFF by default (mcpobs/payload.py): unlike
         # error detail this is every argument and every result of every call.

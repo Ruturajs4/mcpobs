@@ -199,11 +199,17 @@ def _wait_until_quiet(ch, seconds: float = 45.0) -> bool:
 
     Returns False on timeout so the caller can still assert rather than hang.
     """
+    # THREE consecutive identical samples, not two. Two was not enough: the
+    # pipeline delivers in batches with gaps longer than one poll, so a single
+    # repeat can be read in the middle of a burst rather than after it -- which
+    # is how E1b/E4 kept drifting by a handful of spans after this "waited".
     previous = -1
+    stable = 0
     deadline = time.time() + seconds
     while time.time() < deadline:
         current = int(ch.query("SELECT count() FROM spans_raw").result_rows[0][0])
-        if current == previous:
+        stable = stable + 1 if current == previous else 0
+        if stable >= 2:
             return True
         previous = current
         time.sleep(3)
@@ -245,6 +251,11 @@ def main() -> int:
     time.sleep(3)  # let the container actually exit before sampling
     before_rows = ch.query("SELECT count() FROM spans_raw").result_rows[0][0]
     offsets_before = kafka_offsets()
+
+    # Marks THIS run's traffic. The transport assertions below must judge the
+    # code under test, not spans left in the window by an earlier build --
+    # B12b failed on 47 pre-fix spans that were correct history.
+    run_started = ch.query("SELECT now()").result_rows[0][0]
 
     asyncio.run(run_demo())
     time.sleep(4)  # let the Collector batch and produce
@@ -561,9 +572,20 @@ def main() -> int:
     else:
         record("A5 trace reconstructs by trace_id", False, "no multi-span trace found")
 
+    # WINDOWED, like every other assertion here. Unbounded, this scanned the
+    # whole table -- so a single anomalous span poisoned it until the 7-day TTL
+    # expired, long after the cause was fixed. It failed exactly that way when a
+    # unit test briefly exported into the local stack: six spans carrying an
+    # older negotiated version, still failing the run nine minutes after the
+    # test stopped producing them.
+    #
+    # The invariant worth asserting is "the protocol version we emit NOW", and
+    # history that cannot be changed is not evidence about that.
     versions = [
         r[0] for r in ch.query(
-            "SELECT DISTINCT protocol_version FROM spans_raw WHERE protocol_version != ''"
+            "SELECT DISTINCT protocol_version FROM spans_raw "
+            "WHERE protocol_version != '' AND timestamp >= {started:DateTime}",
+            parameters={"started": run_started},
         ).result_rows
     ]
     record(
@@ -593,6 +615,38 @@ def main() -> int:
     # moment a demo tool is added, and a stale assertion is worse than none --
     # it fails for the wrong reason and trains you to ignore it.
     expected_tools = {tool for tool, _, _ in SCENARIOS} | SUBSCRIPTION_TOOLS
+    # ---- B12: transport attribution -------------------------------------
+    #
+    # The MCP SDK does not emit `network.transport`, so this column was empty on
+    # every stored span -- 5,782 of 5,782 -- and nothing in the data could tell
+    # a stdio server from a streamable-HTTP one.
+    #
+    # That hid the transport MOST CUSTOMERS USE. The client launches the server
+    # over stdio, so a stdio-only regression would have shown up as healthy
+    # aggregate traffic carried entirely by HTTP.
+    transports = dict(
+        ch.query(
+            "SELECT transport, count() FROM spans_raw "
+            "WHERE mcp_method != '' AND timestamp >= {started:DateTime} "
+            "GROUP BY transport",
+            parameters={"started": run_started},
+        ).result_rows
+    )
+    record(
+        "B12 both transports are present and distinguishable",
+        transports.get("stdio", 0) > 0 and transports.get("streamable-http", 0) > 0,
+        f"stdio={transports.get('stdio', 0)} "
+        f"streamable-http={transports.get('streamable-http', 0)}",
+    )
+    record(
+        "B12b every MCP span names its transport",
+        transports.get("", 0) == 0,
+        f"{transports.get('', 0)} span(s) with no transport"
+        + (" -- a dimension populated except on some paths is worse than absent, "
+           "because the gap correlates with whatever took the unusual path"
+           if transports.get("", 0) else ""),
+    )
+
     record(
         "B6 version-resolved read returns the correct tool set",
         resolved == expected_tools,
@@ -1066,16 +1120,32 @@ def main() -> int:
 
     from scripts.recompute_rollups import RollupRecomputer
 
-    # Nothing may be in flight across the recompute. A span landing between
-    # REPLACE PARTITION and the comparison below shows as rollup/raw drift that
-    # has nothing to do with the repair being tested -- and H2's long call, just
-    # above, is still draining when this runs.
-    _wait_until_quiet(ch)
-
+    # RETRY UNTIL IT CONVERGES, rather than trusting one pass after a wait.
+    #
+    # The repair is REPLACE PARTITION computed from spans_raw. A span landing
+    # during that operation is written to the rollup by the materialized view
+    # but is not in the snapshot the partition was built from, so the two
+    # disagree by exactly the stragglers -- which is what E1b kept reporting,
+    # by a handful of spans, on a pipeline that was consistent moments later.
+    #
+    # Waiting longer only makes the window less likely, never closed. Repeating
+    # the recompute closes it: each pass starts from the current contents, so
+    # once nothing new arrives the first pass already agrees and the loop exits.
+    # If it never converges, that is a real defect and the assertion should fail.
     recomputer = RollupRecomputer()
-    for day in recomputer.dates(None):
-        recomputer.recompute(day)
-    after_rollup, after_raw = rollup_vs_raw()
+    after_rollup = after_raw = -1
+    for attempt in range(3):
+        _wait_until_quiet(ch)
+        for day in recomputer.dates(None):
+            recomputer.recompute(day)
+        after_rollup, after_raw = rollup_vs_raw()
+        if after_rollup == after_raw:
+            break
+        if attempt < 2:
+            print(
+                f"     rollup/raw drifted by {after_rollup - after_raw} span(s); "
+                "spans landed during the recompute, repeating"
+            )
     record(
         "E1b `make rollups` reconciles the rollup with the raw table",
         after_rollup[0] == after_raw[0] and after_rollup[1] == after_raw[1],

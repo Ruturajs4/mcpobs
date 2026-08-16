@@ -40,3 +40,10 @@ ignore_errors = true
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
 asyncio_mode = "auto"
+markers = [
+    # Spawns a real MCP server subprocess and waits for its span export. Seconds
+    # rather than milliseconds, so it is skippable with `-m "not slow"` -- but
+    # it runs by DEFAULT, because these are the tests that exercise the
+    # transport customers actually deploy on.
+    "slow: spawns a real server subprocess and waits for exported spans",
+]

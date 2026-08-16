@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from mcpobs import transport as _transport
 from mcpobs.asgi import instrument_asgi
 from mcpobs.classifier import (
     ATTRIBUTE,
@@ -63,6 +64,7 @@ def instrument(
     server: Any,
     capture_error_detail: bool = True,
     capture_payloads: bool = False,
+    transport: str | None = None,
 ) -> Any:
     """Attach failure classification to an MCPServer.
 
@@ -81,8 +83,20 @@ def instrument(
     built-in OpenTelemetry middleware and can annotate the span the SDK already
     opened. Does not create spans and does not wrap the protocol.
 
+    `transport` names the transport this server runs on ("stdio",
+    "streamable-http", "sse"). Leave it unset and it is detected from
+    `server.run(...)`, which is where the SDK itself names it. Pass it when your
+    server never calls `run()` -- for example when you build the ASGI app and
+    drive uvicorn yourself.
+
     Idempotent: calling it twice attaches one middleware.
     """
+    _transport.set_transport(transport, explicit=transport is not None)
+    # Wrapped even when the middleware is already attached: `instrument()` is
+    # idempotent, but a second call is exactly how someone adds the transport
+    # they forgot the first time.
+    _transport.observe_run(server)
+
     chain = server.middleware
     if any(isinstance(m, FailureClassifierMiddleware) for m in chain):
         return server

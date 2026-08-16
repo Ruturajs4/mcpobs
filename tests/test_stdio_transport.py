@@ -33,7 +33,9 @@ import pytest
 ROOT = Path(__file__).parents[1]
 
 
-def _run_server_briefly(env_extra: dict[str, str] | None = None) -> tuple[bytes, bytes]:
+def _run_server_briefly(
+    tmp_spans: Path, env_extra: dict[str, str] | None = None
+) -> tuple[bytes, bytes]:
     """Start the demo server on stdio, send one request, capture both streams.
 
     Sends a real `initialize` so startup runs to completion -- seeding the
@@ -42,7 +44,18 @@ def _run_server_briefly(env_extra: dict[str, str] | None = None) -> tuple[bytes,
     """
     import os
 
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8", **(env_extra or {})}
+    # OTEL_MODE=file, NEVER the default `otlp`. Without it this test exported
+    # its spans into the running local stack -- caught when `make verify` began
+    # reporting a protocol version no scenario uses, traced back to these
+    # subprocesses. A unit test must not write into the telemetry the acceptance
+    # suite then asserts over.
+    env = {
+        **os.environ,
+        "PYTHONIOENCODING": "utf-8",
+        "OTEL_MODE": "file",
+        "OTEL_SPAN_FILE": str(tmp_spans),
+        **(env_extra or {}),
+    }
     request = (
         json.dumps(
             {
@@ -81,8 +94,9 @@ class TestStdioStdoutIsProtocolOnly:
 
     @staticmethod
     @pytest.fixture(scope="class")
-    def streams() -> tuple[bytes, bytes]:
-        return _run_server_briefly()
+    def streams(tmp_path_factory: pytest.TempPathFactory) -> tuple[bytes, bytes]:
+        spans = tmp_path_factory.mktemp("spans") / "stdio.ndjson"
+        return _run_server_briefly(spans)
 
     def test_the_server_starts_and_answers_on_stdio(
         self, streams: tuple[bytes, bytes]
