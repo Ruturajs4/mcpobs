@@ -10,6 +10,7 @@ ONE RULE, ENFORCED HERE
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import time
 from datetime import UTC, datetime, timedelta
@@ -121,7 +122,7 @@ class ControlPlane:
             return principal
 
         row = self._one(
-            """SELECT k.id AS key_id, k.org_id, k.secret_hash, k.scopes,
+            """SELECT k.id AS key_id, k.prefix, k.org_id, k.secret_hash, k.scopes,
                       k.expires_at, k.revoked_at,
                       o.slug AS tenant, o.plan,
                       o.quota_spans_per_minute, o.quota_spans_per_day,
@@ -145,6 +146,7 @@ class ControlPlane:
 
         principal = Principal(
             key_id=row["key_id"],
+            key_prefix=row["prefix"],
             org_id=row["org_id"],
             tenant=row["tenant"],
             project=row["project"],
@@ -270,17 +272,95 @@ class ControlPlane:
             scopes=scopes,
         )
 
-    def set_quota(
-        self, slug: str, per_minute: int | None, per_day: int | None
-    ) -> bool:
-        """Override an org's limits. NULL restores the plan's."""
-        row = self._one(
-            "UPDATE orgs SET quota_spans_per_minute = %s, quota_spans_per_day = %s "
-            "WHERE slug = %s RETURNING id",
-            (per_minute, per_day, slug),
+    # -- audit -------------------------------------------------------------
+    def audit(
+        self,
+        action: str,
+        target: str = "",
+        outcome: str = "ok",
+        detail: dict[str, Any] | None = None,
+        actor: Principal | None = None,
+        source: str = "console",
+        source_ip: str = "",
+    ) -> None:
+        """Record one operator action.
+
+        Called INSIDE the transaction that performs the action wherever there is
+        one, so the record and the change land together or not at all. Called on
+        its own only for things that change nothing -- a refused attempt.
+        """
+        self._rows(
+            """INSERT INTO audit_log
+                   (actor_key_id, actor_prefix, actor_org, actor_source,
+                    action, target, outcome, detail, source_ip)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)""",
+            (
+                actor.key_id if actor else None,
+                actor.key_prefix if actor else "",
+                actor.tenant if actor else "",
+                source,
+                action,
+                target,
+                outcome,
+                json.dumps(detail or {}),
+                source_ip,
+            ),
         )
+
+    def audit_trail(self, limit: int = 200, target: str = "") -> list[dict[str, Any]]:
+        where = "WHERE target = %s" if target else ""
+        params: tuple[Any, ...] = (target, limit) if target else (limit,)
+        return self._rows(
+            f"""SELECT at, actor_prefix, actor_org, actor_source, action, target,
+                       outcome, detail, source_ip
+                FROM audit_log {where} ORDER BY at DESC LIMIT %s""",
+            params,
+        )
+
+    # -- mutations, each audited in its own transaction --------------------
+    def set_quota(
+        self,
+        slug: str,
+        per_minute: int | None,
+        per_day: int | None,
+        actor: Principal | None = None,
+        source: str = "cli",
+        source_ip: str = "",
+    ) -> bool:
+        """Override an org's limits. NULL restores the plan's.
+
+        The read of the OLD values, the write, and the audit record are one
+        transaction. Reading the old values outside it would let a concurrent
+        change slip in between, so the entry would report a `from` that was
+        never true.
+        """
+        with self.conn.transaction():
+            before = self._one(
+                "SELECT quota_spans_per_minute, quota_spans_per_day FROM orgs "
+                "WHERE slug = %s FOR UPDATE",
+                (slug,),
+            )
+            if before is None:
+                return False
+            self._rows(
+                "UPDATE orgs SET quota_spans_per_minute = %s, quota_spans_per_day = %s "
+                "WHERE slug = %s",
+                (per_minute, per_day, slug),
+            )
+            self.audit(
+                "quota.set",
+                target=slug,
+                detail={
+                    "from": {
+                        "per_minute": before["quota_spans_per_minute"],
+                        "per_day": before["quota_spans_per_day"],
+                    },
+                    "to": {"per_minute": per_minute, "per_day": per_day},
+                },
+                actor=actor, source=source, source_ip=source_ip,
+            )
         self._cache.clear()  # so the new limit applies on the next request here
-        return row is not None
+        return True
 
     def set_plan(self, slug: str, plan: str) -> bool:
         row = self._one(
@@ -289,14 +369,38 @@ class ControlPlane:
         self._cache.clear()
         return row is not None
 
-    def revoke_key(self, prefix: str) -> bool:
-        row = self._one(
-            "UPDATE api_keys SET revoked_at = now() WHERE prefix = %s AND revoked_at IS NULL"
-            " RETURNING id",
-            (prefix,),
-        )
+    def revoke_key(
+        self,
+        prefix: str,
+        actor: Principal | None = None,
+        source: str = "cli",
+        source_ip: str = "",
+    ) -> bool:
+        """Revoke a key. The revocation and its audit entry are one transaction.
+
+        Which is what lets this be unconditional. An audit log in a DIFFERENT
+        store would force a bad choice here: block the revoke when the log is
+        unavailable, and a leaked credential stays live during our outage; do it
+        anyway, and the one action most worth recording is the one most likely
+        to go unrecorded. Same database, one transaction, neither trade.
+        """
+        with self.conn.transaction():
+            row = self._one(
+                "UPDATE api_keys SET revoked_at = now() "
+                "WHERE prefix = %s AND revoked_at IS NULL "
+                "RETURNING id, scopes, org_id",
+                (prefix,),
+            )
+            if row is None:
+                return False
+            self.audit(
+                "key.revoke",
+                target=prefix,
+                detail={"scopes": row["scopes"], "org_id": row["org_id"]},
+                actor=actor, source=source, source_ip=source_ip,
+            )
         # Drop the cache entry so revocation is immediate for THIS process.
         # Other processes converge within CACHE_TTL_SECONDS, which is the
         # documented promise rather than an accident.
         self._cache.pop(prefix, None)
-        return row is not None
+        return True

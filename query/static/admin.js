@@ -273,11 +273,39 @@ async function viewInvites() {
         : '<div class="io-off">No invites yet.</div>'}</div>`;
 }
 
+async function viewAudit() {
+  const rows = await api("/audit?limit=300");
+  el("content").innerHTML = `
+    <div class="panel"><header><h3>Operator actions</h3>
+      <span class="note">written in the SAME transaction as the change, so an action and its
+        record land together or not at all &middot; refused attempts included</span></header>
+      ${rows.length ? `<table>
+        <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th>
+          <th>Change</th><th>From</th></tr></thead>
+        <tbody>${rows.map((r) => `<tr>
+          <td>${ago(r.at)}</td>
+          <td class="mono">${esc(r.actor_prefix || "—")}
+            <div class="mute" style="font-size:11px">${esc(r.actor_source)}${
+              r.actor_org ? ` · ${esc(r.actor_org)}` : ""}</div></td>
+          <td>${r.outcome === "denied"
+            ? `<span class="flag flag-orphan">${esc(r.action)}</span>`
+            : `<span class="flag flag-quiet">${esc(r.action)}</span>`}</td>
+          <td class="mono">${esc(r.target || "—")}</td>
+          <td class="mono" style="font-size:12px">${esc(JSON.stringify(r.detail)).slice(0, 120)}</td>
+          <td class="mute mono" style="font-size:11px">${esc(r.source_ip || "—")}</td>
+        </tr>`).join("")}</tbody></table>`
+        : `<div class="io-off">No operator actions recorded yet. Reads are not
+           audited — the console refreshes every 30s, so logging them would bury
+           the mutations under thousands of rows meaning "a tab was open".</div>`}
+    </div>`;
+}
+
 const VIEWS = {
   tenants: [viewTenants, "Tenants"],
   pipeline: [viewPipeline, "Pipeline"],
   keys: [viewKeys, "API keys"],
   invites: [viewInvites, "Invites"],
+  audit: [viewAudit, "Audit"],
 };
 
 async function render() {

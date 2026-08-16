@@ -23,6 +23,7 @@ WHY IT IS MOUNTED ON THE QUERY SERVICE
 # NO `from __future__ import annotations`: FastAPI resolves Annotated types at
 # import, and the string ForwardRefs it produces fail at request time instead.
 
+import contextlib
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
@@ -51,12 +52,44 @@ def operator(request: Request) -> Principal:
     )
     principal = control_plane().authenticate(token)
     if principal is None or not principal.can(ADMIN):
+        # A REFUSED attempt is recorded, and these are the most interesting
+        # rows in the table: somebody presenting a credential that does not
+        # work at the cross-tenant surface is exactly the event an audit log
+        # exists to surface. Best-effort, because failing to log a refusal must
+        # not turn a 401 into a 500 and tell the caller something they should
+        # not learn from an error code.
+        with contextlib.suppress(Exception):
+            control_plane().audit(
+                "admin.denied",
+                target=principal.tenant if principal else "",
+                outcome="denied",
+                detail={
+                    "path": request.url.path,
+                    "reason": "wrong scope" if principal else "no valid key",
+                },
+                actor=principal,
+                source_ip=_client_ip(request),
+            )
         raise HTTPException(
             status_code=401,
             detail="admin scope required",
             headers={"WWW-Authenticate": "Bearer"},
         )
     return principal
+
+
+def _client_ip(request: Request) -> str:
+    """Best-effort caller address.
+
+    `x-forwarded-for` is TRUSTED here only because this service sits behind our
+    own edge; a caller can set it freely, so this is an operational hint and
+    never an authorization input. Saying so matters: an audit field that looks
+    authoritative and is not is worse than one that is obviously approximate.
+    """
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()[:64]
+    return getattr(getattr(request, "client", None), "host", "") or ""
 
 
 def repository(request: Request) -> AdminRepository:
@@ -109,7 +142,8 @@ def invites(_: OperatorDep, repo: AdminRepoDep) -> list[dict[str, Any]]:
 @router.post("/tenants/{tenant}/quota")
 def set_quota(
     tenant: str,
-    _: OperatorDep,
+    request: Request,
+    actor: OperatorDep,
     per_minute: Annotated[int | None, Body(embed=True)] = None,
     per_day: Annotated[int | None, Body(embed=True)] = None,
 ) -> dict[str, Any]:
@@ -124,13 +158,16 @@ def set_quota(
     """
     from query.app import control_plane
 
-    if not control_plane().set_quota(tenant, per_minute, per_day):
+    if not control_plane().set_quota(
+        tenant, per_minute, per_day,
+        actor=actor, source="console", source_ip=_client_ip(request),
+    ):
         raise HTTPException(status_code=404, detail=f"no such org: {tenant}")
     return {"tenant": tenant, "per_minute": per_minute, "per_day": per_day}
 
 
 @router.post("/keys/{prefix}/revoke")
-def revoke(prefix: str, _: OperatorDep) -> dict[str, Any]:
+def revoke(prefix: str, request: Request, actor: OperatorDep) -> dict[str, Any]:
     """Revoke a key by prefix -- the other §8 lever, and the one that is an
     emergency when a credential leaks.
 
@@ -139,6 +176,25 @@ def revoke(prefix: str, _: OperatorDep) -> dict[str, Any]:
     """
     from query.app import control_plane
 
-    if not control_plane().revoke_key(prefix):
+    if not control_plane().revoke_key(
+        prefix, actor=actor, source="console", source_ip=_client_ip(request)
+    ):
         raise HTTPException(status_code=404, detail=f"no active key with prefix {prefix}")
     return {"prefix": prefix, "revoked": True}
+
+
+@router.get("/audit")
+def audit(
+    _: OperatorDep,
+    target: Annotated[str, Query(description="org slug or key prefix")] = "",
+    limit: Annotated[int, Query(ge=1, le=1000)] = 200,
+) -> list[dict[str, Any]]:
+    """The operator action trail.
+
+    Readable by any admin key, deliberately. An audit log only some operators
+    can read is one the others cannot use to check each other, and mutual
+    visibility is most of what makes it a control rather than a formality.
+    """
+    from query.app import control_plane
+
+    return control_plane().audit_trail(limit=limit, target=target)

@@ -61,6 +61,9 @@ class Principal(_Row):
     """
 
     key_id: int
+    #: Carried so an audit entry can name its actor without a second
+    #: query, and so the entry still names it after the key is deleted.
+    key_prefix: str = ""
     org_id: int
     #: `tenant_id`. Named for what it is here and what it means downstream.
     tenant: str

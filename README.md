@@ -164,6 +164,20 @@ open http://localhost:8080/admin
   versions are live (more than one means a deploy or replay is in flight).
 - **API keys** — prefixes, last use, and revoke.
 - **Invites** — invite-only, so this *is* the signup queue.
+- **Audit** — every operator action, and every refused attempt.
+
+Quota changes and key revocations are written **in the same transaction as the
+action**, so an action and its record land together or not at all. That is what
+lets a revoke be unconditional: an audit log in a separate store would force a
+choice between blocking a revoke when the log is down — leaving a leaked
+credential live — and doing it anyway, which loses the record of the one action
+most worth having. CLI actions are audited too; `scripts/admin.py` needs
+database access, which makes it the *more* privileged path.
+
+Reads are **not** audited. The console refreshes every 30 seconds, so logging
+list views would bury the mutations under thousands of rows meaning "a tab was
+open". "Who looked at customer X" is a real question and this does not answer
+it.
 
 `admin` is a **third scope**, not a flag on a read key: every other scope is
 bounded by one org and this one is not. A read key is refused here, and no HTTP

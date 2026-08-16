@@ -185,7 +185,8 @@ class TestAuthenticationCache:
         re-verified on every hit."""
         token, prefix, secret_hash = keys.mint("production")
         row = {
-            "key_id": 1, "org_id": 1, "secret_hash": secret_hash, "scopes": "ingest",
+            "key_id": 1, "prefix": prefix, "org_id": 1,
+            "secret_hash": secret_hash, "scopes": "ingest",
             "expires_at": None, "revoked_at": None,
             "tenant": "acme", "project": "default", "environment": "production",
             # The auth query selects these too. Kept in the fixture rather
@@ -202,9 +203,10 @@ class TestAuthenticationCache:
     def test_a_revoked_key_is_refused(self) -> None:
         from datetime import UTC, datetime
 
-        token, _, secret_hash = keys.mint("production")
+        token, prefix, secret_hash = keys.mint("production")
         plane = self._plane({
-            "key_id": 1, "org_id": 1, "secret_hash": secret_hash, "scopes": "ingest",
+            "key_id": 1, "prefix": prefix, "org_id": 1,
+            "secret_hash": secret_hash, "scopes": "ingest",
             "expires_at": None, "revoked_at": datetime.now(UTC),
             "tenant": "acme", "project": "default", "environment": "production",
             # The auth query selects these too. Kept in the fixture rather
@@ -218,9 +220,10 @@ class TestAuthenticationCache:
     def test_an_expired_key_is_refused(self) -> None:
         from datetime import UTC, datetime, timedelta
 
-        token, _, secret_hash = keys.mint("production")
+        token, prefix, secret_hash = keys.mint("production")
         plane = self._plane({
-            "key_id": 1, "org_id": 1, "secret_hash": secret_hash, "scopes": "ingest",
+            "key_id": 1, "prefix": prefix, "org_id": 1,
+            "secret_hash": secret_hash, "scopes": "ingest",
             "expires_at": datetime.now(UTC) - timedelta(days=1), "revoked_at": None,
             "tenant": "acme", "project": "default", "environment": "production",
             # The auth query selects these too. Kept in the fixture rather
@@ -905,7 +908,9 @@ class TestAdminQuotaAndRevoke:
         from query.admin import revoke
 
         class Plane:
-            def revoke_key(self, prefix: str) -> bool:
+            def revoke_key(self, prefix: str, **kw: object) -> bool:
+                # **kw absorbs actor/source/source_ip, which the endpoint now
+                # passes so the revocation is attributable.
                 return False
 
         import query.app as app_module
@@ -914,7 +919,7 @@ class TestAdminQuotaAndRevoke:
         app_module.control_plane = lambda: Plane()
         try:
             with pytest.raises(HTTPException) as caught:
-                revoke("nope", None)
+                revoke("nope", _FakeRequest({}), None)
         finally:
             app_module.control_plane = original
         assert caught.value.status_code == 404
@@ -949,8 +954,21 @@ class TestAdminRepositoryShape:
 
 
 class _FakeRequest:
+    """Enough of a Request for the code under test.
+
+    `url` and `client` are here because `operator()` reads them when recording a
+    refusal. Without them the audit call raised, and the deliberate
+    `contextlib.suppress` around it swallowed the error -- so the test failed
+    with an empty log and looked like a missing feature. That suppress is
+    correct (a broken audit must not turn a 401 into a 500) and this is its
+    cost: a coding error inside the audit call is invisible except in a test
+    that exercises it properly.
+    """
+
     def __init__(self, headers: dict) -> None:
         self.headers = headers
+        self.url = type("Url", (), {"path": "/api/v1/admin/overview"})()
+        self.client = type("Client", (), {"host": "127.0.0.1"})()
 
 
 @contextlib.contextmanager
@@ -967,3 +985,225 @@ def _patched_control(principal):
         yield
     finally:
         app_module.control_plane = original
+
+
+class TestAuditLog:
+    """Operator actions leave a record, or they do not happen.
+
+    The design point worth testing is the TRANSACTION. The action and its audit
+    entry are written together in Postgres, which is what lets a revoke be
+    unconditional: an audit log in a different store would force a bad choice --
+    block the revoke when the log is down and a leaked credential stays live, or
+    do it anyway and the action most worth recording is the one most likely to
+    go unrecorded.
+    """
+
+    def plane(self, *, org_exists=True, key_active=True):
+        """A ControlPlane with the database faked at the statement level.
+
+        Fake at `_rows`, not at `set_quota`, because the thing under test IS the
+        sequence of statements and their transaction -- stubbing the method
+        would test nothing but the stub.
+        """
+        from control.repository import ControlPlane
+
+        plane = ControlPlane.__new__(ControlPlane)
+        plane.dsn = ""
+        plane._conn = None
+        plane._cache = {}
+        plane.statements = []
+        plane.committed = False
+        plane.rolled_back = False
+
+        outer = plane
+
+        class Transaction:
+            def __enter__(self):
+                outer.statements.append(("BEGIN", ()))
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                if exc_type is None:
+                    outer.committed = True
+                else:
+                    outer.rolled_back = True
+                return False
+
+        class Conn:
+            def transaction(self):
+                return Transaction()
+
+        def rows(sql, params=()):
+            outer.statements.append((" ".join(sql.split()), params))
+            if "FROM orgs" in sql and "FOR UPDATE" in sql:
+                return ([{"quota_spans_per_minute": 111, "quota_spans_per_day": None}]
+                        if org_exists else [])
+            if "UPDATE api_keys SET revoked_at" in sql:
+                return ([{"id": 9, "scopes": "read", "org_id": 1}]
+                        if key_active else [])
+            return []
+
+        plane._rows = rows
+        plane._one = lambda sql, params=(): (rows(sql, params) or [None])[0]
+        type(plane).conn = property(lambda self: Conn())
+        return plane
+
+    def actor(self):
+        from control.models import Principal
+
+        return Principal(
+            key_id=7, key_prefix="a1b2c3d4", org_id=1, tenant="acme",
+            project="default", environment="production", scopes=("admin",),
+        )
+
+    def _actions(self, plane):
+        return [sql for sql, _ in plane.statements]
+
+    def test_a_quota_change_and_its_record_are_one_transaction(self) -> None:
+        plane = self.plane()
+        assert plane.set_quota("acme", 500, None, actor=self.actor(), source="console")
+        actions = self._actions(plane)
+        assert actions[0] == "BEGIN"
+        assert any("INSERT INTO audit_log" in a for a in actions)
+        assert plane.committed
+
+    def test_the_entry_records_what_changed_not_just_that_it_did(self) -> None:
+        import json
+
+        plane = self.plane()
+        plane.set_quota("acme", 500, None, actor=self.actor())
+        detail = next(
+            json.loads(params[7])
+            for sql, params in plane.statements
+            if "INSERT INTO audit_log" in sql
+        )
+        assert detail["from"]["per_minute"] == 111
+        assert detail["to"]["per_minute"] == 500
+
+    def test_the_old_value_is_read_inside_the_transaction(self) -> None:
+        """Reading it outside would let a concurrent change slip in between, so
+        the entry would report a `from` that was never true."""
+        plane = self.plane()
+        plane.set_quota("acme", 500, None, actor=self.actor())
+        actions = self._actions(plane)
+        assert actions.index("BEGIN") < next(
+            i for i, a in enumerate(actions) if "FOR UPDATE" in a
+        )
+
+    def test_the_actor_is_named_by_key_prefix(self) -> None:
+        plane = self.plane()
+        plane.set_quota("acme", 500, None, actor=self.actor(), source="console")
+        params = next(
+            p for sql, p in plane.statements if "INSERT INTO audit_log" in sql
+        )
+        assert params[0] == 7            # key id
+        assert params[1] == "a1b2c3d4"   # denormalised prefix
+        assert params[3] == "console"
+
+    def test_a_cli_action_is_audited_too(self) -> None:
+        """`scripts/admin.py` needs database access, which makes it the MORE
+        privileged path, not one to exempt."""
+        plane = self.plane()
+        plane.set_quota("acme", 500, None)  # no actor -> CLI
+        params = next(
+            p for sql, p in plane.statements if "INSERT INTO audit_log" in sql
+        )
+        assert params[3] == "cli"
+        assert params[0] is None
+
+    def test_a_missing_org_writes_no_entry(self) -> None:
+        """A phantom record of a change that never happened is worse than no
+        record: it is a false statement in the one place people go for truth."""
+        plane = self.plane(org_exists=False)
+        assert not plane.set_quota("nope", 5, None, actor=self.actor())
+        assert not any("INSERT INTO audit_log" in a for a in self._actions(plane))
+
+    def test_a_revoke_and_its_record_are_one_transaction(self) -> None:
+        plane = self.plane()
+        assert plane.revoke_key("a1b2c3d4", actor=self.actor(), source="console")
+        actions = self._actions(plane)
+        assert actions[0] == "BEGIN"
+        assert any("INSERT INTO audit_log" in a for a in actions)
+
+    def test_revoking_an_inactive_key_writes_no_entry(self) -> None:
+        plane = self.plane(key_active=False)
+        assert not plane.revoke_key("gone", actor=self.actor())
+        assert not any("INSERT INTO audit_log" in a for a in self._actions(plane))
+
+    def test_the_revoked_key_leaves_the_cache_immediately(self) -> None:
+        plane = self.plane()
+        plane._cache["a1b2c3d4"] = (9e9, "hash", self.actor())
+        plane.revoke_key("a1b2c3d4", actor=self.actor())
+        assert "a1b2c3d4" not in plane._cache
+
+
+class TestAuditOfRefusals:
+    def test_a_refused_admin_attempt_is_recorded(self) -> None:
+        """The most interesting rows in the table: somebody presenting a
+        credential that does not work at the cross-tenant surface."""
+        import pytest
+        from fastapi import HTTPException
+
+        from control.models import Principal
+        from query.admin import operator
+
+        recorded = []
+
+        class Plane:
+            def authenticate(self, token):
+                return Principal(
+                    key_id=1, key_prefix="reader01", org_id=1, tenant="acme",
+                    project="default", environment="production", scopes=("read",),
+                )
+
+            def audit(self, action, **kw):
+                recorded.append((action, kw))
+
+        import query.app as app_module
+
+        original = app_module.control_plane
+        app_module.control_plane = lambda: Plane()
+        try:
+            with pytest.raises(HTTPException):
+                operator(_FakeRequest({"x-api-key": "read-key"}))
+        finally:
+            app_module.control_plane = original
+
+        assert recorded and recorded[0][0] == "admin.denied"
+        assert recorded[0][1]["outcome"] == "denied"
+        assert recorded[0][1]["detail"]["reason"] == "wrong scope"
+
+    def test_a_failing_audit_write_still_returns_401_not_500(self) -> None:
+        """Failing to log a refusal must not turn a 401 into a 500 and tell the
+        caller something they should not learn from an error code."""
+        import pytest
+        from fastapi import HTTPException
+
+        from query.admin import operator
+
+        class Plane:
+            def authenticate(self, token):
+                return None
+
+            def audit(self, *a, **kw):
+                raise RuntimeError("audit table is gone")
+
+        import query.app as app_module
+
+        original = app_module.control_plane
+        app_module.control_plane = lambda: Plane()
+        try:
+            with pytest.raises(HTTPException) as caught:
+                operator(_FakeRequest({}))
+        finally:
+            app_module.control_plane = original
+        assert caught.value.status_code == 401
+
+    def test_a_forwarded_ip_is_taken_but_never_trusted(self) -> None:
+        """A caller can set `x-forwarded-for` freely, so it is an operational
+        hint and never an authorization input. Bounded, so a long header cannot
+        bloat the table."""
+        from query.admin import _client_ip
+
+        assert _client_ip(_FakeRequest({"x-forwarded-for": "1.2.3.4, 10.0.0.1"})) == "1.2.3.4"
+        assert len(_client_ip(_FakeRequest({"x-forwarded-for": "x" * 500}))) <= 64
