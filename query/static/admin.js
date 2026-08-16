@@ -24,9 +24,15 @@ const num = (n) => (n ?? 0).toLocaleString();
    reads as "nothing allowed", the exact opposite of what it means. */
 const limit = (n) => (n === 0 ? '<span class="unl">unlimited</span>' : num(n));
 
+/* Two databases, two timestamp shapes. ClickHouse DateTime64 serialises NAIVE
+   (`2026-08-16T07:39:04`) and needs a `Z` to be read as UTC; Postgres
+   TIMESTAMPTZ already carries an offset (`...+00:00`), and appending `Z` to
+   that makes an invalid Date -- which rendered every audit row as "NaNd ago".
+   The customer console never hit this because it only reads ClickHouse. */
 const ago = (iso) => {
   if (!iso) return "—";
-  const s = Math.max(0, (Date.now() - new Date(iso + "Z").getTime()) / 1000);
+  const hasZone = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(iso);
+  const s = Math.max(0, (Date.now() - new Date(hasZone ? iso : iso + "Z").getTime()) / 1000);
   if (s < 60) return `${Math.floor(s)}s ago`;
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;

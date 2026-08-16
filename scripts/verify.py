@@ -1339,30 +1339,54 @@ def main() -> int:
                     "x-api-key": _dev_key("MCPOBS_INGEST_KEY"),
                 },
             )
+            # Keys LOWERCASED. `urllib`'s HTTPMessage is case-insensitive but
+            # `dict(...)` is not, and the server sends `x-quota-used-minute`
+            # while this code was written asking for `X-Quota-Used-Minute`. The
+            # headers were arriving correctly the whole time and the assertion
+            # reported them missing.
+            def _headers(message: Any) -> dict[str, str]:
+                return {k.lower(): v for k, v in message.items()}
+
             try:
                 with urllib.request.urlopen(request, timeout=15) as response:
-                    return response.status, dict(response.headers)
+                    return response.status, _headers(response.headers)
             except urllib.error.HTTPError as exc:
-                return exc.code, dict(exc.headers)
+                return exc.code, _headers(exc.headers)
 
-        under, _ = _probe(3)
-        over, headers = _probe(5)
+        # WAIT FOR THE CACHE, and this is a product property rather than a test
+        # workaround. Quota limits ride on the cached `Principal`, so a change
+        # converges within CACHE_TTL_SECONDS (30s) in every process that is not
+        # the one that made it -- the same promise revocation makes, and
+        # documented as such. The first version probed immediately, got a 200
+        # from the gateway's still-cached enterprise plan, and reported that
+        # quotas did not work.
+        #
+        # Polls rather than sleeping a fixed 35s: the loop IS the measurement.
+        deadline = time.time() + 60
+        over, headers = 200, {}
+        while time.time() < deadline:
+            over, headers = _probe(5)
+            if over == 429:
+                break
+            time.sleep(5)
+
         record(
             "J1 an over-quota tenant is rejected at the edge",
-            under == 200 and over == 429,
-            f"3 spans -> {under}, 5 more -> {over} "
-            f"(used {headers.get('X-Quota-Used-Minute')}/"
-            f"{headers.get('X-Quota-Limit-Minute')})",
+            over == 429,
+            f"429 once the limit converged (used {headers.get('x-quota-used-minute')}/"
+            f"{headers.get('x-quota-limit-minute')})"
+            if over == 429
+            else f"still {over} after 60s -- the limit never took effect",
         )
         record(
             "J1b the rejection is retryable and says when",
-            over == 429 and int(headers.get("Retry-After", 0)) > 0,
-            f"Retry-After={headers.get('Retry-After')}s -- 429 not 403, because an "
+            over == 429 and int(headers.get("retry-after", 0)) > 0,
+            f"Retry-After={headers.get('retry-after')}s -- 429 not 403, because an "
             "OTLP exporter retries a 429 and abandons a 403",
         )
         # A rejected burst must still be counted, or the tenant being rejected
         # looks quiet to whoever goes looking for the cause.
-        used = int(headers.get("X-Quota-Used-Minute", 0))
+        used = int(headers.get("x-quota-used-minute", 0))
         record(
             "J1c a rejected burst is still counted",
             used > 5,
@@ -1416,6 +1440,26 @@ def main() -> int:
     # the whole fix: `add_event()` would have attached these to the parent,
     # where they would not be exported until the parent ended -- the moment
     # that is already too late.
+    #
+    # This DRIVES ITS OWN long call. The first version asserted over whatever
+    # long trace happened to be in the window and told you to go run a script in
+    # /tmp when there was not one -- an assertion that depends on a manual step
+    # outside the harness is one that fails for the wrong reason on every clean
+    # machine, which trains you to ignore it.
+    async def _long_call() -> None:
+        from demo_server.scenarios import stdio_session
+
+        async with stdio_session() as client:
+            # 130 rows x 50ms is comfortably over the 5s threshold below, and
+            # comfortably under the 200-span progress cap.
+            await client.call_tool("slow_export", {"rows": 130}, read_timeout_seconds=90)
+
+    try:
+        asyncio.run(_long_call())
+        time.sleep(14)  # let the batch reach ClickHouse
+    except Exception as exc:
+        print(f"     long call failed: {exc}")
+
     ahead = ch.query(
         "SELECT count() FROM ("
         "  SELECT trace_id, "
@@ -1430,9 +1474,7 @@ def main() -> int:
     record(
         "H2 a long call reported progress while it was still running",
         ahead > 0,
-        f"{ahead} trace(s) over 5s with progress children"
-        + ("  -- no long call in the window; run `python /tmp/slowrun.py`"
-           if not ahead else ""),
+        f"{ahead} trace(s) over 5s carrying progress children",
     )
 
     events = ch.query(

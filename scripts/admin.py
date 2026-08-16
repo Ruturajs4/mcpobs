@@ -166,7 +166,15 @@ def main() -> int:
             print(f"  reusing keys in {cache.name}")
             return 0
 
-        org = cp.create_org(args.org)
+        # `enterprise` (unlimited) for the local dev org, deliberately. The
+        # default `trial` plan caps at 2000 spans/minute, and `make verify`
+        # drives several demo runs back to back -- so a dev machine would start
+        # returning 429s and it would read as a pipeline fault rather than as
+        # the quota working. Assertion J1 squeezes the limit explicitly and
+        # restores it, which is how quotas stay exercised without throttling
+        # everything else.
+        org = cp.create_org(args.org, plan="enterprise")
+        cp.set_plan(args.org, "enterprise")
         project = cp.create_project(org.id, args.project, environment="local")
         ingest = cp.issue_key(org.id, project.id, scopes=("ingest",), name="dev ingest")
         read = cp.issue_key(org.id, project.id, scopes=("read",), name="dev read")
