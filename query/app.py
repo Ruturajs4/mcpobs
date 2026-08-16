@@ -23,11 +23,12 @@ import logging
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
 
 from control import ControlPlane
 from control.keys import READ
@@ -341,7 +342,38 @@ from query.admin import router as admin_router  # noqa: E402
 
 app.include_router(admin_router)
 
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
+class RevalidatingStatics(StaticFiles):
+    """Static assets that must be revalidated before use.
+
+    The console ships unversioned URLs -- `/static/app.js`, not
+    `app.<hash>.js` -- and FastAPI's StaticFiles sends ETag and Last-Modified
+    but NO Cache-Control. With no Cache-Control a browser is free to apply
+    heuristic freshness and serve the file from cache without asking, which is
+    exactly what happened here: a deployed fix kept not taking effect, and the
+    page was running the previous build while the server served the new one.
+
+    That is a correctness problem, not a nuisance. A browser holding yesterday's
+    JavaScript against today's API is the skew that produces bug reports nobody
+    can reproduce.
+
+    `no-cache` does NOT mean "do not cache" -- it means "revalidate before
+    using". The ETag is already sent, so the usual answer is a 304 with no body,
+    and the cost of correctness here is one conditional request per asset.
+
+    The alternative, hashed filenames with a long max-age, is better and needs a
+    build step. This repo deliberately has none (query/app.py: "no build step,
+    no CORS"), so the cheap correct thing wins until that changes.
+    """
+
+    async def get_response(self, path: str, scope: Any) -> Response:
+        response = await super().get_response(path, scope)
+        # setdefault, not assignment: a 304 built by StaticFiles carries its own
+        # headers and must not have them rewritten underneath it.
+        response.headers.setdefault("cache-control", "no-cache")
+        return response
+
+
+app.mount("/static", RevalidatingStatics(directory=STATIC), name="static")
 
 
 @app.get("/", include_in_schema=False)
@@ -352,7 +384,12 @@ def ui() -> FileResponse:
     no CORS. A Phase-0 proof does not need a frontend toolchain, and adding one
     would be the largest thing in the repo by a wide margin.
     """
-    return FileResponse(STATIC / "index.html")
+    return FileResponse(
+        STATIC / "index.html",
+        # The shell is what points at every other asset. Cached, it pins a
+        # user to an entire old build.
+        headers={"cache-control": "no-cache"},
+    )
 
 
 @app.get("/admin", include_in_schema=False)
@@ -363,4 +400,7 @@ def admin_ui() -> FileResponse:
     showing a customer everyone else's tenants. Two pages, two credentials, and
     no code path from one to the other.
     """
-    return FileResponse(STATIC / "admin.html")
+    return FileResponse(
+        STATIC / "admin.html",
+        headers={"cache-control": "no-cache"},
+    )

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any, Final
+from urllib.parse import urlsplit
 
 from normalizer.models import DecodedSpan, SpanRow
 from normalizer.redact import AttributeRedactor, parse_statement
@@ -20,7 +21,7 @@ from normalizer.taxonomy import FailureTaxonomy
 class SpanNormalizer:
     """Extracts MCP fields and derives the failure category."""
 
-    normalization_version: Final[int] = 16
+    normalization_version: Final[int] = 17
 
     # span attributes
     MCP_METHOD: Final = "mcp.method.name"
@@ -232,6 +233,25 @@ class SpanNormalizer:
         raw = self._first(attrs, keys)
         return self._int(raw) if raw else None
 
+    @staticmethod
+    def _host_from_url(attrs: dict[str, Any]) -> str:
+        """host:port out of the request URL.
+
+        Userinfo is DROPPED rather than passed through: `https://user:pw@host/`
+        is a legal URL and a credential, and this value is a low-cardinality
+        dimension people group by -- exactly the wrong place for a secret to
+        surface. urlsplit puts any userinfo in netloc, so the split on "@" is
+        the whole guard.
+        """
+        raw = attrs.get("url.full") or attrs.get("http.url") or ""
+        if not raw:
+            return ""
+        try:
+            netloc = urlsplit(str(raw)).netloc
+        except ValueError:
+            return ""
+        return netloc.rsplit("@", 1)[-1]
+
     def _http(self, attrs: dict[str, Any]) -> tuple[str, int | None, str]:
         """Downstream HTTP dimensions, tolerating old and new semconv names."""
         method = attrs.get("http.request.method") or attrs.get("http.method") or ""
@@ -240,6 +260,13 @@ class SpanNormalizer:
             attrs.get("server.address")
             or attrs.get("net.peer.name")
             or attrs.get("http.host")
+            # LAST RESORT: the URL. Measured against the running stack, the httpx
+            # instrumentor emits ONLY http.method, http.url and http.status_code
+            # on a client span -- no host attribute of any kind. So every
+            # outbound call arrived with a blank host while the host sat inside
+            # a field beside it, and the console could not say which of three
+            # partner APIs a span had hit without the reader parsing a URL.
+            or self._host_from_url(attrs)
             or ""
         )
         try:

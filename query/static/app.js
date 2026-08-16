@@ -1109,7 +1109,21 @@ function closeFilterPanel() {
     panel.setAttribute("aria-hidden", "true");
   }
   renderFilterBar();
-  const target = filterReturnFocus?.isConnected ? filterReturnFocus : el("open-filters");
+  /* `isConnected` alone is too weak a guard: document.body is always connected,
+     so whenever the panel was opened without focus landing on a real control --
+     a mouse click in browsers that do not focus buttons, or any programmatic
+     open -- the captured "previous focus" WAS the body, the guard passed, and
+     focus was restored to nothing. Verified: the focus call fired, with BODY as
+     its target.
+
+     Restoring focus to the body is never what anyone wanted. Fall back to the
+     trigger unless the captured element is a genuinely focusable control. */
+  const restorable =
+    filterReturnFocus?.isConnected &&
+    filterReturnFocus !== document.body &&
+    filterReturnFocus !== document.documentElement &&
+    typeof filterReturnFocus.focus === "function";
+  const target = restorable ? filterReturnFocus : el("open-filters");
   target?.focus();
   filterReturnFocus = null;
 }

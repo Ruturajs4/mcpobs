@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
-from query.dtos import FailureBreakdown, Page
+from query.dtos import NOT_A_FAILURE, FailureBreakdown, Page
 from query.filters import HAVING, WHERE, catalog, parse
 from query.repository import (
     CAPABILITY_ROW_CAP,
@@ -735,3 +735,94 @@ class TestCapabilityQueryCost:
         page = repo.capabilities("tenant", "project", BASE, kind="tool")
         assert page.truncated is False
         assert len(page.items) == CAPABILITY_ROW_CAP
+
+
+class TestOneFailureDefinition:
+    """"Did this fail" must have exactly ONE answer in the product.
+
+    It had three. The overview's error rate excluded 401s and cancellations;
+    `?status=error` excluded cancellations but counted 401s; the /errors list
+    counted both. Measured over 24h of real data, the Errors page listed 62
+    traces the headline error rate said were not errors -- and an error view
+    that disagrees with the error rate is worse than either being wrong alone,
+    because it makes both untrustworthy.
+    """
+
+    def test_failure_definition_matches_the_taxonomy(self) -> None:
+        """The read plane mirrors the writer's definition.
+
+        The query image does not ship normalizer/, so query.dtos cannot import
+        FailureTaxonomy -- the constant is duplicated across a deployment
+        boundary on purpose. This is what stops the duplicate rotting.
+        """
+        from normalizer.taxonomy import FailureTaxonomy
+
+        # The taxonomy has no "" entry: it classifies, so it never emits blank.
+        # The read plane sees unclassified rows and must treat them as verdicts
+        # withheld rather than failures.
+        assert set(NOT_A_FAILURE) - {""} == set(FailureTaxonomy.NOT_A_FAILURE)
+
+    def test_status_filter_and_error_list_use_the_same_set(self) -> None:
+        from query.filters import parse
+
+        params: dict[str, object] = {}
+        clauses = parse("traces", {"status": "error"}).clauses(WHERE, params)
+        assert len(clauses) == 1
+        for category in NOT_A_FAILURE:
+            assert f"'{category}'" in clauses[0], f"{category} missing from ?status=error"
+
+    def test_errors_list_excludes_everything_the_overview_excludes(self) -> None:
+        repo = object.__new__(SpanRepository)
+        captured: dict[str, str] = {}
+
+        def rows(sql: str, params: dict[str, object]) -> list[tuple[object, ...]]:
+            captured["sql"] = sql
+            return []
+
+        repo._rows = rows  # type: ignore[method-assign]
+        repo.traces("tenant", "project", BASE, failures_only=True)
+        for category in NOT_A_FAILURE:
+            assert f"'{category}'" in captured["sql"], f"{category} would appear in /errors"
+
+    def test_breakdown_failures_counts_exactly_the_rest(self) -> None:
+        counts = dict.fromkeys(FailureBreakdown().model_dump(), 1)
+        breakdown = FailureBreakdown(**counts)
+        expected = len([n for n in counts if n not in NOT_A_FAILURE])
+        assert breakdown.failures == expected
+
+
+class TestDownstreamHostFallback:
+    """A client HTTP span must say which host it called.
+
+    Measured against the running stack: the httpx instrumentor emits only
+    http.method, http.url and http.status_code -- no host attribute of any
+    kind. So every outbound call stored a blank host while the host sat inside
+    a field beside it, and the console could not distinguish three partner APIs
+    without the reader parsing a URL.
+    """
+
+    @staticmethod
+    def _host(attrs: dict[str, object]) -> str:
+        from normalizer.normalize import SpanNormalizer
+
+        return SpanNormalizer.__new__(SpanNormalizer)._http(attrs)[2]
+
+    def test_host_is_recovered_from_the_url(self) -> None:
+        assert self._host({"http.url": "http://127.0.0.1:8801/v1/charges"}) == "127.0.0.1:8801"
+        assert self._host({"url.full": "https://api.example.com/v1?k=1"}) == "api.example.com"
+
+    def test_an_explicit_host_attribute_still_wins(self) -> None:
+        attrs = {"server.address": "explicit.host", "http.url": "http://other.host/x"}
+        assert self._host(attrs) == "explicit.host"
+
+    def test_credentials_in_the_url_are_never_stored(self) -> None:
+        """`https://user:pw@host/` is a legal URL and a credential.
+
+        This value is a low-cardinality dimension people group by -- the worst
+        possible place for a secret to surface.
+        """
+        assert self._host({"http.url": "https://user:pw@internal.example/x"}) == "internal.example"
+
+    def test_a_missing_or_unparseable_url_yields_empty(self) -> None:
+        assert self._host({}) == ""
+        assert self._host({"http.url": "not a url"}) == ""

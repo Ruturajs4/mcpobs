@@ -28,6 +28,7 @@ import clickhouse_connect
 from clickhouse_connect.driver.client import Client
 
 from query.dtos import (
+    NOT_A_FAILURE,
     CapabilityPage,
     CapabilityRow,
     FailureBreakdown,
@@ -152,6 +153,12 @@ materialized view, which cannot see version history at all. `scripts/
 recompute_rollups.py` is what reconciles it after a replay, and assertion E1
 checks the two agree on every run.
 """
+
+#: The error list's definition of a failure, from the SAME constant the overview
+#: and the ?status= filter use. It previously excluded only `pending_input`, so
+#: the Errors page listed cancellations and 401s that the headline error rate
+#: said were not errors -- 62 such traces over 24h of real data.
+_NOT_A_FAILURE_SQL = ", ".join(f"'{c}'" for c in NOT_A_FAILURE)
 
 #: Most rows a capability table returns. Aggregation is by NAME, so this bounds
 #: distinct tools/prompts/resources rather than call volume -- a few dozen for a
@@ -653,7 +660,7 @@ class SpanRepository:
             # error view looking healthy is the worst possible lie for it to
             # tell. `pending_input` is excluded here because an MRTR interim
             # round is not a failure (D20).
-            clauses.append("failure_category NOT IN ('', 'ok', 'pending_input')")
+            clauses.append(f"failure_category NOT IN ({_NOT_A_FAILURE_SQL})")
         if filters is not None:
             clauses.extend(filters.clauses(WHERE, params))
         if cursor:

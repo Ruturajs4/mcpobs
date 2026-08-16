@@ -14,6 +14,32 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+#: Categories that are NOT failures. The read plane's single answer to "did this
+#: fail", and it has to be single: before this constant existed there were
+#: THREE definitions in one product. The overview's error rate excluded 401s and
+#: cancellations; `?status=error` excluded cancellations but counted 401s; and
+#: the /errors list counted both. Measured over 24h of real data, the Errors
+#: page listed 62 traces that the headline error rate said were not errors.
+#:
+#: Why each one is here:
+#:   ok             -- succeeded
+#:   ''             -- unclassified at write time, not a verdict
+#:   pending_input  -- an MRTR interim round, the single most likely way to
+#:                     corrupt an error rate (Day-1 3.2, D20)
+#:   cancelled      -- the client gave up; not a success, not a server fault
+#:   unauthorized / forbidden -- transport-level authorization outcomes. The
+#:                     spec's own flow OPENS with an unauthenticated request
+#:                     answered by a 401, and 403 insufficient_scope drives the
+#:                     routine step-up flow. Counting either as a server failure
+#:                     would make every correctly-behaving client look broken.
+#:
+#: MIRRORS `FailureTaxonomy.NOT_A_FAILURE`. The query image does not ship
+#: normalizer/, so this cannot import it; `test_failure_definition_matches_the
+#: _taxonomy` fails the build if the two ever diverge.
+NOT_A_FAILURE: tuple[str, ...] = (
+    "", "ok", "pending_input", "cancelled", "unauthorized", "forbidden",
+)
+
 
 class FailureBreakdown(BaseModel):
     """Counts by failure category, the product's core differentiator (V2 §6.3)."""
@@ -38,13 +64,17 @@ class FailureBreakdown(BaseModel):
 
     @property
     def failures(self) -> int:
-        return (
-            self.tool_error
-            + self.server_exception
-            + self.unknown_tool
-            + self.invalid_arguments
-            + self.protocol_error
-            + self.unclassified
+        """Everything that is not in NOT_A_FAILURE.
+
+        Derived rather than enumerated: the old version listed the six failing
+        categories by hand, so adding a category meant remembering to add it
+        here too -- and forgetting meant a real failure quietly missing from the
+        error rate, which is the one number nobody re-derives.
+        """
+        return sum(
+            count
+            for name, count in self.model_dump().items()
+            if name not in NOT_A_FAILURE
         )
 
 

@@ -32,6 +32,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from query.dtos import NOT_A_FAILURE
+
 # Control types the generic panel knows how to render. Adding a KIND is a
 # frontend change; adding a FILTER of an existing kind is not.
 SELECT = "select"  # one value from a list the backend supplies
@@ -169,6 +171,15 @@ class Filter:
         params[param] = value
         return f"{column} {self.op} {{{param}:{self.ch_type}}}"
 
+#: NOT_A_FAILURE as a SQL list. Rendered from the constant rather than written
+#: out, so `?status=error` cannot drift from the overview's error rate the way
+#: it had: it counted 401s that the headline number excluded.
+#:
+#: Safe to interpolate ONLY because every element is a literal from our own
+#: source -- no user input reaches this string.
+_NOT_A_FAILURE_SQL = ", ".join(f"'{c}'" for c in NOT_A_FAILURE)
+
+
 # ===========================================================================
 # The filters themselves
 # ===========================================================================
@@ -209,7 +220,7 @@ TRACE_FILTERS: tuple[Filter, ...] = (
         # them: an awaiting-input round is not a failure (D20), and a client
         # that gave up is not a server fault.
         predicates=(
-            ("error", "failure_category NOT IN ('', 'ok', 'pending_input', 'cancelled')"),
+            ("error", f"failure_category NOT IN ({_NOT_A_FAILURE_SQL})"),
             ("ok", "failure_category IN ('', 'ok')"),
         ),
         help="Coarser than category: did the call succeed at all.",

@@ -184,6 +184,54 @@ def _dev_key(name: str) -> str:
     return ""
 
 
+def _wait_until_quiet(ch, seconds: float = 45.0) -> bool:
+    """Block until ingestion stops moving, or give up.
+
+    The reconciliation assertions (B4, E1b, E4) compare `spans_raw` against
+    `trace_summaries`. ClickHouse gives no snapshot isolation ACROSS those two
+    reads even inside one SELECT, so a span landing between them shows up as a
+    phantom one-row gap -- observed as "1463/1464 traces" on a pipeline that was
+    perfectly consistent a second later.
+
+    This is not the assertions being wrong. It is them being asked a question
+    about a moving target. Waiting for the target to stop is the fix; loosening
+    the assertion would throw away the thing it exists to catch.
+
+    Returns False on timeout so the caller can still assert rather than hang.
+    """
+    previous = -1
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        current = int(ch.query("SELECT count() FROM spans_raw").result_rows[0][0])
+        if current == previous:
+            return True
+        previous = current
+        time.sleep(3)
+    return False
+
+
+def _caveat_expected(latency: dict) -> bool:
+    """Whether the API SHOULD be warning about its own clock.
+
+    Mirrors `SpanRepository._clock_warning`, deliberately: E5b previously
+    declared the clock "coarse" at any tick over 0.1ms and demanded a warning,
+    which is cruder than the product's own two-part rule. Once the demo made
+    real socket calls, p50 rose to ~10ms on a 0.51ms tick -- correctly no
+    caveat, and E5b failed the product for being right.
+
+    Both halves matter and neither subsumes the other: a p50 within a few ticks
+    of the clock is quantisation however few zeros there are, and a p50 well
+    above the tick still misleads when most samples floored to zero.
+    """
+    tick = latency.get("clock_tick_ms") or 0.0
+    count = latency.get("count") or 0
+    if not tick or not count:
+        return False
+    p50 = latency.get("p50_ms") or 0.0
+    zeros = latency.get("zero_duration") or 0
+    return bool(p50 and p50 < tick * 10) or (zeros / count > 0.20)
+
+
 def main() -> int:
     ch = client()
 
@@ -403,7 +451,16 @@ def main() -> int:
     # Both names: an earlier probe used 'verify' before it was renamed, and
     # those rows survive in trace_summaries even though they were deleted from
     # spans_raw -- which is precisely the desynchronisation described above.
-    probe = "AND tenant_id = 'local'"
+    # A span with NO trace id is not a trace. The quota assertions (J-series)
+    # post synthetic `quota-probe` spans with an empty trace_id purely to be
+    # counted by the gateway; spans_raw stores them, and grouping by trace_id
+    # collapses all 11 into one phantom "trace" that trace_summaries correctly
+    # never created. That is what produced the intermittent "2100/2101" -- an
+    # off-by-one that looked like a race and was actually this script counting
+    # its own probes as customer telemetry.
+    probe = "AND tenant_id = 'local' AND trace_id != ''"
+    # Both reads below must see the same pipeline state.
+    _wait_until_quiet(ch)
     raw_traces, summary_traces = ch.query(
         f"SELECT (SELECT uniqExact(trace_id) FROM spans_raw WHERE 1 {probe}), "
         f"       (SELECT uniqExact(trace_id) FROM trace_summaries WHERE 1 {probe})"
@@ -941,17 +998,35 @@ def main() -> int:
     # and only a replay would change them -- counting them here would make the
     # assertion fail for history rather than for behaviour. argMax does not help
     # either: those are different spans, not older rows for the same ones.
+    # KEY-VALUE STORES ARE EXCLUDED FROM THE COLLECTION CHECK. Redis has no
+    # tables, so `db.collection` is legitimately empty on every one of its spans
+    # -- and its key IS customer data (`customer:acme:tier`), redacted to `?` by
+    # design. Requiring a collection there would be requiring the redactor to
+    # leak. Before the demo gained Redis every db span was SQL, so the stricter
+    # form happened to hold; that was the data being narrow, not the rule.
     db = ch.query(
         "SELECT countIf(db_operation != ''), countIf(db_collection != ''), "
         "       countIf(db_statement != '') "
         "FROM spans_raw WHERE downstream_kind = 'db' "
+        "  AND db_system NOT IN ('redis', 'memcached') "
         "  AND timestamp > now() - INTERVAL 30 MINUTE "
         "  AND normalization_version = (SELECT max(normalization_version) FROM spans_raw)"
+    ).result_rows[0]
+    kv = ch.query(
+        "SELECT countIf(db_operation != ''), count() FROM spans_raw "
+        "WHERE downstream_kind = 'db' AND db_system IN ('redis', 'memcached') "
+        "  AND timestamp > now() - INTERVAL 30 MINUTE"
     ).result_rows[0]
     record(
         "D6e db.operation and db.collection are derived from the statement",
         db[2] > 0 and db[0] == db[2] and db[1] == db[2],
-        f"{db[0]}/{db[2]} have an operation, {db[1]}/{db[2]} a collection",
+        f"{db[0]}/{db[2]} SQL spans have an operation, {db[1]}/{db[2]} a collection",
+    )
+    record(
+        "D6e2 key-value spans carry an operation and no collection",
+        kv[1] == 0 or kv[0] == kv[1],
+        f"{kv[0]}/{kv[1]} redis/memcached spans name their operation "
+        "(no collection expected -- the key is the data, and it is redacted)",
     )
 
     # ---------------- E: rollups and the clock -----------------------------
@@ -990,6 +1065,12 @@ def main() -> int:
     )
 
     from scripts.recompute_rollups import RollupRecomputer
+
+    # Nothing may be in flight across the recompute. A span landing between
+    # REPLACE PARTITION and the comparison below shows as rollup/raw drift that
+    # has nothing to do with the repair being tested -- and H2's long call, just
+    # above, is still draining when this runs.
+    _wait_until_quiet(ch)
 
     recomputer = RollupRecomputer()
     for day in recomputer.dates(None):
@@ -1074,16 +1155,25 @@ def main() -> int:
         "SELECT min(min_tick_ns) FROM tool_metrics_1m"
     ).result_rows[0][0]
     latency = api_overview["latency"]
-    coarse = bool(tick and tick > 100_000)
+    # The API's tick must be the one the ROLLUP measured, not a second opinion.
+    # `tick` was read here and then never compared, so the two could have drifted
+    # silently -- and a caveat computed from a different tick than the one shown
+    # is a caveat about nothing.
+    rollup_tick_ms = (tick or 0) / 1e6
     record(
         "E5 the observed clock tick is measured and exposed",
-        latency["clock_tick_ms"] > 0,
-        f"clock ticks every {latency['clock_tick_ms']:.4f}ms (observed, not assumed)",
+        latency["clock_tick_ms"] > 0
+        and abs(latency["clock_tick_ms"] - rollup_tick_ms) < 0.01,
+        f"clock ticks every {latency['clock_tick_ms']:.4f}ms (observed, not "
+        f"assumed); rollup agrees at {rollup_tick_ms:.4f}ms",
     )
     record(
-        "E5b a clock too coarse for the percentiles says so in the API",
-        (not coarse) or bool(latency["clock_warning"]),
-        latency["clock_warning"] or "clock is fine; no caveat needed",
+        "E5b the API's clock caveat agrees with the API's own numbers",
+        bool(latency["clock_warning"]) == _caveat_expected(latency),
+        latency["clock_warning"]
+        or f"no caveat, and none due (p50 {latency['p50_ms']}ms on a "
+           f"{latency['clock_tick_ms']}ms tick, {latency['zero_duration']}/"
+           f"{latency['count']} zero)",
     )
 
     # ---------------- F: auth, tenancy and the archive (DF-9) --------------
@@ -1541,9 +1631,31 @@ def main() -> int:
             # comfortably under the 200-span progress cap.
             await client.call_tool("slow_export", {"rows": 130}, read_timeout_seconds=90)
 
+    def _progress_traces() -> int:
+        return int(
+            ch.query(
+                "SELECT count() FROM ("
+                "  SELECT trace_id, "
+                "         minIf(ingested_at, span_name = 'mcp.progress') AS child_at, "
+                "         maxIf(ingested_at, span_name LIKE 'tools/call%') AS parent_at, "
+                "         maxIf(duration_ns, span_name LIKE 'tools/call%') AS parent_ns "
+                "  FROM spans_raw WHERE timestamp > now() - INTERVAL 60 MINUTE "
+                "  GROUP BY trace_id "
+                "  HAVING child_at > toDateTime(0) AND parent_at > toDateTime(0) "
+                "     AND parent_ns > 5000000000)"
+            ).result_rows[0][0]
+        )
+
     try:
         asyncio.run(_long_call())
-        time.sleep(14)  # let the batch reach ClickHouse
+        # POLL, do not sleep a guessed interval. This waited a fixed 14s, which
+        # was already inside the noise when end-to-end freshness was ~19s and
+        # broke outright once the demo gained real Postgres/MySQL/Redis calls and
+        # freshness moved to ~23s. A fixed sleep against a variable pipeline
+        # fails for the wrong reason and trains people to ignore the assertion.
+        deadline = time.time() + 90
+        while time.time() < deadline and _progress_traces() == 0:
+            time.sleep(3)
     except Exception as exc:
         print(f"     long call failed: {exc}")
 
