@@ -1,0 +1,169 @@
+# Customer-facing documentation.
+#
+# THE MOST IMPORTANT THING IN THIS FILE IS `exclude_docs`.
+#
+# `docs/` holds internal engineering documents alongside the customer ones, and
+# MkDocs publishes every markdown file it finds -- being absent from `nav` only
+# removes the sidebar link. Measured, not assumed: a file left out of `nav` was
+# still built to `site/<name>/index.html` AND its full text was written into
+# `search/search_index.json`, so searching the published docs for "alpha" would
+# have returned "not ready for a customer-facing alpha".
+#
+# The internal set is not merely embarrassing, it is a security document:
+# alpha-readiness.md enumerates unpatched weaknesses (credentials in
+# localStorage, containers running as root, exposed database ports) and
+# deferred.md lists known gaps such as the absent tenant partition key.
+# Publishing either hands an attacker a prioritised checklist.
+#
+# `tests/test_docs.py` builds the site and greps the OUTPUT, because this list
+# is a promise and only the built artefact is evidence.
+
+site_name: MCP Observability
+site_description: >-
+  MCP-native observability for production MCP servers. See which tool failed,
+  why it failed, and where the time went.
+site_url: https://docs.example.com/
+repo_url: https://github.com/example/mcp-observability
+edit_uri: ""
+
+docs_dir: docs
+site_dir: site
+
+# ---------------------------------------------------------------- exclusions
+# Everything here stays in the repository and never reaches the built site.
+exclude_docs: |
+  Architecture.md
+  decisions.md
+  deferred.md
+  alpha-readiness.md
+  Day_01_Engineering_Doc_MCP_Observability.md
+  Day_02_Engineering_Doc_MCP_Observability.md
+  observed_attributes.md
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.sections      # the left-hand index the docs are organised around
+    - navigation.top
+    - navigation.tracking
+    - navigation.indexes
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+  palette:
+    # Defaults to the reader's system setting rather than forcing one. The
+    # console is dark-first; the docs are read in daylight as often as not.
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Follow system theme
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          # ONLY `mcpobs`. The normalizer, query and control packages are
+          # internal -- auto-documenting them would republish the internals this
+          # file exists to keep out, one docstring at a time.
+          paths: [.]
+          options:
+            docstring_style: google
+            show_source: false        # source view would expose internal calls
+            show_root_heading: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+            separate_signature: true
+            signature_crossrefs: true
+            filters: ["!^_"]          # no private members in customer docs
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+# ------------------------------------------------------------------- the nav
+# An explicit list, never a glob. A glob would pick up whatever lands in `docs/`
+# next, which is exactly how an internal document gets published by accident.
+nav:
+  - Overview: index.md
+
+  - Get started:
+      - get-started/index.md
+      - Quickstart: get-started/quickstart.md
+      - Your first trace: get-started/first-trace.md
+
+  - Integrate:
+      - integrate/index.md
+      - Python SDK: integrate/python-sdk.md
+      - Databases, caches and APIs: integrate/downstream.md
+      - Payloads and privacy: integrate/payloads.md
+
+  - Concepts:
+      - concepts/index.md
+      - Traces and spans: concepts/traces.md
+      - Failure taxonomy: concepts/failures.md
+      - Long-running tools: concepts/long-running.md
+      - Latency and clock accuracy: concepts/latency.md
+
+  - Console:
+      - console/index.md
+      - Filtering and search: console/filtering.md
+
+  - Reference:
+      - reference/index.md
+      - SDK reference: reference/sdk.md
+      - Failure categories: reference/failure-categories.md
+      - Query API: reference/query-api.md
+
+  - Operate:
+      - operate/index.md
+      - API keys and access: operate/keys.md
+      - Quotas: operate/quotas.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/example/mcp-observability
+
+# Build strictly: a broken internal link or a missing nav target fails the build
+# rather than shipping a 404 to a customer.
+strict: true

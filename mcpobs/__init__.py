@@ -1,8 +1,13 @@
 """mcpobs — the optional onboarding helper for MCP Observability.
 
 Everything here is additive and replaceable. A customer who prefers to
-configure vanilla OpenTelemetry and send OTLP directly loses only the derived
-failure kind; nothing breaks (V2 §18.2).
+configure vanilla OpenTelemetry and send OTLP directly loses only the precise
+failure category -- their failures report the coarse `tool_error` instead --
+and nothing else breaks.
+
+(No internal spec citation here on purpose: this docstring is published as the
+customer-facing SDK reference, where a reference the reader cannot resolve is
+worse than no reference.)
 
     from mcp.server import MCPServer
     from mcpobs import instrument

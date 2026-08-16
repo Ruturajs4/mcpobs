@@ -34,6 +34,12 @@ jobs:
       - name: Browser JavaScript syntax
         run: node --check query/static/app.js && node --check query/static/admin.js
 
+      # --strict fails on a broken internal link, so a 404 cannot ship to a
+      # customer. tests/test_docs.py separately greps the built output to
+      # prove no internal engineering document was published.
+      - name: Documentation builds
+        run: python -m mkdocs build --strict
+
       # This is the tripwire that matters. The failure classifier matches
       # SDK-generated message prefixes; an SDK release that changes them would
       # otherwise silently degrade every customer's error intelligence. Failing

@@ -1,7 +1,7 @@
 PY := .venv/Scripts/python.exe
 COMPOSE := docker compose
 
-.PHONY: help up down demo verify attrs lag logs ps clean test lint typecheck check freshness traces metrics deferred rollups devkeys invite archive
+.PHONY: docs docs-build help up down demo verify attrs lag logs ps clean test lint typecheck check freshness traces metrics deferred rollups devkeys invite archive
 
 help:
 	@echo "up        - start clickhouse + kafka + collector + normalizer"
@@ -103,3 +103,9 @@ rollups:
 
 deferred:
 	$(PY) scripts/deferred.py
+
+docs:
+	$(PY) -m mkdocs serve
+
+docs-build:
+	$(PY) -m mkdocs build --strict
