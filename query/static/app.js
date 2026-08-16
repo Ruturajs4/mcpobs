@@ -390,6 +390,7 @@ async function openTrace(traceId, spanId = null) {
   drawerController = controller;
   S.trace = traceId;
   S.span = spanId;
+  wfShown = WF_FIRST;
   pushUrl();
   document.querySelectorAll("[data-trace]").forEach((n) =>
     n.classList.toggle("sel", n.dataset.trace === traceId));
@@ -411,10 +412,30 @@ async function openTrace(traceId, spanId = null) {
   renderDrawer(t, spanId || t.root_span_id);
 }
 
+/* How many waterfall rows to draw at once.
+
+   A 61-span trace rendered as 61 rows is a wall: the shape of the call is lost
+   in the scroll, and the spans that matter are usually near the top. Twenty is
+   about what fits without scrolling, and the rest is one click away.
+
+   Purely a rendering choice -- every span is already in the response, so
+   "view more" costs no request. */
+const WF_FIRST = 20;
+const WF_STEP = 50;
+let wfShown = WF_FIRST;
+
 function renderDrawer(t, selectedId) {
   const total = Math.max(t.duration_ms, 0.001);
 
-  const rows = t.spans.map((s) => {
+  // A selected span must be visible even if it sits past the cut, otherwise
+  // deep-linking to a span shows an empty selection.
+  const selectedIndex = t.spans.findIndex((s) => s.span_id === selectedId);
+  if (selectedIndex >= wfShown) wfShown = Math.min(t.spans.length, selectedIndex + 1);
+
+  const visible = t.spans.slice(0, wfShown);
+  const remaining = t.spans.length - visible.length;
+
+  const rows = visible.map((s) => {
     const k = kindOf(s);
     const left = Math.min(99, (s.offset_ms / total) * 100);
     // Floor the width so a sub-millisecond span stays visible. A bar you cannot
@@ -462,21 +483,18 @@ function renderDrawer(t, selectedId) {
       </div>
     </div>
     ${t.truncated ? `<div class="note-bar"><span>&#9888;</span><div>
-      <b>Showing the first ${num(t.span_cap)} spans.</b> This trace has more.
-      They are the earliest ones, so the waterfall reads forwards from the start
-      of the call &mdash; but the tail is missing, and a span deeper in the trace
-      may have no visible parent here.</div></div>` : ""}
-    ${t.detail_omitted ? `<div class="note-bar"><span>&#8505;</span><div>
-      <b>Span detail is loaded on click for a trace this large.</b>
-      Sending it for all ${num(t.span_count)} spans up front would be most of the
-      response; one request per span you actually open is
-      cheaper.</div></div>` : ""}
+      <b>This trace is too large to show in full.</b> These are the first
+      ${num(t.span_cap)} spans, from the start of the call.</div></div>` : ""}
     <div class="wf-head">
       <div>Span</div><div class="num">Duration</div>
       <div class="axis"><span>0</span><span>${dur(total * 0.25)}</span><span>${dur(total * 0.5)}</span>
         <span>${dur(total * 0.75)}</span><span>${dur(total)}</span></div>
     </div>
     <div class="wf">${rows}</div>
+    ${remaining > 0 ? `<div class="wf-more">
+      <button id="wf-more" type="button">Show ${num(Math.min(WF_STEP, remaining))} more</button>
+      <span class="mute">${num(visible.length)} of ${num(t.spans.length)} spans</span>
+    </div>` : ""}
     <div id="span-detail"></div>`;
 
   bindAll("[data-span]", (n) => {
@@ -485,6 +503,12 @@ function renderDrawer(t, selectedId) {
     renderDrawer(S.traceData, S.span);
     el("span-detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
   });
+  const more = el("wf-more");
+  if (more) more.onclick = () => {
+    wfShown = Math.min(t.spans.length, wfShown + WF_STEP);
+    renderDrawer(t, selectedId);
+  };
+
   showSpanDetail(t, selectedId);
 }
 
