@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from mcpobs import session as _session
 from mcpobs import transport as _transport
 from mcpobs.asgi import instrument_asgi
 from mcpobs.classifier import (
@@ -65,6 +66,8 @@ def instrument(
     capture_error_detail: bool = True,
     capture_payloads: bool = False,
     transport: str | None = None,
+    session_endpoint: str | None = None,
+    session_headers: Any = None,
 ) -> Any:
     """Attach failure classification to an MCPServer.
 
@@ -89,8 +92,30 @@ def instrument(
     server never calls `run()` -- for example when you build the ASGI app and
     drive uvicorn yourself.
 
+    `session_endpoint` is your own service that mints short-lived tokens for a
+    server running on an END USER's machine. Configure it HERE, in
+    your server, rather than asking your users to add environment variables to
+    their MCP client config -- they should not have to paste observability
+    settings into Claude Desktop to use your product.
+
+    `session_headers` authenticates that call. Pass a CALLABLE when the
+    credential refreshes, which it usually does:
+
+        instrument(
+            mcp,
+            session_endpoint="https://acme.com/mcpobs-session",
+            session_headers=lambda: {"authorization": f"Bearer {current_token()}"},
+        )
+
+    A dict is read once at startup; a callable is read on every fetch. With a
+    refreshing user token the difference is telemetry that works for an hour and
+    then stops with no error anywhere.
+
     Idempotent: calling it twice attaches one middleware.
     """
+    if session_endpoint is not None or session_headers is not None:
+        _session.configure(endpoint=session_endpoint, headers=session_headers)
+
     _transport.set_transport(transport, explicit=transport is not None)
     # Wrapped even when the middleware is already attached: `instrument()` is
     # idempotent, but a second call is exactly how someone adds the transport

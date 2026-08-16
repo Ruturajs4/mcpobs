@@ -1,6 +1,6 @@
 """An OTLP exporter that carries a rotating session token.
 
-ADR-011, the piece that makes the rest usable. `OTLPSpanExporter` takes its
+`OTLPSpanExporter` takes its
 headers at CONSTRUCTION, so a credential that changes every three hours cannot
 be passed the ordinary way -- this was flagged in the ADR as the part most
 likely to be under-estimated, because from the outside it looks like a config
@@ -37,6 +37,7 @@ from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExportResult
 
 from mcpobs.session import SessionProvider
+from mcpobs.session import default as session_default
 
 log = logging.getLogger("mcpobs.exporter")
 
@@ -53,12 +54,14 @@ class SessionSpanExporter(OTLPSpanExporter):
 
     def __init__(
         self,
-        provider: SessionProvider,
+        provider: SessionProvider | None = None,
         endpoint: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(endpoint=endpoint, **kwargs)
-        self._provider = provider
+        # Defaults to whatever `instrument()` configured, so the exporter and
+        # the server do not have to be wired to each other by the customer.
+        self._provider = provider if provider is not None else session_default()
         self._pending: list[ReadableSpan] = []
         self._pending_lock = threading.Lock()
         self._dropped = 0

@@ -37,11 +37,10 @@ graph LR
 
 Your long-lived key never leaves step 2.
 
-## 1. Issue a session-minting key
+## 1. Get a session-minting key
 
-```bash
-python scripts/admin.py key --org acme --project prod --scopes session
-```
+Ask us for a key with the **`session`** scope, or create one from your account
+settings.
 
 `session` is its own scope. A key that can mint sessions can mint one for **any**
 of your users, so it is deliberately not something an `ingest` key can do —
@@ -90,19 +89,35 @@ running five MCP servers makes five calls every three hours.
 `expires_in` is **relative**, not a timestamp, because laptop clocks are
 routinely wrong by minutes and a skewed one would refresh at the wrong moment.
 
-## 3. Point the server at your endpoint
+## 3. Point your server at it — in your server
 
-```json
-{"mcpServers": {"acme": {"command": "python", "args": ["-m", "your_server"],
-  "env": {
-    "MCPOBS_SESSION_ENDPOINT": "https://acme.com/mcpobs-session",
-    "MCPOBS_SESSION_HEADERS": "authorization=Bearer ${USER_TOKEN}"
-  }}}}
+```python
+from mcpobs import instrument
+
+instrument(
+    mcp,
+    session_endpoint="https://acme.com/mcpobs-session",
+    session_headers=lambda: {"authorization": f"Bearer {current_user_token()}"},
+)
 ```
 
-`MCPOBS_SESSION_HEADERS` is whatever your endpoint needs to identify the user —
-typically the session token your app already issued them. That is a **user**
-credential, not an organisation-wide one, which is the whole difference.
+You know your own endpoint at build time, so configure it in **your** code. Your
+users should never have to paste observability settings into their MCP client
+config to use your product — and asking them to would put a per-user credential
+in a file you do not control, which is the problem this page exists to solve.
+
+!!! tip "Pass a callable, not a dict"
+
+    `session_headers` authenticates the call to your endpoint, usually with the
+    end user's own credential — and that refreshes. A dict is read once at
+    startup; a callable is read on every fetch. With a refreshing token the
+    difference is telemetry that works for an hour and then stops with no error
+    anywhere.
+
+**Environment variables still work** — `MCPOBS_SESSION_ENDPOINT` and
+`MCPOBS_SESSION_HEADERS` — for operators who need to repoint a deployed server
+without a code change. They are the override, not the path you ask your users to
+walk.
 
 ## Attributes
 

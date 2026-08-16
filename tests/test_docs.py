@@ -238,3 +238,34 @@ class TestBuiltSiteIsClean:
             f"internal cross-references reached the SDK reference: {found}. "
             "Rewrite the docstring so it stands alone for a customer."
         )
+
+
+class TestPublicDocsAreForCustomers:
+    """The published pages must not tell a customer to run our operator tools.
+
+    `scripts/admin.py` is how WE issue keys: it needs the repository and direct
+    database access, neither of which a customer has. It was removed from the
+    sign-in page as pre-authentication disclosure and then written back into a
+    customer page -- the same mistake, one surface over.
+    """
+
+    #: `make up` and `make devkeys` are NOT here: the quickstart is a
+    #: self-hosting guide and they are the right instruction on that page. The
+    #: admin CLI is different -- it needs direct database access, and no
+    #: customer runs it on either deployment model.
+    OPERATOR_ONLY = (
+        "scripts/admin.py",
+        ".mcpobs-keys.env",
+    )
+
+    def test_no_operator_tooling_is_named(self) -> None:
+        hits: dict[str, list[str]] = {}
+        for path in PUBLIC.rglob("*.md"):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for needle in self.OPERATOR_ONLY:
+                if needle in text:
+                    hits.setdefault(needle, []).append(str(path.relative_to(PUBLIC)))
+        assert not hits, (
+            f"customer docs name operator-only tooling: {hits}. A customer has "
+            "neither the repository nor database access to run it."
+        )

@@ -87,7 +87,7 @@ def init_telemetry(
     provider = TracerProvider(resource=resource)
 
     from mcpobs.exporter import SessionSpanExporter
-    from mcpobs.session import SessionProvider
+    from mcpobs.session import default as session_default
 
     if mode == "console":
         provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
@@ -127,7 +127,8 @@ def init_telemetry(
         target = endpoint or os.getenv(
             "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", DEFAULT_OTLP_ENDPOINT
         )
-        session_provider = SessionProvider()
+        # Whatever `instrument()` configured, falling back to the environment.
+        session_provider = session_default()
         exporter: OTLPSpanExporter
         if session_provider.configured:
             # SAID OUT LOUD when both are configured. The session endpoint wins,

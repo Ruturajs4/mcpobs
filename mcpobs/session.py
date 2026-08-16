@@ -1,6 +1,6 @@
 """Fetch and refresh a session token, for servers the client launches.
 
-ADR-011. A stdio server runs on the end user's machine, so it must not hold a
+A stdio server runs on the end user's machine, so it must not hold a
 long-lived credential. Instead it calls an endpoint the CUSTOMER hosts, which
 authenticates their user however their product already does, and returns a
 short-lived token.
@@ -37,6 +37,7 @@ import random
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -119,11 +120,16 @@ class SessionProvider:
     def __init__(
         self,
         endpoint: str | None = None,
-        headers: dict[str, str] | None = None,
+        headers: dict[str, str] | Callable[[], dict[str, str]] | None = None,
         fetch: Any = None,
     ) -> None:
         self.endpoint: str = endpoint or os.getenv(ENDPOINT_ENV, "") or ""
-        self.headers = headers if headers is not None else _parse_headers(
+        #: A CALLABLE is allowed, and is the form most customers want. The
+        #: header authenticating this call is usually the end user's own
+        #: credential, which refreshes -- read once at startup it would be
+        #: correct for an hour and quietly wrong afterwards, and the symptom
+        #: would be telemetry stopping for one user with no error anywhere.
+        self._headers = headers if headers is not None else _parse_headers(
             os.getenv(HEADERS_ENV, "")
         )
         self._fetch = fetch or self._http_fetch
@@ -133,6 +139,17 @@ class SessionProvider:
         self._next_attempt = 0.0
 
     # -- public ------------------------------------------------------------
+    def headers(self) -> dict[str, str]:
+        """Resolved per fetch, so a callable sees the current credential."""
+        if callable(self._headers):
+            try:
+                return dict(self._headers() or {})
+            except Exception as exc:  # noqa: BLE001
+                # A customer's header callback raising must not stop the server.
+                log.debug("session header callback failed: %s", exc)
+                return {}
+        return dict(self._headers)
+
     @property
     def configured(self) -> bool:
         return bool(self.endpoint)
@@ -175,7 +192,7 @@ class SessionProvider:
     def _try_fetch(self) -> Session | None:
         try:
             _check_endpoint(self.endpoint)
-            payload = self._fetch(self.endpoint, self.headers)
+            payload = self._fetch(self.endpoint, self.headers())
             session = self._build(payload)
         except Exception as exc:  # noqa: BLE001
             self._failures += 1
@@ -229,3 +246,44 @@ class SessionProvider:
         if not isinstance(data, dict):
             raise ValueError("session endpoint did not return a JSON object")
         return data
+
+
+# ---------------------------------------------------------------------------
+# The provider `instrument()` configures and the exporter reads.
+#
+# Module-level because the two are set up independently: a customer calls
+# `instrument(mcp, session_endpoint=...)` in their server, while the exporter is
+# built by whatever configures OpenTelemetry -- possibly before, possibly after.
+# Threading an object between them would make the order matter, and the order is
+# not something a customer should have to know.
+_default: SessionProvider | None = None
+
+
+def configure(
+    endpoint: str | None = None,
+    headers: dict[str, str] | Callable[[], dict[str, str]] | None = None,
+) -> SessionProvider:
+    """Set the session configuration the exporter will use."""
+    global _default
+    _default = SessionProvider(endpoint=endpoint, headers=headers)
+    return _default
+
+
+def default() -> SessionProvider:
+    """The configured provider, or one built from the environment.
+
+    Environment variables remain supported -- an operator may need to point a
+    deployed server at a different endpoint without a code change -- but they
+    are the override, not the path a customer is asked to walk. Their users
+    should never have to paste observability configuration into an MCP client.
+    """
+    global _default
+    if _default is None:
+        _default = SessionProvider()
+    return _default
+
+
+def reset_default() -> None:
+    """Test seam; module state is process-wide."""
+    global _default
+    _default = None
