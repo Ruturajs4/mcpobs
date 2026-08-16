@@ -578,15 +578,38 @@ function go(view, params = {}) {
 }
 function closeDrawerSilently() { el("drawer").classList.remove("open"); S.trace = null; S.span = null; }
 
+/* What the content pane is currently showing. A REFRESH of the same thing must
+   not look like a navigation to a different one. */
+const viewKey = () =>
+  [S.view, S.kind, S.server, S.tool, S.cat, S.window].join("|");
+let renderedKey = null;
+
 async function render() {
   const v = VIEWS[S.view] || VIEWS.overview;
   el("title").textContent = S.view === "capabilities"
     ? (KINDS.find(([k]) => k === S.kind)?.[1] ?? "Capabilities") : v.t;
   document.querySelectorAll("#nav a").forEach((a) =>
     a.classList.toggle("on", a.dataset.view === S.view && (!a.dataset.kind || a.dataset.kind === S.kind)));
-  el("content").innerHTML = '<div class="spin">Loading…</div>';
+
+  /* THE FLICKER. This blanked the pane to a spinner on EVERY render, including
+     the 15s auto-refresh -- so a dashboard nobody had touched went white and
+     repainted four times a minute. A spinner answers "your click did
+     something"; on a background refresh there was no click, so it answered a
+     question nobody asked and destroyed the thing being read to do it.
+
+     Shown only when the view is actually CHANGING, or on first load. */
+  const refreshing = renderedKey === viewKey() && el("content").children.length > 0;
+  if (!refreshing) el("content").innerHTML = '<div class="spin">Loading…</div>';
+
+  /* `.content` is the scroll container, so replacing its innerHTML snaps back
+     to the top. On a navigation that is right; on a refresh it yanks the page
+     out from under someone reading row forty. */
+  const scrollTop = refreshing ? el("content").scrollTop : 0;
+
   try {
     await v.f();
+    if (scrollTop) el("content").scrollTop = scrollTop;
+    renderedKey = viewKey();
     // Stamped AFTER the fetch succeeds. Stamping before it would report
     // "updated just now" over data that failed to load -- a staleness
     // indicator that lies is worse than none, because it is believed.
@@ -595,8 +618,13 @@ async function render() {
     if (S.trace) openTrace(S.trace, S.span);
   } catch (e) {
     el("health-dot").style.background = "var(--err)";
-    el("content").innerHTML =
-      `<div class="empty">Could not load.<br><span class="mono" style="font-size:11px">${esc(e.message)}</span></div>`;
+    // A failed BACKGROUND refresh keeps what is on screen rather than replacing
+    // good data with an error. The health dot going red is the signal; wiping
+    // the pane would punish the reader for a transient nobody triggered.
+    if (!refreshing) {
+      el("content").innerHTML =
+        `<div class="empty">Could not load.<br><span class="mono" style="font-size:11px">${esc(e.message)}</span></div>`;
+    }
   }
 }
 

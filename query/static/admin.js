@@ -314,11 +314,20 @@ const VIEWS = {
   audit: [viewAudit, "Audit"],
 };
 
+let adminRenderedKey = null;
+
 async function render() {
   const [fn, title] = VIEWS[S.view] || VIEWS.tenants;
   el("title").textContent = title;
+  // Same reasoning as the customer console: a 30s background refresh must not
+  // reset the scroll position of a table somebody is reading.
+  const key = `${S.view}|${S.window}`;
+  const refreshing = adminRenderedKey === key;
+  const scrollTop = refreshing ? el("content").scrollTop : 0;
   try {
     await fn();
+    if (scrollTop) el("content").scrollTop = scrollTop;
+    adminRenderedKey = key;
     const health = await api("/pipeline");
     el("foot-spans").textContent = `${num(health.spans_recent)} spans / 15m`;
     el("foot-fresh").textContent = `freshness ${health.freshness_p95_seconds.toFixed(1)}s`;
