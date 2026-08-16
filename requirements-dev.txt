@@ -12,4 +12,11 @@ psycopg[binary]==3.2.3
 opentelemetry-instrumentation-asgi==0.65b0
 opentelemetry-instrumentation-psycopg==0.65b0
 redis==5.2.1
+opentelemetry-instrumentation-redis==0.65b0
+# pymysql and its instrumentor are pinned TOGETHER on purpose: the instrumentor
+# installed without the driver beside it is what produced the misleading
+# diagnostic recorded in otel_bootstrap.
+pymysql==1.1.1
+opentelemetry-instrumentation-pymysql==0.65b0
+opentelemetry-instrumentation-requests==0.65b0
 opentelemetry-instrumentation-confluent-kafka==0.65b0

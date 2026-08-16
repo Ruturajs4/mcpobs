@@ -45,6 +45,24 @@ SCENARIOS: list[tuple[str, dict, str]] = [
     ("enqueue_job", {"job": "reindex", "customer": "acme"}, "ok"),
     ("query_orders", {"customer": "acme"}, "ok"),
     ("summarize", {"text": "quarterly numbers"}, "ok"),
+    # Real infrastructure: Postgres, MySQL, Redis and three local partner APIs.
+    # Everything above this line reaches an in-process SQLite file or an
+    # in-process HTTP server -- the easiest possible case, and not what a
+    # customer's trace looks like.
+    ("customer_profile", {"customer": "acme"}, "ok"),
+    ("customer_profile", {"customer": "globex"}, "ok"),
+    ("order_history", {"customer": "acme", "limit": 5}, "ok"),
+    ("check_stock", {"sku": "widget-1"}, "ok"),
+    ("cache_warm", {"customers": 5}, "ok"),
+    ("partner_health", {}, "ok"),
+    # The fan-out. Expected "ok", but the payments partner fails ~25% of the
+    # time, so this row legitimately produces `server_exception` on some runs --
+    # which is the point: the same tool, both outcomes, distinguishable only by
+    # opening the trace.
+    ("place_order", {"customer": "acme", "sku": "widget-1", "quantity": 1},
+     "ok or server_exception"),
+    ("place_order", {"customer": "globex", "sku": "gizmo-9", "quantity": 2},
+     "ok or server_exception"),
 ]
 
 

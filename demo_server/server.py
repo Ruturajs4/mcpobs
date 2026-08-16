@@ -28,6 +28,7 @@ import atexit
 import os
 import signal
 import sqlite3
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -411,6 +412,208 @@ def explode() -> str:
     raise RuntimeError("deliberate failure: downstream credentials expired")
 
 
+
+# ===========================================================================
+# Tools that call REAL infrastructure
+# ===========================================================================
+# Everything above this line talks to an in-process SQLite file and an
+# in-process HTTP server. Both are honest, and both are the easiest possible
+# case: same process, no socket, no auth, no failure. A customer's tool calls
+# Postgres over a socket, checks Redis, hits a partner API that sometimes 503s,
+# and reads a legacy MySQL table nobody has migrated.
+#
+# These tools do that, so a trace in the console looks like a trace from a real
+# server rather than one from a demo. None of them reaches the internet -- the
+# "partners" are local mock APIs (demo_server/backends.py).
+
+
+@mcp.tool()
+def customer_profile(customer: str = "acme") -> str:
+    """Redis lookup with a Postgres fallback -- the commonest shape there is.
+
+    Produces either two child spans (cache miss: redis GET, then postgres
+    SELECT) or one (cache hit). Worth having in a demo precisely because the
+    SAME tool yields different waterfalls on different calls, which is what
+    makes p50 and p95 diverge for a reason you can actually see.
+    """
+    from demo_server import backends
+
+    cache = backends.redis_client()
+    key = f"customer:{customer}:tier"
+    cached = cache.get(key)
+    if cached:
+        return f"{customer}: {cached.decode()} (from cache)"
+
+    with backends.pg_connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT tier FROM {backends.PG_SCHEMA}.customers WHERE name = %s",
+            (customer,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return f"{customer}: unknown customer"
+    cache.setex(key, 300, row[0])
+    return f"{customer}: {row[0]} (from postgres, now cached)"
+
+
+@mcp.tool()
+def order_history(customer: str = "acme", limit: int = 5) -> str:
+    """A real Postgres read: an aggregate plus a detail query.
+
+    Two statements on one connection, so the waterfall shows two db spans with
+    the same `db.system` and different operations -- the thing that lets someone
+    say "the SELECT is fine, the COUNT is what is slow".
+    """
+    from demo_server import backends
+
+    with backends.pg_connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT count(*), coalesce(sum(total_cents), 0) "
+            f"FROM {backends.PG_SCHEMA}.orders WHERE customer = %s",
+            (customer,),
+        )
+        count, total = cur.fetchone()
+        cur.execute(
+            f"SELECT sku, quantity, status FROM {backends.PG_SCHEMA}.orders "
+            f"WHERE customer = %s ORDER BY placed_at DESC LIMIT %s",
+            (customer, max(1, min(limit, 50))),
+        )
+        rows = cur.fetchall()
+    recent = ", ".join(f"{sku} x{qty} ({status})" for sku, qty, status in rows)
+    return f"{customer}: {count} orders, ${total / 100:.2f} total. Recent: {recent or 'none'}"
+
+
+@mcp.tool()
+def check_stock(sku: str = "widget-1") -> str:
+    """A MySQL read, so `db.system` is visibly not always postgres.
+
+    The legacy-system tool. Every company has one table that never moved, and
+    "which engine was that span against" is a question the console has to answer.
+    """
+    from demo_server import backends
+
+    conn = backends.mysql_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT warehouse, on_hand, reserved FROM inventory WHERE sku = %s",
+                (sku,),
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return f"{sku}: not stocked"
+    warehouse, on_hand, reserved = row
+    return f"{sku}: {on_hand - reserved} available in {warehouse} ({on_hand} on hand)"
+
+
+@mcp.tool()
+async def place_order(customer: str = "acme", sku: str = "widget-1", quantity: int = 1) -> str:
+    """The fan-out tool: MySQL, three partner APIs, Postgres and Redis.
+
+    This is the one to open in the console. A single call produces a waterfall
+    across four different technologies, and because the payments partner fails
+    about a quarter of the time, repeated calls give both the healthy and the
+    broken version of the SAME tool -- which is the whole argument for per-call
+    traces over an averaged dashboard.
+    """
+    import httpx
+
+    from demo_server import backends
+
+    # 1. Reserve stock (MySQL)
+    conn = backends.mysql_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT on_hand, reserved FROM inventory WHERE sku = %s", (sku,))
+            stock = cur.fetchone()
+            if stock and stock[0] - stock[1] >= quantity:
+                cur.execute(
+                    "UPDATE inventory SET reserved = reserved + %s WHERE sku = %s",
+                    (quantity, sku),
+                )
+                conn.commit()
+    finally:
+        conn.close()
+    if not stock or stock[0] - stock[1] < quantity:
+        return f"cannot place order: {sku} is out of stock"
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        # 2. Inventory partner confirms the reservation.
+        await client.post(
+            f"{backends.PARTNERS['inventory']}/v1/reservations",
+            json={"sku": sku, "quantity": quantity},
+        )
+        # 3. Payments -- the flaky one. A 503 here is a REAL downstream failure
+        #    reaching the tool, not a simulated status code.
+        payment = await client.post(
+            f"{backends.PARTNERS['payments']}/v1/charges",
+            json={"customer": customer, "amount_cents": quantity * 2500},
+        )
+        if payment.status_code >= 500:
+            raise RuntimeError(
+                f"payment provider returned {payment.status_code} for {customer}"
+            )
+        # 4. Shipping -- the slow one, so one span visibly dominates the bar.
+        await client.post(f"{backends.PARTNERS['shipping']}/v1/labels", json={"sku": sku})
+
+    # 5. Record the order (Postgres)
+    with backends.pg_connect() as conn2, conn2.cursor() as cur2:
+        cur2.execute(
+            f"INSERT INTO {backends.PG_SCHEMA}.orders "
+            f"(customer, sku, quantity, total_cents, status) "
+            f"VALUES (%s, %s, %s, %s, 'placed') RETURNING id",
+            (customer, sku, quantity, quantity * 2500),
+        )
+        order_id = cur2.fetchone()[0]
+        conn2.commit()
+
+    # 6. Invalidate the cached profile (Redis)
+    backends.redis_client().delete(f"customer:{customer}:tier")
+    return f"order {order_id} placed: {quantity} x {sku} for {customer}"
+
+
+@mcp.tool()
+def cache_warm(customers: int = 5) -> str:
+    """A burst of Redis operations in one call.
+
+    Exists to show many small downstream spans under one parent -- the shape
+    that makes a tool look slow while every individual span looks fast.
+    """
+    from demo_server import backends
+
+    cache = backends.redis_client()
+    names = [name for name, _ in backends.CUSTOMERS][: max(1, min(customers, 5))]
+    for name in names:
+        cache.setex(f"customer:{name}:warm", 120, "1")
+        cache.get(f"customer:{name}:tier")
+    return f"warmed {len(names)} customer entries"
+
+
+@mcp.tool()
+async def partner_health() -> str:
+    """Calls all three partner APIs, reporting each rather than raising.
+
+    A tool that SUCCEEDS while a dependency inside it failed. The MCP call is
+    `ok` and one child span is a 503 -- exactly the case where a green
+    tool-level dashboard hides a broken downstream, and the reason child spans
+    are stored at all.
+    """
+    import httpx
+
+    from demo_server import backends
+
+    results = []
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for name, base in backends.PARTNERS.items():
+            try:
+                response = await client.get(f"{base}/v1/health")
+                results.append(f"{name}={response.status_code}")
+            except Exception as exc:
+                results.append(f"{name}=unreachable({type(exc).__name__})")
+    return " ".join(results)
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--http", action="store_true", help="run streamable-http instead of stdio")
@@ -420,6 +623,14 @@ def main() -> None:
     init_telemetry()
     start_downstream()
     seed_database()
+    # Real backends alongside the in-process ones. Reports rather than
+    # raises: one unreachable dependency must not stop the server from
+    # exercising the other three, which is also how the tools behave.
+    from demo_server import backends
+    for name, outcome in backends.seed().items():
+        if outcome != "ready":
+            print(f"[demo] {name}: {outcome}", file=sys.stderr)
+    backends.start_partners()
 
     # BatchSpanProcessor buffers. Without an explicit flush the last spans of a
     # short-lived server are lost when the client tears the process down -- which
