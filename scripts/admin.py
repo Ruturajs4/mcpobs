@@ -62,6 +62,15 @@ def main() -> int:
     key.add_argument("--scopes", default="ingest")
     key.add_argument("--name", default="")
 
+    quota = sub.add_parser("quota", help="show or override an org's ingest limits")
+    quota.add_argument("--org", required=True)
+    quota.add_argument("--plan", default=None, help="trial | pro | enterprise")
+    quota.add_argument("--per-minute", type=int, default=None,
+                       help="span/minute override; 0 = unlimited")
+    quota.add_argument("--per-day", type=int, default=None,
+                       help="span/day override; 0 = unlimited")
+    quota.add_argument("--clear", action="store_true", help="restore the plan limits")
+
     rev = sub.add_parser("revoke", help="revoke an API key by prefix")
     rev.add_argument("--prefix", required=True)
 
@@ -172,6 +181,34 @@ def main() -> int:
             encoding="utf-8",
         )
         print(f"  wrote {cache.name}: ingest {ingest.prefix}, read {read.prefix}")
+        return 0
+
+    if args.command == "quota":
+        from control.quota import QuotaEnforcer
+
+        if args.plan:
+            cp.set_plan(args.org, args.plan)
+        if args.clear:
+            cp.set_quota(args.org, None, None)
+        elif args.per_minute is not None or args.per_day is not None:
+            cp.set_quota(args.org, args.per_minute, args.per_day)
+
+        row = cp._one(
+            "SELECT plan, quota_spans_per_minute, quota_spans_per_day "
+            "FROM orgs WHERE slug = %s", (args.org,)
+        )
+        if row is None:
+            raise SystemExit(f"no such org: {args.org}")
+        plan = QuotaEnforcer.plan_for(row["plan"])
+        per_minute = row["quota_spans_per_minute"]
+        per_day = row["quota_spans_per_day"]
+        show = lambda v: "unlimited" if v == 0 else f"{v:,}"  # noqa: E731
+        print(f"  org    {args.org}")
+        print(f"  plan   {plan.name}")
+        print(f"  minute {show(per_minute if per_minute is not None else plan.spans_per_minute)}"
+              f"{'  (override)' if per_minute is not None else ''}")
+        print(f"  day    {show(per_day if per_day is not None else plan.spans_per_day)}"
+              f"{'  (override)' if per_day is not None else ''}")
         return 0
 
     if args.command == "revoke":

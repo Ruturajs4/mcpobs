@@ -52,10 +52,17 @@ from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
 from control import ControlPlane
 from control.keys import INGEST
 from control.models import Principal
+from control.quota import QuotaEnforcer, Verdict
 
 log = logging.getLogger("ingest")
 
 COLLECTOR_ENDPOINT = os.getenv("COLLECTOR_ENDPOINT", "http://otel-collector:4318/v1/traces")
+
+#: Stamped on every span of a request that arrived while the tenant was over its
+#: SOFT threshold. A soft quota that only appears in our logs is a warning the
+#: customer never receives; on the span, it is visible in their own console, on
+#: exactly the data that was at risk.
+SOFT_QUOTA_ATTRIBUTE = "mcpobs.quota.soft_exceeded"
 
 #: Written by us, from the authenticated key, over anything the customer sent.
 TENANT_ATTRIBUTE = "tenant.id"
@@ -64,6 +71,7 @@ REGION_ATTRIBUTE = "data.region"
 REGION = os.getenv("DATA_REGION", "local")
 
 control = ControlPlane()
+quotas = QuotaEnforcer()
 
 
 @asynccontextmanager
@@ -111,18 +119,66 @@ def principal_from(authorization: str | None, api_key: str | None) -> Principal:
     return principal
 
 
-def stamp(payload: bytes, principal: Principal) -> bytes:
-    """Overwrite tenant/project/region on every ResourceSpans.
-
-    Parsed and re-serialised rather than passed through, because the whole point
-    is that the customer's own values must not survive. `upsert` semantics are
-    implemented by dropping any existing key of the same name first -- appending
-    would leave two `tenant.id` entries and make the winner depend on whichever
-    consumer read last.
-    """
+def _parse(payload: bytes) -> ExportTraceServiceRequest:
     request = ExportTraceServiceRequest()
     request.ParseFromString(payload)
+    return request
 
+
+def _count_spans(request: ExportTraceServiceRequest) -> int:
+    """Spans in the payload -- the metered unit, and the one that costs money."""
+    return sum(
+        len(scope_spans.spans)
+        for resource_spans in request.resource_spans
+        for scope_spans in resource_spans.scope_spans
+    )
+
+
+def _reject(principal: Principal, verdict: Verdict) -> None:
+    """429 with `Retry-After`, and the numbers behind the decision.
+
+    429 rather than 403: this is a limit, not a permission, and the difference
+    matters to an OTLP exporter -- 429 is retryable and 403 is not, so a rate
+    limit sent as 403 would make a client give up on data it could have
+    delivered a minute later. The daily verdict sets `Retry-After` to the
+    window reset for the same reason: an honest "not before this time" beats a
+    retry that cannot succeed.
+    """
+    log.warning("quota rejection for %s: %s", principal.tenant, verdict.reason)
+    raise HTTPException(
+        status_code=429,
+        detail=verdict.reason,
+        headers={
+            "Retry-After": str(verdict.retry_after),
+            # The counter behind the decision, so the customer can see how far
+            # over they are without asking us.
+            "X-Quota-Used-Minute": str(verdict.used_minute),
+            "X-Quota-Limit-Minute": str(verdict.limit_minute),
+            "X-Quota-Used-Day": str(verdict.used_day),
+            "X-Quota-Limit-Day": str(verdict.limit_day),
+        },
+    )
+
+
+def stamp(payload: bytes, principal: Principal, soft: bool = False) -> bytes:
+    """Parse-and-stamp, for callers holding raw bytes (and for the tests)."""
+    return stamp_parsed(_parse(payload), principal, soft=soft)
+
+
+def stamp_parsed(
+    request: ExportTraceServiceRequest, principal: Principal, soft: bool = False
+) -> bytes:
+    """Overwrite tenant/project/region on every ResourceSpans.
+
+    Takes an already-parsed request because the quota check upstream had to
+    parse it to count spans, and parsing the same protobuf twice per request on
+    the ingest hot path is a cost with nothing to show for it.
+
+    The customer's own values are dropped before the trusted ones are appended.
+    Appending alone would leave two `tenant.id` entries and make the winner
+    depend on whichever consumer read last, which is a coin toss rather than a
+    boundary.
+    """
     trusted = {
         TENANT_ATTRIBUTE: principal.tenant,
         PROJECT_ATTRIBUTE: principal.project,
@@ -136,6 +192,10 @@ def stamp(payload: bytes, principal: Principal) -> bytes:
             attributes.append(kv)
         for key, value in trusted.items():
             attributes.append(KeyValue(key=key, value=AnyValue(string_value=value)))
+        if soft:
+            attributes.append(
+                KeyValue(key=SOFT_QUOTA_ATTRIBUTE, value=AnyValue(bool_value=True))
+            )
     return request.SerializeToString()
 
 
@@ -156,8 +216,32 @@ async def traces(
         # promised there is only one.
         raise HTTPException(status_code=415, detail="send OTLP protobuf, not JSON")
 
+    # Quota check sits HERE: after authentication, before stamping, on the near
+    # side of the ack boundary (Architecture.md §5.1). Rejecting after the ack
+    # would mean telling a customer their data was safe and then dropping it,
+    # which ADR-008 forbids in as many words.
+    #
+    # Spans are counted by PARSING first -- a request can carry one span or ten
+    # thousand, and metering requests would let the same volume through in a
+    # hundredth of the calls.
     try:
-        stamped = stamp(body, principal)
+        request_proto = _parse(body)
+    except Exception as exc:
+        log.info("rejected malformed OTLP from %s: %s", principal.tenant, exc)
+        raise HTTPException(status_code=400, detail="malformed OTLP payload") from exc
+
+    verdict = quotas.check(
+        principal.tenant,
+        principal.plan,
+        _count_spans(request_proto),
+        override_minute=principal.quota_spans_per_minute,
+        override_day=principal.quota_spans_per_day,
+    )
+    if not verdict.allowed:
+        _reject(principal, verdict)
+
+    try:
+        stamped = stamp_parsed(request_proto, principal, soft=verdict.soft_exceeded)
     except Exception as exc:
         # A malformed body is the customer's bug, not ours, and it must be told
         # apart from our own failures -- 400, never 500.

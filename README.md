@@ -147,6 +147,46 @@ tool stopping.
 > Span *events* would not work here. They ride on their span and are exported
 > when it ends — which is exactly the moment that is too late.
 
+## Quotas
+
+Ingest is metered per tenant, in **spans** — a request can carry one span or ten
+thousand, so metering requests would let the same volume through in a hundredth
+of the calls.
+
+```bash
+python scripts/admin.py quota --org acme                      # show
+python scripts/admin.py quota --org acme --plan pro           # change plan
+python scripts/admin.py quota --org acme --per-minute 100000  # override
+python scripts/admin.py quota --org acme --clear              # back to the plan
+```
+
+| Plan | Spans/minute | Spans/day |
+| --- | --- | --- |
+| `trial` | 2,000 | 200,000 |
+| `pro` | 50,000 | 20,000,000 |
+| `enterprise` | unlimited | unlimited |
+
+At **80%** of either limit, spans are stamped with
+`mcpobs.quota.soft_exceeded` — visible in your own console, on exactly the data
+that was at risk, rather than only in our logs.
+
+Over the limit, the gateway returns **429** with `Retry-After` and the counters
+behind the decision:
+
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 51
+X-Quota-Used-Minute: 6
+X-Quota-Limit-Minute: 5
+```
+
+429 rather than 403 on purpose: an OTLP exporter **retries** a 429 and abandons
+a 403, so a rate limit sent as 403 would make your client give up on data it
+could have delivered a minute later.
+
+If our counter store is unavailable, requests are **allowed**. Refusing your
+telemetry because our bookkeeping broke would protect the wrong party.
+
 ## Authorization (401 / 403)
 
 If your server is an OAuth 2.1 resource server, wrap its ASGI app:

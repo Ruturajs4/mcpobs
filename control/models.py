@@ -68,6 +68,14 @@ class Principal(_Row):
     environment: str
     scopes: tuple[str, ...] = ()
 
+    #: Quota inputs, resolved with the key so the ingest hot path needs no
+    #: second query. They ride on the cached principal, which means a plan
+    #: change takes effect within the cache TTL -- the same 30s promise
+    #: revocation makes, and for the same reason.
+    plan: str = "trial"
+    quota_spans_per_minute: int | None = None
+    quota_spans_per_day: int | None = None
+
     def can(self, scope: str) -> bool:
         return scope in self.scopes
 

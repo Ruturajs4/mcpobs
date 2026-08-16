@@ -169,6 +169,22 @@ services:
       timeout: 3s
       retries: 20
 
+  # Quota counters. Named in the target architecture (section 3) for exactly
+  # this -- shared state the ingest path reads on every request. An in-process
+  # counter would meter ONE gateway replica, so a fleet of four would enforce
+  # four times the limit; that difference should be visible locally rather than
+  # discovered when the gateway first scales.
+  redis:
+    image: redis:7-alpine
+    container_name: mcpobs-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   # Authenticates, stamps trusted tenant attributes, forwards to the Collector.
   # Customers point their exporter HERE; nothing else is publicly reachable.
   ingest:
@@ -181,8 +197,10 @@ services:
       CONTROL_PLANE_DSN: postgresql://mcpobs:mcpobs@postgres:5432/mcpobs_control
       COLLECTOR_ENDPOINT: http://otel-collector:4318/v1/traces
       DATA_REGION: local
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
       otel-collector: { condition: service_started }
     restart: unless-stopped
 

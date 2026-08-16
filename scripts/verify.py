@@ -1233,6 +1233,110 @@ def main() -> int:
     except Exception as exc:
         record("F6 every user exists because an invite was redeemed", False, f"{exc}")
 
+    # ---------------- J: ingest quotas (Architecture 5.1, ADR-008) ---------
+    print()
+    print("--- J: ingest quotas ---")
+
+    # Squeezes the limit, provokes a real rejection, and puts it back. Asserting
+    # over whatever quota happens to be configured would go vacuous the moment
+    # nobody had set a tight one -- the shape B9 sat in for days.
+    from control.quota import QuotaEnforcer
+
+    quota_org = "local"
+    original_plan = None
+    try:
+        from control.repository import ControlPlane as ControlPlaneClient
+
+        cp_q = ControlPlaneClient(os.getenv(
+            "CONTROL_PLANE_DSN",
+            "postgresql://mcpobs:mcpobs@localhost:5433/mcpobs_control",
+        ))
+        row = cp_q._one(
+            "SELECT plan, quota_spans_per_minute, quota_spans_per_day FROM orgs "
+            "WHERE slug = %s", (quota_org,)
+        )
+        original_plan = row
+        cp_q.set_quota(quota_org, 5, 0)
+
+        def _probe(spans: int) -> tuple[int, dict]:
+            """POST `spans` spans through the real gateway."""
+            from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+                ExportTraceServiceRequest,
+            )
+            from opentelemetry.proto.trace.v1.trace_pb2 import (
+                ResourceSpans,
+                ScopeSpans,
+                Span,
+            )
+
+            payload = ExportTraceServiceRequest()
+            resource_spans = ResourceSpans()
+            scope_spans = ScopeSpans()
+            for _ in range(spans):
+                scope_spans.spans.append(Span(name="quota-probe"))
+            resource_spans.scope_spans.append(scope_spans)
+            payload.resource_spans.append(resource_spans)
+
+            request = urllib.request.Request(
+                "http://localhost:4319/v1/traces",
+                data=payload.SerializeToString(),
+                headers={
+                    "content-type": "application/x-protobuf",
+                    "x-api-key": _dev_key("MCPOBS_INGEST_KEY"),
+                },
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=15) as response:
+                    return response.status, dict(response.headers)
+            except urllib.error.HTTPError as exc:
+                return exc.code, dict(exc.headers)
+
+        under, _ = _probe(3)
+        over, headers = _probe(5)
+        record(
+            "J1 an over-quota tenant is rejected at the edge",
+            under == 200 and over == 429,
+            f"3 spans -> {under}, 5 more -> {over} "
+            f"(used {headers.get('X-Quota-Used-Minute')}/"
+            f"{headers.get('X-Quota-Limit-Minute')})",
+        )
+        record(
+            "J1b the rejection is retryable and says when",
+            over == 429 and int(headers.get("Retry-After", 0)) > 0,
+            f"Retry-After={headers.get('Retry-After')}s -- 429 not 403, because an "
+            "OTLP exporter retries a 429 and abandons a 403",
+        )
+        # A rejected burst must still be counted, or the tenant being rejected
+        # looks quiet to whoever goes looking for the cause.
+        used = int(headers.get("X-Quota-Used-Minute", 0))
+        record(
+            "J1c a rejected burst is still counted",
+            used > 5,
+            f"{used} spans counted against a limit of 5",
+        )
+    except Exception as exc:
+        record("J1 an over-quota tenant is rejected at the edge", False, f"{exc}")
+    finally:
+        # ALWAYS restore. A verify run that leaves a 5-span-per-minute limit on
+        # the local org would throttle every later `make demo` and look like a
+        # pipeline fault.
+        try:
+            if original_plan is not None:
+                cp_q.set_quota(
+                    quota_org,
+                    original_plan["quota_spans_per_minute"],
+                    original_plan["quota_spans_per_day"],
+                )
+        except Exception as exc:
+            print(f"     WARNING: could not restore {quota_org} quota: {exc}")
+
+    # Unlimited plans must short-circuit before touching the counter at all.
+    record(
+        "J2 an unlimited plan consumes no quota",
+        QuotaEnforcer().check("probe-tenant", "enterprise", spans=10_000_000).allowed,
+        "enterprise is uncapped, and is checked without a counter round trip",
+    )
+
     # ---------------- H: streaming visibility (DF-20, DF-21) ---------------
     print()
     print("--- H: progress and subscription events ---")

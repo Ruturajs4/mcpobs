@@ -123,7 +123,9 @@ class ControlPlane:
         row = self._one(
             """SELECT k.id AS key_id, k.org_id, k.secret_hash, k.scopes,
                       k.expires_at, k.revoked_at,
-                      o.slug AS tenant, p.slug AS project, p.environment
+                      o.slug AS tenant, o.plan,
+                      o.quota_spans_per_minute, o.quota_spans_per_day,
+                      p.slug AS project, p.environment
                FROM api_keys k
                JOIN orgs o ON o.id = k.org_id
                JOIN projects p ON p.id = k.project_id
@@ -148,6 +150,9 @@ class ControlPlane:
             project=row["project"],
             environment=row["environment"],
             scopes=keys.parse_scopes(row["scopes"]),
+            plan=row["plan"] or "trial",
+            quota_spans_per_minute=row["quota_spans_per_minute"],
+            quota_spans_per_day=row["quota_spans_per_day"],
         )
         self._cache[prefix] = (now + CACHE_TTL_SECONDS, row["secret_hash"], principal)
         return principal
@@ -264,6 +269,25 @@ class ControlPlane:
             environment=project["environment"],
             scopes=scopes,
         )
+
+    def set_quota(
+        self, slug: str, per_minute: int | None, per_day: int | None
+    ) -> bool:
+        """Override an org's limits. NULL restores the plan's."""
+        row = self._one(
+            "UPDATE orgs SET quota_spans_per_minute = %s, quota_spans_per_day = %s "
+            "WHERE slug = %s RETURNING id",
+            (per_minute, per_day, slug),
+        )
+        self._cache.clear()  # so the new limit applies on the next request here
+        return row is not None
+
+    def set_plan(self, slug: str, plan: str) -> bool:
+        row = self._one(
+            "UPDATE orgs SET plan = %s WHERE slug = %s RETURNING id", (plan, slug)
+        )
+        self._cache.clear()
+        return row is not None
 
     def revoke_key(self, prefix: str) -> bool:
         row = self._one(

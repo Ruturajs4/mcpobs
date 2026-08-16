@@ -180,6 +180,11 @@ class TestAuthenticationCache:
             "key_id": 1, "org_id": 1, "secret_hash": secret_hash, "scopes": "ingest",
             "expires_at": None, "revoked_at": None,
             "tenant": "acme", "project": "default", "environment": "production",
+            # The auth query selects these too. Kept in the fixture rather
+            # than defaulted in the repository: a missing column in the REAL
+            # query is a bug worth crashing on, not one to paper over.
+            "plan": "trial", "quota_spans_per_minute": None,
+            "quota_spans_per_day": None,
         }
         plane = self._plane(row)
         assert plane.authenticate(token) is not None          # populates the cache
@@ -194,6 +199,11 @@ class TestAuthenticationCache:
             "key_id": 1, "org_id": 1, "secret_hash": secret_hash, "scopes": "ingest",
             "expires_at": None, "revoked_at": datetime.now(UTC),
             "tenant": "acme", "project": "default", "environment": "production",
+            # The auth query selects these too. Kept in the fixture rather
+            # than defaulted in the repository: a missing column in the REAL
+            # query is a bug worth crashing on, not one to paper over.
+            "plan": "trial", "quota_spans_per_minute": None,
+            "quota_spans_per_day": None,
         })
         assert plane.authenticate(token) is None
 
@@ -205,6 +215,11 @@ class TestAuthenticationCache:
             "key_id": 1, "org_id": 1, "secret_hash": secret_hash, "scopes": "ingest",
             "expires_at": datetime.now(UTC) - timedelta(days=1), "revoked_at": None,
             "tenant": "acme", "project": "default", "environment": "production",
+            # The auth query selects these too. Kept in the fixture rather
+            # than defaulted in the repository: a missing column in the REAL
+            # query is a bug worth crashing on, not one to paper over.
+            "plan": "trial", "quota_spans_per_minute": None,
+            "quota_spans_per_day": None,
         })
         assert plane.authenticate(token) is None
 
@@ -569,3 +584,189 @@ class TestStreamingVisibility:
                 return "subscribed"
 
         assert streaming.ObservedSubscriptionBus(Bus()).subscribe(None) == "subscribed"
+
+
+class TestQuotas:
+    """Soft flags and hard rejections (Architecture.md 5.1, ADR-008)."""
+
+    def enforcer(self):
+        from control.quota import QuotaEnforcer, QuotaStore
+
+        class Store(QuotaStore):
+            def __init__(self) -> None:
+                self._local = {}
+                self.degraded = False
+                self.url = ""
+
+            def incr(self, key: str, amount: int, ttl: int) -> int:
+                return self._incr_local(key, amount, ttl)
+
+        return QuotaEnforcer(store=Store())
+
+    def test_under_the_limit_is_allowed_and_unflagged(self) -> None:
+        verdict = self.enforcer().check("acme", "trial", spans=10)
+        assert verdict.allowed and not verdict.soft_exceeded
+
+    def test_the_soft_threshold_fires_before_anything_is_refused(self) -> None:
+        """A flag raised at 100% would arrive with the rejection and tell the
+        customer nothing they were not about to find out anyway."""
+        verdict = self.enforcer().check("acme", "trial", spans=1_700)  # 85% of 2000
+        assert verdict.allowed and verdict.soft_exceeded
+
+    def test_over_the_minute_limit_is_refused(self) -> None:
+        enforcer = self.enforcer()
+        enforcer.check("acme", "trial", spans=2_000)
+        verdict = enforcer.check("acme", "trial", spans=1)
+        assert not verdict.allowed
+        assert "rate limit" in verdict.reason
+        assert 0 < verdict.retry_after <= 60
+
+    def test_the_daily_limit_catches_what_no_single_minute_would(self) -> None:
+        """Per-minute and per-day limits catch different things; neither
+        subsumes the other."""
+        verdict = self.enforcer().check(
+            "acme", "trial", spans=200_001, override_minute=0
+        )
+        assert not verdict.allowed
+        assert "daily volume" in verdict.reason
+
+    def test_spans_are_metered_not_requests(self) -> None:
+        """Metering requests would let a customer send the same volume in a
+        hundredth of the calls and stay under any limit."""
+        enforcer = self.enforcer()
+        assert enforcer.check("acme", "trial", spans=1_999).allowed
+        assert not enforcer.check("acme", "trial", spans=2).allowed
+
+    def test_a_rejected_burst_is_still_counted(self) -> None:
+        """Counting only what was accepted would make a rejected flood
+        invisible, so the tenant being rejected would look quiet to whoever
+        went looking for the cause."""
+        enforcer = self.enforcer()
+        enforcer.check("acme", "trial", spans=5_000)
+        assert enforcer.check("acme", "trial", spans=1).used_minute > 5_000
+
+    def test_tenants_are_metered_separately(self) -> None:
+        enforcer = self.enforcer()
+        enforcer.check("acme", "trial", spans=2_100)
+        assert enforcer.check("globex", "trial", spans=10).allowed
+
+    def test_an_unlimited_plan_short_circuits(self) -> None:
+        verdict = self.enforcer().check("acme", "enterprise", spans=10_000_000)
+        assert verdict.allowed and not verdict.soft_exceeded
+
+    def test_an_override_beats_the_plan(self) -> None:
+        enforcer = self.enforcer()
+        assert enforcer.check("acme", "trial", spans=5_000, override_minute=10_000).allowed
+
+    def test_an_override_of_zero_means_unlimited_not_unset(self) -> None:
+        """0 is meaningful here, which is why the column is NULLable rather than
+        defaulting to 0 -- otherwise an override to unlimited would be
+        indistinguishable from no override at all."""
+        verdict = self.enforcer().check(
+            "acme", "trial", spans=10_000_000, override_minute=0, override_day=0
+        )
+        assert verdict.allowed
+
+    def test_an_unknown_plan_falls_back_to_the_most_restrictive(self) -> None:
+        """A typo in a plan name must not hand somebody unlimited ingest."""
+        from control.quota import DEFAULT_PLAN, QuotaEnforcer
+
+        assert QuotaEnforcer.plan_for("gold-tier-typo").name == DEFAULT_PLAN
+
+    def test_a_broken_counter_fails_open(self) -> None:
+        """Refusing telemetry because OUR bookkeeping broke inverts who is being
+        protected. Architecture 8 settles this shape already: with the control
+        plane down, ingest keeps working."""
+        from control.quota import QuotaEnforcer, QuotaStore
+
+        class Broken(QuotaStore):
+            def __init__(self) -> None:
+                self.url = ""
+                self._local = {}
+                self.degraded = False
+
+            @property
+            def client(self):
+                raise RuntimeError("redis is down")
+
+        assert QuotaEnforcer(store=Broken()).check("acme", "trial", spans=1).allowed
+
+    def test_empty_payloads_do_not_consume_quota(self) -> None:
+        assert self.enforcer().check("acme", "trial", spans=0).allowed
+
+
+class TestQuotaAtTheGateway:
+    def principal(self, **kw):
+        from control.models import Principal
+
+        return Principal(
+            key_id=1, org_id=1, tenant="acme", project="default",
+            environment="production", scopes=("ingest",), **kw
+        )
+
+    def payload(self, spans: int) -> bytes:
+        from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+            ExportTraceServiceRequest,
+        )
+        from opentelemetry.proto.trace.v1.trace_pb2 import ResourceSpans, ScopeSpans, Span
+
+        request = ExportTraceServiceRequest()
+        resource_spans = ResourceSpans()
+        scope_spans = ScopeSpans()
+        for _ in range(spans):
+            scope_spans.spans.append(Span(name="x"))
+        resource_spans.scope_spans.append(scope_spans)
+        request.resource_spans.append(resource_spans)
+        return request.SerializeToString()
+
+    def test_spans_are_counted_across_every_resource_and_scope(self) -> None:
+        from ingest.app import _count_spans, _parse
+
+        assert _count_spans(_parse(self.payload(7))) == 7
+
+    def test_the_soft_flag_reaches_the_span(self) -> None:
+        """A soft quota that only appears in our logs is a warning the customer
+        never receives. On the span it is in their own console, on exactly the
+        data that was at risk."""
+        from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+            ExportTraceServiceRequest,
+        )
+
+        from ingest.app import SOFT_QUOTA_ATTRIBUTE, stamp
+
+        out = ExportTraceServiceRequest()
+        out.ParseFromString(stamp(self.payload(1), self.principal(), soft=True))
+        assert SOFT_QUOTA_ATTRIBUTE in [
+            kv.key for kv in out.resource_spans[0].resource.attributes
+        ]
+
+    def test_no_flag_when_under_the_threshold(self) -> None:
+        from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+            ExportTraceServiceRequest,
+        )
+
+        from ingest.app import SOFT_QUOTA_ATTRIBUTE, stamp
+
+        out = ExportTraceServiceRequest()
+        out.ParseFromString(stamp(self.payload(1), self.principal(), soft=False))
+        assert SOFT_QUOTA_ATTRIBUTE not in [
+            kv.key for kv in out.resource_spans[0].resource.attributes
+        ]
+
+    def test_rejection_is_429_and_retryable_not_403(self) -> None:
+        """The difference matters to an OTLP exporter: 429 is retryable and 403
+        is not, so a rate limit sent as 403 makes a client abandon data it could
+        have delivered a minute later."""
+        import pytest
+        from fastapi import HTTPException
+
+        from control.quota import Verdict
+        from ingest.app import _reject
+
+        with pytest.raises(HTTPException) as caught:
+            _reject(
+                self.principal(),
+                Verdict(allowed=False, reason="rate limit", retry_after=42),
+            )
+        assert caught.value.status_code == 429
+        assert caught.value.headers["Retry-After"] == "42"
