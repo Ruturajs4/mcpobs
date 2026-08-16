@@ -1,7 +1,7 @@
 PY := .venv/Scripts/python.exe
 COMPOSE := docker compose
 
-.PHONY: docs docs-build help up down demo verify attrs lag logs ps clean test lint typecheck check freshness traces metrics deferred rollups devkeys invite archive
+.PHONY: browser docs docs-build help up down demo verify attrs lag logs ps clean test lint typecheck check freshness traces metrics deferred rollups devkeys invite archive
 
 help:
 	@echo "up        - start clickhouse + kafka + collector + normalizer"
@@ -109,3 +109,8 @@ docs:
 
 docs-build:
 	$(PY) -m mkdocs build --strict
+
+browser:
+	@echo "browser flows -- needs 'make up' and 'make devkeys' first"
+	$(PY) -m playwright install --with-deps chromium
+	$(PY) -m pytest tests/test_browser_flows.py -v

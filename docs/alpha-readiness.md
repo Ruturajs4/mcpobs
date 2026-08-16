@@ -111,19 +111,20 @@ requires multi-broker Kafka before any customer data.
 
 ### P1: verification
 
-#### A10. No automated browser tests
+#### A10. Automated browser tests — **CLOSED**
 
-Every console behaviour closed above — drill-through, pagination, the filter
-panel, focus management, the trace drawer — was verified **by hand in a real
-browser during review**. Nothing stops it regressing.
+21 Playwright flows in `tests/test_browser_flows.py`, run in CI and by
+`make browser`: sign-in, the trace list's column alignment, transport tags,
+pagination (including that a filter change resets the cursor), the filter panel
+(opens right, inert when closed, focus returns to the trigger, chips, the empty
+state), the trace drawer, waterfall paging, drill-through, and that a same-view
+refresh does not blank the pane.
 
-This is the one verification gap left, and it is the reason the console items
-above should be re-checked before each release rather than assumed.
+Verified they catch regressions rather than assumed: reintroducing the
+column-order bug fails `test_columns_and_cells_line_up` with
+`assert 'ok' in ('stdio', 'http', ...)` — the exact symptom that shipped.
 
-**Exit criteria**
-
-- Browser coverage for the filter, pagination, navigation and drawer flows.
-- Run in CI alongside the existing checks.
+They skip when the stack is not running, and the skip names the reason.
 
 #### A11. The stdio SIGTERM flush is unproven
 
@@ -192,7 +193,7 @@ become release requirements.
 - [x] JavaScript syntax and strict docs build pass
 - [x] The complete live acceptance suite passes with no failures
 - [x] Concurrent query smoke testing passes
-- [ ] **Browser-flow tests exist and run in CI** (A10)
+- [x] **Browser-flow tests exist and run in CI** (A10)
 - [ ] **The stdio SIGTERM flush is exercised on a POSIX host** (A11)
 
 ### Deployment and operations
@@ -215,10 +216,9 @@ become release requirements.
 ## Recommended order
 
 1. Build the private, TLS-enabled alpha environment and prove restore (A1, A2).
-2. Add browser-flow tests so the closed console work stays closed (A10).
-3. Exercise the stdio SIGTERM flush on Linux (A11).
-4. Add readiness alerts and a runbook owner.
-5. Complete user-session and membership support **if** team accounts are in
+2. Exercise the stdio SIGTERM flush on Linux (A11).
+3. Add readiness alerts and a runbook owner.
+4. Complete user-session and membership support **if** team accounts are in
    scope for the alpha.
 
 ## Note for the next reviewer

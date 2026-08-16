@@ -40,6 +40,15 @@ jobs:
       - name: Documentation builds
         run: python -m mkdocs build --strict
 
+      # Browser flows need the stack, so they are not in the unit job. They
+      # SKIP when the console is unreachable -- and the skip names the
+      # reason, because a guard that reports green while testing nothing is
+      # worse than no guard.
+      - name: Browser flows
+        run: |
+          python -m playwright install --with-deps chromium
+          pytest tests/test_browser_flows.py -v -rs
+
       # This is the tripwire that matters. The failure classifier matches
       # SDK-generated message prefixes; an SDK release that changes them would
       # otherwise silently degrade every customer's error intelligence. Failing

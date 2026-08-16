@@ -28,3 +28,6 @@ mkdocs==1.6.1
 mkdocs-material==9.7.7
 mkdocstrings[python]==1.0.6
 PyJWT==2.13.0
+# Browser flows (tests/test_browser_flows.py). The console was verified by
+# hand for its whole life, which is how a column-order bug shipped.
+playwright==1.62.0
