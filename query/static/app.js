@@ -467,9 +467,10 @@ function renderDrawer(t, selectedId) {
       of the call &mdash; but the tail is missing, and a span deeper in the trace
       may have no visible parent here.</div></div>` : ""}
     ${t.detail_omitted ? `<div class="note-bar"><span>&#8505;</span><div>
-      <b>Per-span detail is not loaded for a trace this large.</b>
-      The waterfall is complete; only the field-by-field panel is
-      omitted.</div></div>` : ""}
+      <b>Span detail is loaded on click for a trace this large.</b>
+      Sending it for all ${num(t.span_count)} spans up front would be most of the
+      response; one request per span you actually open is
+      cheaper.</div></div>` : ""}
     <div class="wf-head">
       <div>Span</div><div class="num">Duration</div>
       <div class="axis"><span>0</span><span>${dur(total * 0.25)}</span><span>${dur(total * 0.5)}</span>
@@ -484,7 +485,42 @@ function renderDrawer(t, selectedId) {
     renderDrawer(S.traceData, S.span);
     el("span-detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
   });
-  renderSpanDetail(t.detail[selectedId]);
+  showSpanDetail(t, selectedId);
+}
+
+/* Resolve one span's detail, from the bulk map or from the server.
+
+   Large traces omit the bulk map for payload size. The first version of that
+   cap traded the map for NOTHING -- no span in such a trace could be inspected,
+   including the ones on screen, which is a loss of capability rather than an
+   optimisation. One request per click restores it, and the result is cached so
+   clicking back and forth costs one round trip per span.
+
+   The bulk map is still used when present: on an ordinary trace this makes no
+   request at all. */
+const spanDetailCache = new Map();
+
+async function showSpanDetail(t, spanId) {
+  if (!spanId) { renderSpanDetail(null); return; }
+
+  const inline = t.detail?.[spanId];
+  if (inline) { renderSpanDetail(inline); return; }
+
+  const key = `${t.trace_id}/${spanId}`;
+  if (spanDetailCache.has(key)) { renderSpanDetail(spanDetailCache.get(key)); return; }
+
+  el("span-detail").innerHTML = '<div class="spin">Loading span…</div>';
+  try {
+    const d = await api(`/traces/${encodeURIComponent(t.trace_id)}/spans/${encodeURIComponent(spanId)}`);
+    spanDetailCache.set(key, d);
+    // The selection may have moved while this was in flight; rendering the
+    // stale one would silently show the wrong span's fields.
+    if (S.span === spanId || !S.span) renderSpanDetail(d);
+  } catch (e) {
+    el("span-detail").innerHTML =
+      `<div class="empty" style="padding:24px">Could not load this span.<br>
+       <span class="mono" style="font-size:11px">${esc(e.message)}</span></div>`;
+  }
 }
 
 /* Everything we hold about one span. Nothing omitted for being uninteresting:
@@ -495,13 +531,7 @@ function renderSpanDetail(d) {
     // Blank is ambiguous between "nothing selected" and "detail suppressed for
     // size". Only the second needs explaining, and leaving it blank makes the
     // panel look broken on exactly the traces that are hardest to debug.
-    el("span-detail").innerHTML = S.traceData?.detail_omitted
-      ? `<div class="empty" style="padding:24px">Per-span detail is omitted for
-         traces over ${num(S.traceData.detail_cap)} spans.<br>
-         <span class="mute" style="font-size:11.5px">The waterfall above is
-         complete &mdash; duration, status and downstream kind are all
-         there.</span></div>`
-      : "";
+    el("span-detail").innerHTML = "";
     return;
   }
 

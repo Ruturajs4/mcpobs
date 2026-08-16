@@ -38,6 +38,7 @@ from query.dtos import (
     Overview,
     Page,
     ServerSummary,
+    SpanDetail,
     ToolSummary,
     TraceDetail,
 )
@@ -295,6 +296,26 @@ def trace(trace_id: str, scope: ScopeDep, repo: RepoDep) -> TraceDetail:
     detail = repo.trace(scope.tenant, scope.project, trace_id)
     if detail is None:
         raise HTTPException(404, f"trace {trace_id} not found")
+    return detail
+
+
+@app.get("/api/v1/traces/{trace_id}/spans/{span_id}", response_model=SpanDetail)
+def span_detail(
+    trace_id: str, span_id: str, scope: ScopeDep, repo: RepoDep
+) -> SpanDetail:
+    """One span's detail, for traces too large to ship the whole map.
+
+    A large trace omits the bulk `detail` map for payload size; without this
+    route that meant no span in such a trace could be inspected at all,
+    including the ones on screen. The cap is a payload optimisation, not a loss
+    of capability.
+
+    Same tenant scoping as everything else: the repository applies it, and an
+    endpoint never chooses a tenant.
+    """
+    detail = repo.span_detail(scope.tenant, scope.project, trace_id, span_id)
+    if detail is None:
+        raise HTTPException(404, "span not found")
     return detail
 
 

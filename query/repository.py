@@ -627,6 +627,60 @@ class SpanRepository:
             out[row[0]] = self._latency(row[1:])
         return out
 
+    def span_detail(
+        self, tenant: str, project: str, trace_id: str, span_id: str
+    ) -> SpanDetail | None:
+        """One span's full detail, fetched on demand.
+
+        Exists because a large trace omits the bulk `detail` map for payload
+        size, and without this that meant NO span in such a trace could be
+        inspected -- including the ones on screen. The cap is supposed to be a
+        payload optimisation, not a loss of capability.
+
+        The timing fields (`self_ms`, `pct_of_trace`) need the whole trace to
+        compute, and this reads ONE span. They are returned as zero rather than
+        guessed: a self-time computed without the children is not a smaller
+        number, it is a wrong one. The waterfall already shows both, and it is
+        on screen beside this.
+        """
+        located = self._rows(
+            """SELECT trace_date FROM trace_locator
+               WHERE trace_id = {trace:String} AND tenant_id = {tenant:String}
+                 AND project_id = {project:String}
+               ORDER BY first_seen DESC LIMIT 1 BY trace_id""",
+            {"trace": trace_id, "tenant": tenant, "project": project},
+        )
+        if not located:
+            return None
+
+        def pick(column: str) -> str:
+            if column == "normalization_version":
+                return "max(normalization_version) AS s_normalization_version"
+            return f"argMax({column}, normalization_version) AS s_{column}"
+
+        selects = ", ".join(pick(c) for c in self._SPAN_COLUMNS if c != "span_id")
+        rows = self._rows(
+            f"""SELECT span_id, {selects}
+                FROM spans_raw
+                WHERE trace_id = {{trace:String}} AND tenant_id = {{tenant:String}}
+                  AND project_id = {{project:String}} AND toDate(timestamp) = {{day:Date}}
+                  AND span_id = {{span:String}}
+                GROUP BY span_id""",
+            {
+                "trace": trace_id,
+                "tenant": tenant,
+                "project": project,
+                "day": located[0][0],
+                "span": span_id,
+            },
+        )
+        if not rows:
+            return None
+
+        item = dict(zip(self._SPAN_COLUMNS, rows[0], strict=True))
+        duration_ms = round((item["duration_ns"] or 0) / 1e6, 3)
+        return _span_detail(item, trace_id, duration_ms, 0.0, 0.0, 0.0)
+
     def filter_options(self, tenant: str, project: str, since: datetime) -> FilterOptions:
         """The distinct values worth offering in a filter dropdown.
 
@@ -883,82 +937,8 @@ class SpanRepository:
                     is_latency_eligible=bool(item["is_latency_eligible"]),
                 )
             )
-            ingested = item["ingested_at"]
-            detail[item["span_id"]] = SpanDetail(
-                span_id=item["span_id"],
-                parent_span_id=item["parent_span_id"] or "",
-                trace_id=trace_id,
-                name=item["span_name"],
-                kind=item["span_kind"] or "",
-                service_name=item["service_name"] or "",
-                service_version=item["service_version"] or "",
-                environment=item["deployment_environment"] or "",
-                service_instance=(item["resource_attributes"] or {}).get(
-                    "service.instance.id", ""
-                ),
-                start_time=item["timestamp"],
-                duration_ms=duration_ms,
-                self_ms=self_ms,
-                offset_ms=offset_ms,
-                pct_of_trace=round(100 * duration_ms / total_ms, 1) if total_ms else 0.0,
-                status=item["status_code"] or "UNSET",
-                status_message=item["status_message"] or "",
-                failure_category=item["failure_category"] or "",
-                failure_detail=item["failure_detail"] or "",
-                failure_kind_source=item["failure_kind_source"] or "",
-                classifier_version=int(_number(item["classifier_version"])),
-                error_type=item["error_type"] or "",
-                rpc_status_code=item["rpc_status_code"],
-                is_error=bool(item["mcp_is_error"]),
-                mcp_method=item["mcp_method"] or "",
-                tool=item["mcp_tool_name"] or "",
-                prompt=item["mcp_prompt_name"] or "",
-                resource_uri=item["mcp_resource_uri"] or "",
-                gen_ai_operation=item["gen_ai_operation"] or "",
-                protocol_version=item["protocol_version"] or "",
-                jsonrpc_request_id=item["jsonrpc_request_id"] or "",
-                transport=item["transport"] or "",
-                session_id=item["mcp_session_id"],
-                result_type=item["result_type"] or "",
-                mrtr_state_in=item["mrtr_state_in"] or "",
-                mrtr_state_out=item["mrtr_state_out"] or "",
-                is_latency_eligible=bool(item["is_latency_eligible"]),
-                downstream_kind=item["downstream_kind"] or "",
-                http_method=item["http_method"] or "",
-                http_status_code=item["http_status_code"],
-                http_host=item["http_host"] or "",
-                db_system=item["db_system"] or "",
-                db_operation=item["db_operation"] or "",
-                db_collection=item["db_collection"] or "",
-                messaging_system=item["messaging_system"] or "",
-                messaging_destination=item["messaging_destination"] or "",
-                messaging_operation=item["messaging_operation"] or "",
-                http_url=item["http_url"] or "",
-                db_statement=item["db_statement"] or "",
-                http_request_body=item["http_request_body"] or "",
-                http_request_headers=item["http_request_headers"] or "",
-                http_response_headers=item["http_response_headers"] or "",
-                client_name=item["client_name"] or "",
-                client_version=item["client_version"] or "",
-                gen_ai_system=item["gen_ai_system"] or "",
-                gen_ai_model=item["gen_ai_model"] or "",
-                gen_ai_input_tokens=item["gen_ai_input_tokens"],
-                gen_ai_output_tokens=item["gen_ai_output_tokens"],
-                input_size=item["input_size"],
-                output_size=item["output_size"],
-                input_preview=item["input_preview"],
-                output_preview=item["output_preview"],
-                span_attributes=item["span_attributes"] or {},
-                resource_attributes=item["resource_attributes"] or {},
-                normalization_version=int(_number(item["normalization_version"])),
-                kafka_partition=int(_number(item["kafka_partition"])),
-                kafka_offset=int(_number(item["kafka_offset"])),
-                ingested_at=ingested,
-                freshness_ms=round(
-                    (ingested.timestamp() - item["timestamp"].timestamp()) * 1000, 1
-                )
-                if ingested
-                else 0.0,
+            detail[item["span_id"]] = _span_detail(
+                item, trace_id, duration_ms, self_ms, offset_ms, total_ms
             )
 
         root = _resolve_root(spans)
@@ -1006,6 +986,105 @@ class SpanRepository:
             detail_omitted=detail_omitted,
             detail_cap=TRACE_DETAIL_CAP,
         )
+
+
+def _span_detail(
+    item: dict[str, Any],
+    trace_id: str,
+    duration_ms: float,
+    self_ms: float,
+    offset_ms: float,
+    total_ms: float,
+) -> SpanDetail:
+    """Build one SpanDetail from a raw row.
+
+    Extracted from `trace()` so a single span can be fetched on demand.
+    Large traces omit the bulk `detail` map for payload size, and before this
+    existed that meant NO span in such a trace could be inspected at all --
+    including the ones on screen. Trading the map for nothing is not the same
+    as trading it for a second request.
+
+    One definition, two callers: duplicating sixty field assignments is how
+    the bulk path and the on-demand path start disagreeing about what a span
+    detail contains.
+    """
+    ingested = item["ingested_at"]
+    return SpanDetail(
+            span_id=item["span_id"],
+            parent_span_id=item["parent_span_id"] or "",
+            trace_id=trace_id,
+            name=item["span_name"],
+            kind=item["span_kind"] or "",
+            service_name=item["service_name"] or "",
+            service_version=item["service_version"] or "",
+            environment=item["deployment_environment"] or "",
+            service_instance=(item["resource_attributes"] or {}).get(
+                "service.instance.id", ""
+            ),
+            start_time=item["timestamp"],
+            duration_ms=duration_ms,
+            self_ms=self_ms,
+            offset_ms=offset_ms,
+            pct_of_trace=round(100 * duration_ms / total_ms, 1) if total_ms else 0.0,
+            status=item["status_code"] or "UNSET",
+            status_message=item["status_message"] or "",
+            failure_category=item["failure_category"] or "",
+            failure_detail=item["failure_detail"] or "",
+            failure_kind_source=item["failure_kind_source"] or "",
+            classifier_version=int(_number(item["classifier_version"])),
+            error_type=item["error_type"] or "",
+            rpc_status_code=item["rpc_status_code"],
+            is_error=bool(item["mcp_is_error"]),
+            mcp_method=item["mcp_method"] or "",
+            tool=item["mcp_tool_name"] or "",
+            prompt=item["mcp_prompt_name"] or "",
+            resource_uri=item["mcp_resource_uri"] or "",
+            gen_ai_operation=item["gen_ai_operation"] or "",
+            protocol_version=item["protocol_version"] or "",
+            jsonrpc_request_id=item["jsonrpc_request_id"] or "",
+            transport=item["transport"] or "",
+            session_id=item["mcp_session_id"],
+            result_type=item["result_type"] or "",
+            mrtr_state_in=item["mrtr_state_in"] or "",
+            mrtr_state_out=item["mrtr_state_out"] or "",
+            is_latency_eligible=bool(item["is_latency_eligible"]),
+            downstream_kind=item["downstream_kind"] or "",
+            http_method=item["http_method"] or "",
+            http_status_code=item["http_status_code"],
+            http_host=item["http_host"] or "",
+            db_system=item["db_system"] or "",
+            db_operation=item["db_operation"] or "",
+            db_collection=item["db_collection"] or "",
+            messaging_system=item["messaging_system"] or "",
+            messaging_destination=item["messaging_destination"] or "",
+            messaging_operation=item["messaging_operation"] or "",
+            http_url=item["http_url"] or "",
+            db_statement=item["db_statement"] or "",
+            http_request_body=item["http_request_body"] or "",
+            http_request_headers=item["http_request_headers"] or "",
+            http_response_headers=item["http_response_headers"] or "",
+            client_name=item["client_name"] or "",
+            client_version=item["client_version"] or "",
+            gen_ai_system=item["gen_ai_system"] or "",
+            gen_ai_model=item["gen_ai_model"] or "",
+            gen_ai_input_tokens=item["gen_ai_input_tokens"],
+            gen_ai_output_tokens=item["gen_ai_output_tokens"],
+            input_size=item["input_size"],
+            output_size=item["output_size"],
+            input_preview=item["input_preview"],
+            output_preview=item["output_preview"],
+            span_attributes=item["span_attributes"] or {},
+            resource_attributes=item["resource_attributes"] or {},
+            normalization_version=int(_number(item["normalization_version"])),
+            kafka_partition=int(_number(item["kafka_partition"])),
+            kafka_offset=int(_number(item["kafka_offset"])),
+            ingested_at=ingested,
+            freshness_ms=round(
+                (ingested.timestamp() - item["timestamp"].timestamp()) * 1000, 1
+            )
+            if ingested
+            else 0.0,
+    )
 
 
 def _detail(
