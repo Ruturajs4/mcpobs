@@ -638,6 +638,71 @@ def main() -> int:
         f"stdio={transports.get('stdio', 0)} "
         f"streamable-http={transports.get('streamable-http', 0)}",
     )
+    # ---- B13: the stdio flush path --------------------------------------
+    #
+    # On stdio the CLIENT tears the server down when it is finished, and the
+    # real export path is a BatchSpanProcessor, which buffers. Without the
+    # atexit/SIGTERM flush in demo_server/server.py, the last spans of every
+    # stdio session are silently lost -- and since stdio is the common
+    # deployment, that is most sessions.
+    #
+    # Every other test of this uses OTEL_MODE=file, which is a
+    # SimpleSpanProcessor and never buffers, so all of them would pass with the
+    # flush removed. This one drives the REAL buffered path end to end.
+    #
+    # WHAT IT DOES AND DOES NOT PROVE. Measured by deleting the atexit and
+    # SIGTERM handlers and re-running: the span still arrived. `TracerProvider`
+    # defaults to `shutdown_on_exit=True`, so the SDK registers its own atexit
+    # flush and the explicit `atexit.register(shutdown)` is redundant on a clean
+    # exit -- which is what closing stdin produces, and what this exercises.
+    #
+    # So this asserts the OUTCOME customers depend on (a stdio session does not
+    # lose its final spans), not that our own handler is the thing delivering
+    # it. The handler that is genuinely load-bearing is the SIGTERM one, because
+    # SIGTERM does not run atexit -- and that path is untestable on Windows,
+    # where SIGTERM is TerminateProcess and no Python handler runs at all.
+    flush_probe_tool = "cache_warm"
+
+    def _stdio_probe_count() -> int:
+        return int(
+            ch.query(
+                "SELECT count() FROM spans_raw WHERE mcp_tool_name = {tool:String} "
+                "  AND transport = 'stdio'",
+                parameters={"tool": flush_probe_tool},
+            ).result_rows[0][0]
+        )
+
+    async def _one_stdio_session() -> None:
+        # No span_file: this must use OTLP + BatchSpanProcessor, the path a
+        # customer actually runs.
+        async with stdio_session() as client:
+            await client.call_tool(flush_probe_tool, {"customers": 2})
+        # Leaving the context tears the subprocess down, exactly as a real
+        # client does when it is finished with the server.
+
+    flush_before = _stdio_probe_count()
+    try:
+        asyncio.run(_one_stdio_session())
+    except Exception as exc:
+        print(f"     stdio flush probe failed to run: {exc}")
+
+    deadline = time.time() + 90
+    flush_after = flush_before
+    while time.time() < deadline:
+        flush_after = _stdio_probe_count()
+        if flush_after > flush_before:
+            break
+        time.sleep(3)
+
+    record(
+        "B13 a stdio server flushes its buffered spans when the client closes it",
+        flush_after > flush_before,
+        f"{flush_after - flush_before} span(s) delivered after teardown"
+        + ("" if flush_after > flush_before else
+           " -- the BatchSpanProcessor buffer was dropped; every stdio session "
+           "is losing its final spans"),
+    )
+
     record(
         "B12b every MCP span names its transport",
         transports.get("", 0) == 0,
