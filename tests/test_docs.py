@@ -1,17 +1,23 @@
 """The customer documentation must not publish internal engineering documents.
 
-`docs/` holds both. The internal set is not merely embarrassing:
+The mechanism is now STRUCTURAL: customer pages live in `docs-public/`, which is
+MkDocs' `docs_dir`, and internal engineering documents live in `docs/`, which
+MkDocs never reads. A file cannot be published if it is not in the tree.
+
+It used to be a maintained list (`exclude_docs:`), and before that the obvious
+guard, which does not work at all: leaving a file out of `nav` only removes its
+sidebar link. Measured before relying on it -- a non-nav file was still rendered
+to `site/<name>/index.html` and its full text written into
+`search/search_index.json`, so searching the published docs for "alpha" returned
+"not ready for a customer-facing alpha".
+
+That matters because the internal set is a security document:
 `alpha-readiness.md` enumerates unpatched weaknesses and `deferred.md` lists
 known gaps, so publishing either hands an attacker a prioritised checklist.
 
-THE OBVIOUS GUARD DOES NOT WORK. Leaving a file out of `nav` only removes its
-sidebar link -- MkDocs still renders it to `site/<name>/index.html` and still
-writes its full text into `search/search_index.json`. Measured before relying on
-it: a non-nav file was published at a guessable URL, and searching the built
-site for "alpha" returned "not ready for a customer-facing alpha".
-
-So the mechanism is `exclude_docs`, and the test greps the BUILT OUTPUT. A
-config is a promise; the artefact is evidence.
+So these tests assert two things a directory split does not give for free:
+that no internal file has DRIFTED into `docs-public/`, and that the BUILT SITE
+contains none of their text. A boundary is a promise; the artefact is evidence.
 """
 
 from __future__ import annotations
@@ -26,7 +32,8 @@ import yaml
 
 ROOT = Path(__file__).parents[1]
 CONFIG = ROOT / "mkdocs.yml"
-DOCS = ROOT / "docs"
+DOCS = ROOT / "docs"            # internal engineering documents
+PUBLIC = ROOT / "docs-public"   # MkDocs docs_dir -- customer facing only
 
 #: Files that must never reach a customer. Named individually rather than
 #: matched by pattern: a new internal document should fail this test loudly
@@ -105,15 +112,36 @@ class TestInternalDocsAreExcluded:
         )
 
 
-    def test_every_internal_file_is_in_exclude_docs(self) -> None:
-        """`exclude_docs` is the mechanism. `nav` is not."""
-        excluded = set(_config().get("exclude_docs", "").split())
-        missing = INTERNAL_FILES - excluded
-        assert not missing, (
-            f"{sorted(missing)} are not in exclude_docs. Being absent from `nav` "
-            "does NOT prevent publication -- MkDocs still renders the page and "
-            "indexes its full text for search."
+    def test_the_public_tree_is_the_docs_dir(self) -> None:
+        """The split only protects anything if MkDocs reads the public tree."""
+        assert _config().get("docs_dir") == "docs-public"
+
+    def test_no_internal_file_has_drifted_into_the_public_tree(self) -> None:
+        """The one way the directory split can still fail.
+
+        Nothing stops someone adding `deferred.md` to `docs-public/` -- and
+        because it would then be a normal page in the docs_dir, it would publish
+        with no warning at all.
+        """
+        strays = {f for f in INTERNAL_FILES if (PUBLIC / f).exists()}
+        assert not strays, (
+            f"{sorted(strays)} are in docs-public/, which IS the published tree. "
+            "Internal documents belong in docs/."
         )
+
+    def test_no_internal_document_text_is_in_the_public_tree(self) -> None:
+        """Catches the copy that a filename check cannot.
+
+        A section pasted into a customer page publishes just as completely as
+        the whole file, and under a name this list would never flag.
+        """
+        hits = {}
+        for path in PUBLIC.rglob("*.md"):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for phrase in INTERNAL_PHRASES:
+                if phrase in text:
+                    hits.setdefault(phrase, []).append(str(path.relative_to(PUBLIC)))
+        assert not hits, f"internal text found in public pages: {hits}"
 
     def test_no_internal_file_is_referenced_by_the_nav(self) -> None:
         targets = _nav_targets(_config().get("nav", []))

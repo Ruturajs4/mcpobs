@@ -1,22 +1,27 @@
 # Customer-facing documentation.
 #
-# THE MOST IMPORTANT THING IN THIS FILE IS `exclude_docs`.
+# `docs_dir` is `docs-public/`, and the internal engineering documents live in
+# `docs/`. That separation is the whole safety mechanism, and it is structural:
+# MkDocs cannot publish a file it never reads.
 #
-# `docs/` holds internal engineering documents alongside the customer ones, and
-# MkDocs publishes every markdown file it finds -- being absent from `nav` only
-# removes the sidebar link. Measured, not assumed: a file left out of `nav` was
-# still built to `site/<name>/index.html` AND its full text was written into
+# IT USED TO BE A LIST. `docs/` held both, and the exclusion was an
+# `exclude_docs:` block naming each internal file -- which worked, but only for
+# as long as someone maintained it. A new internal document was published by
+# default and stayed published until a human noticed.
+#
+# The obvious-looking guard was weaker still: leaving a file out of `nav` only
+# removes its sidebar link. Measured before relying on it -- a non-nav file was
+# still rendered to `site/<name>/index.html` AND its full text written into
 # `search/search_index.json`, so searching the published docs for "alpha" would
 # have returned "not ready for a customer-facing alpha".
 #
-# The internal set is not merely embarrassing, it is a security document:
-# alpha-readiness.md enumerates unpatched weaknesses (credentials in
-# localStorage, containers running as root, exposed database ports) and
-# deferred.md lists known gaps such as the absent tenant partition key.
-# Publishing either hands an attacker a prioritised checklist.
+# That matters because the internal set is a security document:
+# alpha-readiness.md enumerates unpatched weaknesses and deferred.md lists known
+# gaps. Publishing either hands an attacker a prioritised checklist.
 #
-# `tests/test_docs.py` builds the site and greps the OUTPUT, because this list
-# is a promise and only the built artefact is evidence.
+# `tests/test_docs.py` asserts no internal file has drifted into `docs-public/`
+# AND greps the built site. A directory boundary is a promise; the artefact is
+# evidence.
 
 site_name: MCP Observability
 site_description: >-
@@ -26,19 +31,8 @@ site_url: https://docs.example.com/
 repo_url: https://github.com/example/mcp-observability
 edit_uri: ""
 
-docs_dir: docs
+docs_dir: docs-public
 site_dir: site
-
-# ---------------------------------------------------------------- exclusions
-# Everything here stays in the repository and never reaches the built site.
-exclude_docs: |
-  Architecture.md
-  decisions.md
-  deferred.md
-  alpha-readiness.md
-  Day_01_Engineering_Doc_MCP_Observability.md
-  Day_02_Engineering_Doc_MCP_Observability.md
-  observed_attributes.md
 
 theme:
   name: material
@@ -121,8 +115,10 @@ markdown_extensions:
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
 
 # ------------------------------------------------------------------- the nav
-# An explicit list, never a glob. A glob would pick up whatever lands in `docs/`
-# next, which is exactly how an internal document gets published by accident.
+# Still an explicit list, even though `docs-public/` now contains only public
+# pages. The directory keeps internal documents out; the list keeps the ORDER
+# and the section headings deliberate, and a page added without a nav entry is
+# reachable by URL but absent from the index -- which `strict: true` reports.
 nav:
   - Overview: index.md
 

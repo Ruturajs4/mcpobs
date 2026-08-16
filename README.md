@@ -39,6 +39,20 @@ models, `mypy --disallow-untyped-defs`, full ruff rule set. `demo_server/`,
 `make attrs` regenerates `docs/observed_attributes.md` — the observed span
 contract, which outranks every document where they disagree.
 
+## Documentation
+
+Two trees, and the split is load-bearing:
+
+- **`docs-public/`** — the customer-facing site. This is MkDocs' `docs_dir`.
+  `make docs` serves it with live reload; `make docs-build` builds it strictly.
+- **`docs/`** — internal engineering documents. MkDocs never reads this
+  directory, so nothing here can be published by accident.
+
+Put a new page on the side it belongs to. `docs/alpha-readiness.md` and
+`docs/deferred.md` enumerate unpatched weaknesses and known gaps, so publishing
+them would hand an attacker a checklist -- `tests/test_docs.py` fails the build
+if an internal file, or internal text, appears in the public tree.
+
 ## Design
 
 - [`docs/Architecture.md`](docs/Architecture.md) — system of record, ADR-001…010
