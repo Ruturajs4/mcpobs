@@ -140,6 +140,24 @@ Refresh happens at 75% of the token's life, with jitter, so a fleet of machines
 started at the same moment does not refresh in lockstep and flood your
 authentication service.
 
+## If both are configured
+
+The session endpoint wins, and the static key is **not** used — not even as a
+fallback if that endpoint is unreachable. The server says so on startup:
+
+```
+[mcpobs] both MCPOBS_SESSION_ENDPOINT and a static API key are set.
+         Using the session endpoint; the static key will NOT be used,
+         even if the endpoint is unreachable.
+```
+
+This is deliberate. Falling back to a long-lived organisation-wide key the
+moment the session endpoint blinked would undo the point of session tokens, on
+the machine least able to protect one. If your endpoint is down, telemetry
+pauses and resumes when it recovers — your tool keeps working throughout.
+
+So treat the warning as a configuration error to clean up, not as advice.
+
 ## When you do not need this
 
 Session tokens are for servers running on machines you do not control. If your

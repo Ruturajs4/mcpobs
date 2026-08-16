@@ -130,8 +130,45 @@ def init_telemetry(
         session_provider = SessionProvider()
         exporter: OTLPSpanExporter
         if session_provider.configured:
+            # SAID OUT LOUD when both are configured. The session endpoint wins,
+            # which is right -- it is the safer credential -- but silently
+            # ignoring a key someone deliberately set is how they come to
+            # believe it is a working fallback.
+            #
+            # It is NOT a fallback, deliberately. Falling back to a long-lived
+            # org-wide key the moment the session endpoint blinked would undo
+            # the entire point of ADR-011, on the machine least able to protect
+            # it. So if that endpoint is unreachable, telemetry pauses and the
+            # key is still not used -- and an operator has to be told that
+            # BEFORE it happens, not deduced from an absence of spans.
+            # The ENV VAR only, not `headers` -- which `_dev_key()` fills from
+            # the gitignored local file whether or not anyone asked for it.
+            # Warning about a key the developer never configured would train
+            # them to ignore the warning that matters.
+            if os.getenv("OTEL_EXPORTER_OTLP_HEADERS"):
+                print(
+                    "[mcpobs] both MCPOBS_SESSION_ENDPOINT and a static API key are "
+                    "set. Using the session endpoint; the static key will NOT be "
+                    "used, even if the endpoint is unreachable.",
+                    file=sys.stderr,
+                )
             exporter = SessionSpanExporter(session_provider, endpoint=target)
         else:
+            # Both sources, for the mirror-image reason: when
+            # OTEL_EXPORTER_OTLP_HEADERS is set, `_dev_key()` is skipped and
+            # `headers` stays empty because OTel reads that variable itself. A
+            # check on `headers` alone called a correctly-configured server
+            # uncredentialed.
+            if not headers.get("x-api-key") and not os.getenv("OTEL_EXPORTER_OTLP_HEADERS"):
+                # Neither credential. Spans will be refused with 401 and the
+                # only symptom is an empty console, which is a long way from the
+                # cause.
+                print(
+                    "[mcpobs] no credential configured: set MCPOBS_SESSION_ENDPOINT "
+                    "(recommended for stdio) or OTEL_EXPORTER_OTLP_HEADERS. "
+                    "Telemetry will be rejected.",
+                    file=sys.stderr,
+                )
             exporter = OTLPSpanExporter(endpoint=target, headers=headers or None)
 
         provider.add_span_processor(
