@@ -4,3 +4,6 @@ uvicorn==0.34.0
 clickhouse-connect==1.7.1
 pydantic==2.13.4
 psycopg[binary]==3.2.3
+# Session tokens (ADR-011). The query API needs it too: it must be able to
+# REJECT an ingest session token presented to it, which means decoding one.
+PyJWT==2.13.0

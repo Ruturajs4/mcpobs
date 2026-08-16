@@ -37,7 +37,21 @@ that can mint a cross-tenant credential is one authorization bug away from a
 customer minting one, and there is no product reason for that endpoint to exist.
 """
 
-VALID_SCOPES: Final[frozenset[str]] = frozenset({INGEST, READ, ADMIN})
+SESSION_MINT: Final = "session"
+"""Mints short-lived session tokens for end users (ADR-011).
+
+ITS OWN SCOPE, not a capability of `ingest`. A key that can mint sessions can
+mint one for ANY of the org's users -- it is a credential factory, which is
+strictly more powerful than one that writes spans. Folding it into `ingest`
+would turn every leaked server-side ingest key into a session factory, and
+ingest keys are the ones that get copied into deployment config.
+
+Held only by the customer's own backend, which is the whole point: the
+long-lived credential stays on their servers and only 3-hour tokens reach an end
+user's machine.
+"""
+
+VALID_SCOPES: Final[frozenset[str]] = frozenset({INGEST, READ, ADMIN, SESSION_MINT})
 
 
 def _hash(secret: str) -> str:

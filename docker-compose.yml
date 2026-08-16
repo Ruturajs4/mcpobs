@@ -215,6 +215,12 @@ services:
     environment:
       CONTROL_PLANE_DSN: postgresql://mcpobs:mcpobs@postgres:5432/mcpobs_control
       COLLECTOR_ENDPOINT: http://otel-collector:4318/v1/traces
+      # Session tokens (ADR-011). Local value only -- in a real deployment this
+      # comes from a secret store, because anyone holding it can forge a token
+      # for any tenant. The service REFUSES to start minting without it rather
+      # than falling back to a default that would ship to production.
+      MCPOBS_SESSION_SIGNING_KEY: "local-dev-only-signing-key-not-for-production-use"
+      MCPOBS_PUBLIC_INGEST_ENDPOINT: "http://127.0.0.1:4319"
       # Local stack only. The API docs enumerate every route including the
       # admin surface, so they stay off unless something switches them on.
       EXPOSE_API_DOCS: "true"

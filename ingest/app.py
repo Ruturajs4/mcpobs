@@ -48,21 +48,28 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
     ExportTraceServiceRequest,
 )
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
+from pydantic import BaseModel, Field
 
 from control import ControlPlane
-from control.keys import INGEST
+from control.keys import INGEST, SESSION_MINT
 from control.models import Principal
 from control.quota import QuotaEnforcer, Verdict
 from control.session import (
     SessionError,
     is_session_token,
 )
+from control.session import mint as mint_session
 from control.session import principal_for as principal_for_session
 from control.session import verify as verify_session
 
 log = logging.getLogger("ingest")
 
 COLLECTOR_ENDPOINT = os.getenv("COLLECTOR_ENDPOINT", "http://otel-collector:4318/v1/traces")
+
+#: What we tell a minted session to export to. Configurable because it differs
+#: per region and per deployment -- a hardcoded value would be wrong for every
+#: self-hosted install and for every region but one.
+PUBLIC_INGEST_ENDPOINT = os.getenv("MCPOBS_PUBLIC_INGEST_ENDPOINT", "http://127.0.0.1:4319")
 COLLECTOR_HEALTH_ENDPOINT = os.getenv(
     "COLLECTOR_HEALTH_ENDPOINT", "http://otel-collector:13133/"
 )
@@ -251,6 +258,103 @@ def stamp_parsed(
                 KeyValue(key=SOFT_QUOTA_ATTRIBUTE, value=AnyValue(bool_value=True))
             )
     return request.SerializeToString()
+
+
+class SessionRequest(BaseModel):
+    """What the customer's backend asks for.
+
+    NOT a tenant, and not a scope. Both come from the minting key -- a session
+    that could name its own tenant would be a tenancy boundary the caller
+    chooses, which is the thing this system refuses everywhere else.
+    """
+
+    #: Who the token is for, in the CUSTOMER's namespace. We never resolve it;
+    #: it is an opaque label that travels back on their telemetry.
+    subject: str = Field(min_length=1, max_length=200)
+    #: Clamped server-side. Absent means the default.
+    ttl_seconds: int | None = Field(default=None, ge=1)
+    attributes: dict[str, str] = Field(default_factory=dict)
+
+
+class SessionResponse(BaseModel):
+    token: str
+    #: RELATIVE, never an absolute timestamp. The SDK holding this token runs on
+    #: an end user's laptop, and a clock that is wrong by minutes would refresh
+    #: at the wrong time or treat a valid token as dead.
+    expires_in: int
+    #: Where to send spans. Returned so the customer's config carries one URL
+    #: rather than two that can disagree, and so we can route by region later
+    #: without them redeploying.
+    endpoint: str
+
+
+@app.post("/v1/sessions", response_model=SessionResponse)
+async def create_session(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+) -> SessionResponse:
+    """Mint a short-lived session token for one of the customer's users.
+
+    Called by the CUSTOMER'S BACKEND, never by an end user's machine -- that
+    separation is the entire point of ADR-011. Their long-lived key stays on
+    their servers; only a 3-hour token reaches a laptop.
+
+    Lives on the ingest service rather than the query API because the caller is
+    the customer's own server, which already needs network reach to ingest.
+    Making them open a second host to a second service would be friction with no
+    security benefit.
+
+    A session token can never be minted with a session token: `is_session_token`
+    is rejected before authentication, so a leaked 3-hour credential cannot
+    extend itself indefinitely.
+    """
+    token = x_api_key
+    if not token and authorization and authorization.lower().startswith("bearer "):
+        token = authorization[7:]
+
+    # NO SELF-MINTING. Without this, a token found on a laptop could mint a
+    # fresh one every three hours forever, and the expiry that justifies the
+    # whole design would be decorative.
+    if is_session_token(token):
+        raise HTTPException(
+            status_code=401, detail="a session token cannot mint session tokens"
+        )
+
+    principal = control.authenticate(token)
+    if principal is None or not principal.can(SESSION_MINT):
+        # Same message whether the key is unknown or merely lacks the scope --
+        # distinguishing them tells a prober which of their stolen keys is real
+        # and what it is missing.
+        raise HTTPException(status_code=401, detail="invalid or insufficient API key")
+
+    # BODY PARSED AFTER AUTHENTICATION, not by the signature. A declared
+    # `body: SessionRequest` parameter is validated before the handler runs, so
+    # an unauthenticated caller received a 422 naming the fields it expects --
+    # handing out the request schema to anyone who probes the URL. That is the
+    # same posture the OpenAPI docs are gated off for.
+    try:
+        body = SessionRequest.model_validate(await request.json())
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="invalid request body") from exc
+
+    try:
+        minted, ttl = mint_session(
+            principal,
+            subject=body.subject,
+            ttl_seconds=body.ttl_seconds,
+            attributes=dict(body.attributes),
+        )
+    except SessionError as exc:
+        # 400, not 401: the key was accepted and the REQUEST was wrong. These
+        # messages are written to be actionable -- an unsupported attribute
+        # names itself and lists what is allowed.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    log.info(
+        "session minted tenant=%s subject=%s ttl=%s", principal.tenant, body.subject, ttl
+    )
+    return SessionResponse(token=minted, expires_in=ttl, endpoint=PUBLIC_INGEST_ENDPOINT)
 
 
 @app.post("/v1/traces")

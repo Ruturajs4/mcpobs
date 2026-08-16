@@ -5,3 +5,6 @@ psycopg[binary]==3.2.3
 pydantic==2.13.4
 opentelemetry-proto==1.44.0
 redis==5.2.1
+# Session tokens (ADR-011). The query API needs it too: it must be able to
+# REJECT an ingest session token presented to it, which means decoding one.
+PyJWT==2.13.0
