@@ -161,6 +161,27 @@ checks the two agree on every run.
 #: said were not errors -- 62 such traces over 24h of real data.
 _NOT_A_FAILURE_SQL = ", ".join(f"'{c}'" for c in NOT_A_FAILURE)
 
+#: Most spans one trace returns. `GET /traces/{id}` had no limit at all: it
+#: returned every span PLUS a full ~60-column SpanDetail for each, measured at
+#: 2.4 KB per span. A 10,000-span trace would have been a 24 MB response, and a
+#: browser asked to draw 10,000 waterfall rows.
+#:
+#: That is not a hypothetical shape for this product. Progress reports are
+#: already capped at 200 because "a tool can generate spans faster than it does
+#: work" -- but that reasoning was only ever applied to progress. The unbounded
+#: case is ordinary: a tool that loops. `for row in rows: cur.execute(...)` over
+#: ten thousand rows is ten thousand child spans in one trace.
+#:
+#: 2,000 is well past any trace a human reads span-by-span and well short of the
+#: sizes that hurt.
+TRACE_SPAN_CAP = 2_000
+
+#: Above this many spans, the per-span detail map is omitted from the response.
+#: `detail` exists so that clicking a span in the waterfall needs no second
+#: request, which is worth it for a twenty-span trace and is most of the payload
+#: for a two-thousand-span one.
+TRACE_DETAIL_CAP = 300
+
 #: Most rows a capability table returns. Aggregation is by NAME, so this bounds
 #: distinct tools/prompts/resources rather than call volume -- a few dozen for a
 #: real server. The cap exists because the number is unbounded in principle, and
@@ -788,14 +809,30 @@ class SpanRepository:
                 FROM spans_raw
                 WHERE trace_id = {{trace:String}} AND tenant_id = {{tenant:String}}
                   AND project_id = {{project:String}} AND toDate(timestamp) = {{day:Date}}
-                GROUP BY span_id""",
-            {"trace": trace_id, "tenant": tenant, "project": project, "day": located[0][0]},
+                GROUP BY span_id
+                ORDER BY s_timestamp ASC
+                LIMIT {{cap:UInt32}}""",
+            {
+                "trace": trace_id,
+                "tenant": tenant,
+                "project": project,
+                "day": located[0][0],
+                # One past the cap, so truncation is DETECTED rather than
+                # guessed: exactly `cap` rows is ambiguous between "that is the
+                # whole trace" and "there is more".
+                "cap": TRACE_SPAN_CAP + 1,
+            },
         )
         if not rows:
             return None
 
         raw = [dict(zip(self._SPAN_COLUMNS, row, strict=True)) for row in rows]
         raw.sort(key=lambda item: item["timestamp"])
+        # Ordered by time in SQL, so what is dropped is the TAIL of the trace
+        # rather than an arbitrary slice. A truncated waterfall still reads
+        # forwards from the start of the call.
+        truncated = len(raw) > TRACE_SPAN_CAP
+        raw = raw[:TRACE_SPAN_CAP]
 
         trace_start = raw[0]["timestamp"]
         trace_end_ms = max(
@@ -932,6 +969,12 @@ class SpanRepository:
             detail[span.span_id].depth = span.depth
 
         headline = _headline(spans)
+        # Detail is dropped for size, not for correctness: every span is still
+        # returned and the waterfall is complete. Only the per-span field maps
+        # go, and the console fetches them on demand instead.
+        detail_omitted = len(spans) > TRACE_DETAIL_CAP
+        if detail_omitted:
+            detail = {}
         return TraceDetail(
             trace_id=trace_id,
             server=raw[0]["service_name"] or "",
@@ -958,6 +1001,10 @@ class SpanRepository:
             root_span_id=root.span_id if root else "",
             spans=spans,
             detail=detail,
+            truncated=truncated,
+            span_cap=TRACE_SPAN_CAP,
+            detail_omitted=detail_omitted,
+            detail_cap=TRACE_DETAIL_CAP,
         )
 
 

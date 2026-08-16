@@ -15,6 +15,8 @@ from query.filters import HAVING, WHERE, catalog, parse
 from query.repository import (
     CAPABILITY_ROW_CAP,
     LATEST_SPANS,
+    TRACE_DETAIL_CAP,
+    TRACE_SPAN_CAP,
     SpanDTO,
     SpanRepository,
     _detail,
@@ -826,3 +828,106 @@ class TestDownstreamHostFallback:
     def test_a_missing_or_unparseable_url_yields_empty(self) -> None:
         assert self._host({}) == ""
         assert self._host({"http.url": "not a url"}) == ""
+
+
+class TestTraceSpanCap:
+    """One trace must not be able to return an unbounded response.
+
+    `GET /traces/{id}` had no LIMIT at all: every span, plus a full ~60-column
+    SpanDetail for each. Measured at 2.4 KB per span, so a 10,000-span trace
+    would have been a 24 MB response and a browser asked to draw 10,000
+    waterfall rows.
+
+    Not a hypothetical shape here. Progress reports were already capped at 200
+    because "a tool can generate spans faster than it does work" -- that
+    reasoning was simply never applied anywhere else. The unbounded case is
+    ordinary: a tool that loops. `for row in rows: cur.execute(...)` over ten
+    thousand rows is ten thousand child spans in one trace.
+    """
+
+    @staticmethod
+    def _repo_with(span_count: int) -> SpanRepository:
+        repo = object.__new__(SpanRepository)
+        base = datetime(2026, 8, 15, 12, 0, 0)
+
+        def rows(sql: str, params: dict[str, object]) -> list[tuple[object, ...]]:
+            if "trace_locator" in sql:
+                return [(base.date(),)]
+            # The cap is applied in SQL; emulate it so the test exercises the
+            # same +1 detection the query relies on.
+            limit = int(params.get("cap", span_count))
+            out = []
+            for i in range(min(span_count, limit)):
+                row = {c: None for c in SpanRepository._SPAN_COLUMNS}
+                row["span_id"] = f"s{i:05d}"
+                row["parent_span_id"] = "" if i == 0 else "s00000"
+                row["span_name"] = f"span-{i}"
+                row["timestamp"] = base + timedelta(milliseconds=i)
+                row["duration_ns"] = 1_000_000
+                row["span_kind"] = "INTERNAL"
+                row["status_code"] = "OK"
+                row["normalization_version"] = 17
+                row["kafka_partition"] = 0
+                row["kafka_offset"] = i
+                out.append(tuple(row[c] for c in SpanRepository._SPAN_COLUMNS))
+            return out
+
+        repo._rows = rows  # type: ignore[method-assign]
+        return repo
+
+    def test_the_query_asks_for_one_span_past_the_cap(self) -> None:
+        """Exactly `cap` rows is ambiguous between "all of it" and "there is more"."""
+        repo = object.__new__(SpanRepository)
+        seen: dict[str, object] = {}
+
+        def rows(sql: str, params: dict[str, object]) -> list[tuple[object, ...]]:
+            if "trace_locator" in sql:
+                return [(datetime(2026, 8, 15).date(),)]
+            seen.update(params)
+            return []
+
+        repo._rows = rows  # type: ignore[method-assign]
+        repo.trace("tenant", "project", "abc")
+        assert seen["cap"] == TRACE_SPAN_CAP + 1
+
+    def test_a_trace_within_the_cap_is_not_marked_truncated(self) -> None:
+        detail = self._repo_with(10).trace("tenant", "project", "abc")
+        assert detail is not None
+        assert detail.truncated is False
+        assert detail.span_count == 10
+
+    def test_a_trace_over_the_cap_is_truncated_and_says_so(self) -> None:
+        detail = self._repo_with(TRACE_SPAN_CAP + 500).trace("tenant", "project", "abc")
+        assert detail is not None
+        assert detail.truncated is True
+        assert detail.span_count == TRACE_SPAN_CAP
+        assert detail.span_cap == TRACE_SPAN_CAP
+
+    def test_truncation_keeps_the_earliest_spans(self) -> None:
+        """The TAIL is dropped, so a truncated waterfall still reads forwards.
+
+        Ordered by time in SQL before the slice; dropping an arbitrary middle
+        would make the remaining tree nonsense.
+        """
+        detail = self._repo_with(TRACE_SPAN_CAP + 500).trace("tenant", "project", "abc")
+        assert detail is not None
+        starts = [s.start_time for s in detail.spans]
+        assert min(starts) == datetime(2026, 8, 15, 12, 0, 0)
+        assert max(starts) < datetime(2026, 8, 15, 12, 0, 0) + timedelta(
+            milliseconds=TRACE_SPAN_CAP
+        )
+
+    def test_detail_is_omitted_on_large_traces_but_spans_are_not(self) -> None:
+        """Size, not correctness: the waterfall stays complete."""
+        detail = self._repo_with(TRACE_DETAIL_CAP + 50).trace("tenant", "project", "abc")
+        assert detail is not None
+        assert detail.detail_omitted is True
+        assert detail.detail == {}
+        assert detail.detail_cap == TRACE_DETAIL_CAP
+        assert len(detail.spans) == TRACE_DETAIL_CAP + 50
+
+    def test_detail_is_present_on_ordinary_traces(self) -> None:
+        detail = self._repo_with(12).trace("tenant", "project", "abc")
+        assert detail is not None
+        assert detail.detail_omitted is False
+        assert len(detail.detail) == 12

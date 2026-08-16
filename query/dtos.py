@@ -316,9 +316,26 @@ class TraceDetail(BaseModel):
     root_span_id: str = ""
     spans: list[SpanDTO] = Field(default_factory=list)
     #: Full detail keyed by span_id, so selecting a span in the waterfall needs
-    #: no second request. A trace is small; a round trip per click is not worth
-    #: saving a few kilobytes.
+    #: no second request. A trace is USUALLY small, and a round trip per click is
+    #: not worth saving a few kilobytes -- but this is ~2.4 KB per span, so on a
+    #: very large trace it is most of the payload and is omitted. `detail_omitted`
+    #: says which happened, because an empty map and a suppressed one look the
+    #: same to a client that has to decide whether to fetch.
     detail: dict[str, SpanDetail] = Field(default_factory=dict)
+
+    #: True when the trace has more spans than the server returns. The remainder
+    #: is the TAIL: spans are ordered by time before truncation, so a truncated
+    #: waterfall still reads forwards from the start of the call.
+    truncated: bool = False
+    #: How many spans were returned at most. Reported so a client can say "the
+    #: first N of M" rather than showing a confident, incomplete tree.
+    span_cap: int = 0
+    #: True when `detail` was suppressed for size. The spans are all present;
+    #: only their per-span field maps are absent.
+    detail_omitted: bool = False
+    #: The threshold that suppressed it. Sent so the console can state the
+    #: actual number rather than hardcode one that drifts from the server.
+    detail_cap: int = 0
 
 
 class TraceSummary(BaseModel):

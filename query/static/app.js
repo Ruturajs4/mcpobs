@@ -461,6 +461,15 @@ function renderDrawer(t, selectedId) {
         <div><span class="k">Started</span><span class="v">${esc(t.start_time.replace("T", " ").slice(0, 19))}</span></div>
       </div>
     </div>
+    ${t.truncated ? `<div class="note-bar"><span>&#9888;</span><div>
+      <b>Showing the first ${num(t.span_cap)} spans.</b> This trace has more.
+      They are the earliest ones, so the waterfall reads forwards from the start
+      of the call &mdash; but the tail is missing, and a span deeper in the trace
+      may have no visible parent here.</div></div>` : ""}
+    ${t.detail_omitted ? `<div class="note-bar"><span>&#8505;</span><div>
+      <b>Per-span detail is not loaded for a trace this large.</b>
+      The waterfall is complete; only the field-by-field panel is
+      omitted.</div></div>` : ""}
     <div class="wf-head">
       <div>Span</div><div class="num">Duration</div>
       <div class="axis"><span>0</span><span>${dur(total * 0.25)}</span><span>${dur(total * 0.5)}</span>
@@ -482,7 +491,19 @@ function renderDrawer(t, selectedId) {
    the console previously showed 17 of 55 columns, and the dropped ones were
    exactly what you need when something is wrong. */
 function renderSpanDetail(d) {
-  if (!d) { el("span-detail").innerHTML = ""; return; }
+  if (!d) {
+    // Blank is ambiguous between "nothing selected" and "detail suppressed for
+    // size". Only the second needs explaining, and leaving it blank makes the
+    // panel look broken on exactly the traces that are hardest to debug.
+    el("span-detail").innerHTML = S.traceData?.detail_omitted
+      ? `<div class="empty" style="padding:24px">Per-span detail is omitted for
+         traces over ${num(S.traceData.detail_cap)} spans.<br>
+         <span class="mute" style="font-size:11.5px">The waterfall above is
+         complete &mdash; duration, status and downstream kind are all
+         there.</span></div>`
+      : "";
+    return;
+  }
 
   const row = (k, v, cls = "") => (v === null || v === undefined || v === "" || v === -1)
     ? "" : `<div class="f"><span class="fk">${k}</span><span class="fv ${cls}">${esc(v)}</span></div>`;
