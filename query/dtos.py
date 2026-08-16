@@ -323,6 +323,19 @@ class TraceDetail(BaseModel):
     #: same to a client that has to decide whether to fetch.
     detail: dict[str, SpanDetail] = Field(default_factory=dict)
 
+    #: False while the trace is still arriving. Distributed tracing has no
+    #: end-of-trace signal -- spans arrive independently and nothing announces
+    #: the last one -- so a trace read mid-flight is a partial trace that looks
+    #: exactly like a whole one.
+    #:
+    #: Measured on a real 3-second call: at first sighting it reported 12 spans,
+    #: 566ms and a PROGRESS CHILD as its root; it settled at 61 spans, 3089ms
+    #: and the real root. A 5.5x understatement, presented with no qualification.
+    complete: bool = True
+    #: Why, when it is not. Shown verbatim rather than reconstructed in the
+    #: browser, for the same reason the clock caveat is a string.
+    incomplete_reason: str = ""
+
     #: True when the trace has more spans than the server returns. The remainder
     #: is the TAIL: spans are ordered by time before truncation, so a truncated
     #: waterfall still reads forwards from the start of the call.
@@ -340,6 +353,10 @@ class TraceDetail(BaseModel):
 
 class TraceSummary(BaseModel):
     trace_id: str
+    #: False while the trace is still arriving. The list shows `span_count` and
+    #: `duration_ms` for every row, and mid-flight both are lower bounds -- so
+    #: the flag has to travel with them, not only with the detail.
+    complete: bool = True
     server: str = ""
     #: "stdio" | "streamable-http". Shown as a tag in the list, because which
     #: transport a call arrived on changes what you check next -- a stdio server

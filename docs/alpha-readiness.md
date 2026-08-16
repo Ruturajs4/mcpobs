@@ -194,6 +194,7 @@ become release requirements.
 - [x] The complete live acceptance suite passes with no failures
 - [x] Concurrent query smoke testing passes
 - [x] **Browser-flow tests exist and run in CI** (A10)
+- [x] A trace read mid-flight is marked incomplete rather than presented as settled
 - [ ] **The stdio SIGTERM flush is exercised on a POSIX host** (A11)
 
 ### Deployment and operations

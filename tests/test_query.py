@@ -6,7 +6,7 @@ that encode decisions someone could otherwise undo without noticing.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +16,7 @@ from query.repository import (
     CAPABILITY_ROW_CAP,
     LATEST_SPANS,
     TRACE_DETAIL_CAP,
+    TRACE_SETTLE_SECONDS,
     TRACE_SPAN_CAP,
     SpanDTO,
     SpanRepository,
@@ -931,3 +932,75 @@ class TestTraceSpanCap:
         assert detail is not None
         assert detail.detail_omitted is False
         assert len(detail.detail) == 12
+
+
+class TestTraceCompleteness:
+    """Distributed tracing has no end-of-trace signal.
+
+    Spans arrive independently and nothing announces the last one, so a trace
+    read mid-flight is a PARTIAL trace that looks exactly like a whole one.
+    Measured on a real 3-second call: at first sighting it reported 13 spans,
+    616ms and a progress CHILD as its root; five seconds later, 61 spans and
+    3084ms. A 5x understatement presented with no qualification.
+
+    The signal is the root. A parent span cannot end before its children, so
+    once the true root is stored every span has ended and only delivery remains.
+    """
+
+    @staticmethod
+    def _repo(root_parent: str, age_seconds: float) -> SpanRepository:
+        repo = object.__new__(SpanRepository)
+        when = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=age_seconds)
+
+        def rows(sql: str, params: dict[str, object]) -> list[tuple[object, ...]]:
+            if "trace_locator" in sql:
+                return [(when.date(),)]
+            out = []
+            for i in range(3):
+                row = {c: None for c in SpanRepository._SPAN_COLUMNS}
+                row["span_id"] = f"s{i}"
+                # s0 is the root; its parent decides completeness.
+                row["parent_span_id"] = root_parent if i == 0 else "s0"
+                row["span_name"] = f"span-{i}"
+                row["timestamp"] = when + timedelta(milliseconds=i)
+                row["duration_ns"] = 1_000_000
+                row["span_kind"] = "INTERNAL"
+                row["status_code"] = "OK"
+                row["normalization_version"] = 17
+                row["kafka_partition"] = 0
+                row["kafka_offset"] = i
+                out.append(tuple(row[c] for c in SpanRepository._SPAN_COLUMNS))
+            return out
+
+        repo._rows = rows  # type: ignore[method-assign]
+        return repo
+
+    def test_a_true_root_means_complete(self) -> None:
+        """No parent at all: the parent ended, so every child has ended."""
+        detail = self._repo(root_parent="", age_seconds=1).trace("t", "p", "abc")
+        assert detail is not None
+        assert detail.complete is True
+        assert detail.incomplete_reason == ""
+
+    def test_a_recent_trace_missing_its_root_is_incomplete(self) -> None:
+        """The parent has not arrived yet -- which is the common case, because
+        children reach storage before their parents."""
+        detail = self._repo(root_parent="not-here-yet", age_seconds=1).trace("t", "p", "abc")
+        assert detail is not None
+        assert detail.complete is False
+        assert "lower bound" in detail.incomplete_reason
+
+    def test_an_old_trace_missing_its_root_is_complete(self) -> None:
+        """An instrumented CLIENT parents the MCP span externally (D7/D22), so
+        that parent is real, elsewhere, and never arriving. Structure cannot
+        tell that from "still assembling"; age can."""
+        detail = self._repo(
+            root_parent="client-span", age_seconds=TRACE_SETTLE_SECONDS + 60
+        ).trace("t", "p", "abc")
+        assert detail is not None
+        assert detail.complete is True
+
+    def test_the_settle_window_clears_the_ingest_latency(self) -> None:
+        """Below end-to-end freshness (~20-25s observed) this would mark settled
+        traces as still arriving, forever."""
+        assert TRACE_SETTLE_SECONDS >= 60

@@ -372,7 +372,12 @@ function renderTraceList(items, heading, note, noun = "traces") {
         <td class="mono dim">${esc(t.mcp_method)}</td>
         <td>${badge(t.failure_category || "ok")}</td>
         <td>${transportTag(t.transport)}</td>
-        <td class="num">${t.span_count}</td><td class="num">${dur(t.duration_ms)}</td>
+        <td class="num">${t.complete === false
+          ? `<span class="approx" title="Still arriving - more spans are on their way">${t.span_count}+</span>`
+          : t.span_count}</td>
+        <td class="num">${t.complete === false
+          ? `<span class="approx" title="Still arriving - this is a lower bound">&ge;${dur(t.duration_ms)}</span>`
+          : dur(t.duration_ms)}</td>
         <td class="dim">${ago(t.start_time)}</td></tr>`).join("")}</tbody>
     </table></div>` : filteredEmpty(noun);
   bindFilteredEmpty();
@@ -476,12 +481,18 @@ function renderDrawer(t, selectedId) {
       <div class="kv">
         <div><span class="k">Server</span><span class="v">${esc(t.server || "—")}</span></div>
         <div><span class="k">Method</span><span class="v">${esc(t.mcp_method || "—")}</span></div>
-        <div><span class="k">Duration</span><span class="v">${dur(t.duration_ms)}</span></div>
-        <div><span class="k">Spans</span><span class="v">${t.span_count}</span></div>
+        <div><span class="k">Duration</span><span class="v">${
+          t.complete === false ? `&ge; ${dur(t.duration_ms)}` : dur(t.duration_ms)}</span></div>
+        <div><span class="k">Spans</span><span class="v">${
+          t.complete === false ? `${t.span_count} so far` : t.span_count}</span></div>
         <div><span class="k">Errors</span><span class="v" style="color:${t.error_count ? "var(--err)" : "inherit"}">${t.error_count}</span></div>
         <div><span class="k">Started</span><span class="v">${esc(t.start_time.replace("T", " ").slice(0, 19))}</span></div>
       </div>
     </div>
+    ${t.complete === false ? `<div class="note-bar"><span>&#8987;</span><div>
+      <b>This trace is still arriving.</b> The duration and span count below are
+      lower bounds &mdash; more spans are on their way. Refresh in a
+      moment.</div></div>` : ""}
     ${t.truncated ? `<div class="note-bar"><span>&#9888;</span><div>
       <b>This trace is too large to show in full.</b> These are the first
       ${num(t.span_cap)} spans, from the start of the call.</div></div>` : ""}

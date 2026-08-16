@@ -21,7 +21,7 @@ import binascii
 import json
 import math
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import clickhouse_connect
@@ -160,6 +160,23 @@ checks the two agree on every run.
 #: the Errors page listed cancellations and 401s that the headline error rate
 #: said were not errors -- 62 such traces over 24h of real data.
 _NOT_A_FAILURE_SQL = ", ".join(f"'{c}'" for c in NOT_A_FAILURE)
+
+#: How long after its last span a trace is assumed to have finished arriving.
+#:
+#: There is no end-of-trace signal in OpenTelemetry, so completeness is
+#: inferred. The strong signal is the ROOT: a parent span cannot end before its
+#: children, so once the true root is stored every span in the trace has ended
+#: and only delivery remains. When the root is missing, one of two things is
+#: true and structure alone cannot separate them:
+#:
+#:   * the trace is still assembling and the parent has not arrived yet, or
+#:   * an instrumented CLIENT parented the MCP span externally (D7/D22), so the
+#:     parent is real, elsewhere, and never coming.
+#:
+#: Time separates them. This is comfortably over the observed end-to-end
+#: freshness (~20-25s), so a trace whose newest span is older than this is not
+#: waiting on anything.
+TRACE_SETTLE_SECONDS = 90
 
 #: Most spans one trace returns. `GET /traces/{id}` had no limit at all: it
 #: returned every span PLUS a full ~60-column SpanDetail for each, measured at
@@ -755,7 +772,8 @@ class SpanRepository:
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         rows = self._rows(
             f"""SELECT trace_id, service_name, mcp_tool_name, mcp_method, start_time,
-                       duration_ms, span_count, error_count, failure_category, transport
+                       duration_ms, span_count, error_count, failure_category, transport,
+                       has_root, newest_span
                 FROM (
                     SELECT trace_id,
                            anyLastIf(service_name, service_name != '')   AS service_name,
@@ -767,7 +785,13 @@ class SpanRepository:
                             - toUnixTimestamp64Nano(min(span_time))) / 1e6 AS duration_ms,
                            count()                                       AS span_count,
                            sum(mcp_is_error)                             AS error_count,
-                           argMax(failure_category, mcp_is_error)        AS failure_category
+                           argMax(failure_category, mcp_is_error)        AS failure_category,
+                           -- A true root means the parent ended, and a parent
+                           -- cannot end before its children: the trace is whole.
+                           -- Cheap here (a max over rows already grouped) and
+                           -- the only completeness signal that exists.
+                           max(parent_span_id = '')                      AS has_root,
+                           max(span_time)                                AS newest_span
                     FROM ({LATEST_SPANS})
                     GROUP BY trace_id
                 ) {where}
@@ -775,6 +799,7 @@ class SpanRepository:
             params,
         )
 
+        now = datetime.now(UTC).replace(tzinfo=None)
         items = [
             TraceSummary(
                 trace_id=r[0],
@@ -787,6 +812,10 @@ class SpanRepository:
                 error_count=r[7] or 0,
                 failure_category=r[8] or "",
                 transport=r[9] or "",
+                # Same rule as the detail: a missing root means either still
+                # arriving or externally parented, and only age separates them.
+                complete=bool(r[10])
+                or (now - r[11]).total_seconds() >= TRACE_SETTLE_SECONDS,
             )
             for r in rows
         ]
@@ -948,6 +977,24 @@ class SpanRepository:
         for span in spans:
             detail[span.span_id].depth = span.depth
 
+        # COMPLETENESS. A true root -- one with no parent at all -- means the
+        # parent ended, and a parent cannot end before its children, so every
+        # span in the trace has ended. Anything else is either still arriving or
+        # externally parented, and only age tells them apart.
+        complete = True
+        incomplete_reason = ""
+        if root is not None and root.parent_span_id:
+            newest = max(
+                (item["timestamp"] for item in raw), default=trace_start
+            )
+            age = (datetime.now(UTC).replace(tzinfo=None) - newest).total_seconds()
+            if age < TRACE_SETTLE_SECONDS:
+                complete = False
+                incomplete_reason = (
+                    "this trace is still arriving - the root span has not been "
+                    "received, so the duration and span count below are lower bounds"
+                )
+
         headline = _headline(spans)
         # Detail is dropped for size, not for correctness: every span is still
         # returned and the waterfall is complete. Only the per-span field maps
@@ -985,6 +1032,8 @@ class SpanRepository:
             span_cap=TRACE_SPAN_CAP,
             detail_omitted=detail_omitted,
             detail_cap=TRACE_DETAIL_CAP,
+            complete=complete,
+            incomplete_reason=incomplete_reason,
         )
 
 
