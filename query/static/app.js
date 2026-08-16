@@ -592,7 +592,7 @@ async function render() {
     a.classList.toggle("on", a.dataset.view === S.view && (!a.dataset.kind || a.dataset.kind === S.kind)));
 
   /* THE FLICKER. This blanked the pane to a spinner on EVERY render, including
-     the 15s auto-refresh -- so a dashboard nobody had touched went white and
+     the auto-refresh -- so a dashboard nobody had touched went white and
      repainted four times a minute. A spinner answers "your click did
      something"; on a background refresh there was no click, so it answered a
      question nobody asked and destroyed the thing being read to do it.
@@ -649,10 +649,10 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawe
    ===========================================================================
    Three rules, each removing waste that was real:
 
-   1. NOT WHILE A TAB IS HIDDEN. Every 15s the old timer refetched 80 trace
-      summaries and re-ran the rollup for tabs nobody was looking at -- which is
-      most open tabs, most of the time. This is the single biggest saving and
-      costs one event listener.
+   1. NOT WHILE A TAB IS HIDDEN. The old timer refetched 80 trace summaries and
+      re-ran the rollup for tabs nobody was looking at -- which is most open
+      tabs, most of the time. This is the single biggest saving and costs one
+      event listener.
 
    2. NOT WHILE A DRAWER IS OPEN. Redrawing under someone mid-investigation is
       hostile, and it discards the span they had selected.
@@ -662,9 +662,12 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawe
       not move while you read them, and a list that reorders under the cursor
       is worse than a stale one.
 
-   The interval stays slower than the ~5s ingest floor: refreshing faster than
-   data can arrive only makes the page flicker with identical numbers. */
-const REFRESH_MS = 15000;
+   The interval stays well clear of the ~5s ingest floor: refreshing faster than
+   data can arrive only makes the page flicker with identical numbers. At 30s it
+   matches the admin console, and the footer's live timestamp ticks every second
+   regardless, so the age of what you are reading is never in doubt between
+   refreshes. */
+const REFRESH_MS = 30000;
 const LIVE_VIEWS = new Set(["overview", "servers"]);
 let refreshTimer = null;
 let lastRendered = 0;
@@ -678,8 +681,9 @@ function startAutoRefresh() {
   refreshTimer = setInterval(() => { if (shouldRefresh()) render(); }, REFRESH_MS);
 
   // Coming back to a hidden tab, refresh ONCE immediately rather than waiting
-  // out the interval -- otherwise the first thing a returning user sees is up
-  // to 15s stale while claiming to be live.
+  // out the interval -- otherwise the first thing a returning user sees is a
+  // full interval stale while claiming to be live. This matters more at 30s
+  // than it did at 15s.
   document.addEventListener("visibilitychange", () => {
     if (shouldRefresh() && Date.now() - lastRendered > REFRESH_MS) render();
   });
@@ -700,7 +704,9 @@ function startAutoRefresh() {
        on -- or correctly ignore. */
     if (shouldRefresh()) {
       stamp.textContent = `Live · ${age}`;
-      stamp.title = "This view refreshes automatically every 15 seconds.";
+      // Derived from the constant rather than written out, so the tooltip
+      // cannot drift from the interval it describes.
+      stamp.title = `This view refreshes automatically every ${REFRESH_MS / 1000} seconds.`;
       dot?.classList.remove("paused");
     } else {
       const why = document.visibilityState !== "visible" ? "tab in background"
