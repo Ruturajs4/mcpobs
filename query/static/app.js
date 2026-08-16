@@ -711,12 +711,16 @@ function renderSpanDetail(d) {
       ].join(""))}
       ${map("Span attributes", d.span_attributes, "raw, as the SDK emitted them")}
       ${map("Resource attributes", d.resource_attributes)}
-      ${group("Provenance", [
-        row("normalization", `v${d.normalization_version}`),
-        row("kafka", `partition ${d.kafka_partition} · offset ${d.kafka_offset}`),
-        row("ingested", d.ingested_at ? d.ingested_at.replace("T", " ").slice(0, 19) : ""),
-        row("freshness", dur(d.freshness_ms)),
-      ].join(""), '<span class="note">which message produced this row, and which code wrote it</span>')}
+      <!-- NO PROVENANCE BLOCK. Normalizer version, Kafka partition and offset,
+           and the ingest timestamp describe OUR pipeline, not the customer's
+           server. They answer "which message produced this row and which code
+           wrote it" -- a question we ask, never one they do, and showing it
+           spends the reader's attention on machinery they cannot act on.
+
+           The fields stay in the API response on purpose: they are exactly what
+           support needs when a row looks wrong, and the response is already
+           scoped to the caller's own tenant. Absent from the UI, available to
+           anyone debugging. -->
     </div>`;
 }
 
