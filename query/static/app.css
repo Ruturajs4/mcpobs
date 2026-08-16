@@ -153,6 +153,14 @@ nav .grp { padding: 13px 10px 5px; font-size: 10px; text-transform: uppercase;
 .tab.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .tabs .note { margin-left: auto; font-size: 11px; color: var(--text-mute); }
 
+/* Transport tag. Deliberately quieter than a status badge -- the transport is
+   context, not a verdict, and status colour is reserved for status only. */
+.tag { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 10.5px;
+  font-family: var(--mono); border: 1px solid var(--border); color: var(--text-dim);
+  background: var(--raised); white-space: nowrap; }
+.tag.t-stdio { border-color: #4e74f855; color: #93aaff; background: #4e74f814; }
+.tag.t-http  { border-color: #06b6d455; color: #67d9ea; background: #06b6d414; }
+
 /* --------------------------------------------------------------- tables */
 table { width: 100%; border-collapse: collapse; }
 th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;

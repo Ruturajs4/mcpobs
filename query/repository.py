@@ -67,6 +67,7 @@ SELECT
     argMax(mcp_tool_name, normalization_version)       AS mcp_tool_name,
     argMax(mcp_prompt_name, normalization_version)     AS mcp_prompt_name,
     argMax(mcp_resource_uri, normalization_version)    AS mcp_resource_uri,
+    argMax(transport, normalization_version)           AS transport,
     argMax(mcp_is_error, normalization_version)        AS mcp_is_error,
     argMax(failure_detail, normalization_version)      AS failure_detail,
     argMax(failure_category, normalization_version)    AS failure_category,
@@ -679,12 +680,13 @@ class SpanRepository:
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         rows = self._rows(
             f"""SELECT trace_id, service_name, mcp_tool_name, mcp_method, start_time,
-                       duration_ms, span_count, error_count, failure_category
+                       duration_ms, span_count, error_count, failure_category, transport
                 FROM (
                     SELECT trace_id,
                            anyLastIf(service_name, service_name != '')   AS service_name,
                            anyLastIf(mcp_tool_name, mcp_tool_name != '') AS mcp_tool_name,
                            anyLastIf(mcp_method, mcp_method != '')       AS mcp_method,
+                           anyLastIf(transport, transport != '')         AS transport,
                            min(span_time)                                AS start_time,
                            (toUnixTimestamp64Nano(max(span_time)) + max(duration_ns)
                             - toUnixTimestamp64Nano(min(span_time))) / 1e6 AS duration_ms,
@@ -709,6 +711,7 @@ class SpanRepository:
                 span_count=r[6],
                 error_count=r[7] or 0,
                 failure_category=r[8] or "",
+                transport=r[9] or "",
             )
             for r in rows
         ]

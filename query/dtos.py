@@ -324,6 +324,10 @@ class TraceDetail(BaseModel):
 class TraceSummary(BaseModel):
     trace_id: str
     server: str = ""
+    #: "stdio" | "streamable-http". Shown as a tag in the list, because which
+    #: transport a call arrived on changes what you check next -- a stdio server
+    #: is spawned per client, an HTTP one is long-lived and shared.
+    transport: str = ""
     tool: str = ""
     mcp_method: str = ""
     start_time: datetime

@@ -213,6 +213,17 @@ TRACE_FILTERS: tuple[Filter, ...] = (
         help="tools/call, tools/list, prompts/get and the rest of the protocol.",
     ),
     Filter(
+        key="transport", label="Transport", column="transport", group="Identity",
+        advanced=True,
+        choices=(("", "Any transport"), ("stdio", "stdio"),
+                 ("streamable-http", "streamable-http")),
+        help=(
+            "How the client reached the server. stdio servers are spawned per "
+            "client and are the common deployment; HTTP servers are long-lived "
+            "and shared."
+        ),
+    ),
+    Filter(
         key="status", label="Status", group="Outcome", pinned=True,
         choices=(("", "Any status"), ("ok", "Succeeded"), ("error", "Failed")),
         # Constants, selected by the value. `cancelled` and `pending_input` are

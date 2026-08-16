@@ -125,6 +125,25 @@ const badge = (cat) => {
   return `<span class="badge ${m.c}">${m.l}</span>`;
 };
 
+/* How the call reached the server. Its own column rather than a decoration
+   because it changes what you check next: a stdio server is spawned per client
+   and dies with it, so "restart it" means something different from a long-lived
+   shared HTTP server.
+
+   Blank is rendered as an explicit em dash, not an empty cell. Spans normalized
+   before mcpobs derived the transport genuinely do not have one, and an empty
+   cell reads as a rendering bug rather than as absent data. */
+const TRANSPORT = {
+  "stdio": { c: "t-stdio", l: "stdio" },
+  "streamable-http": { c: "t-http", l: "http" },
+  "sse": { c: "t-http", l: "sse" },
+};
+function transportTag(value) {
+  const m = TRANSPORT[value];
+  if (!m) return '<span class="mute" title="Recorded only for spans normalized after transport attribution landed">—</span>';
+  return `<span class="tag ${m.c}" title="${esc(value)}">${m.l}</span>`;
+}
+
 function distBar(bd) {
   const total = Object.values(bd).reduce((a, b) => a + b, 0) || 1;
   const parts = Object.entries(bd).filter(([, v]) => v > 0)
@@ -345,12 +364,14 @@ function renderTraceList(items, heading, note, noun = "traces") {
   el("content").innerHTML = items.length ? `
     <div class="panel"><header><h3>${esc(heading)}</h3><span class="note">${esc(note)}</span></header><table>
       <thead><tr><th>Trace</th><th>Tool</th><th>Method</th><th>Status</th>
+        <th>Transport</th>
         <th class="num">Spans</th><th class="num">Duration</th><th>When</th></tr></thead>
       <tbody>${items.map((t) => `<tr class="click" data-trace="${esc(t.trace_id)}">
         <td class="mono dim">${esc(t.trace_id.slice(0, 16))}</td>
         <td><strong>${esc(t.tool || "—")}</strong></td>
         <td class="mono dim">${esc(t.mcp_method)}</td>
         <td>${badge(t.failure_category || "ok")}</td>
+        <td>${transportTag(t.transport)}</td>
         <td class="num">${t.span_count}</td><td class="num">${dur(t.duration_ms)}</td>
         <td class="dim">${ago(t.start_time)}</td></tr>`).join("")}</tbody>
     </table></div>` : filteredEmpty(noun);
