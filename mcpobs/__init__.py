@@ -18,6 +18,7 @@ worse than no reference.)
 
 from __future__ import annotations
 
+from importlib.metadata import version as _metadata_version
 from typing import Any
 
 from mcpobs import session as _session
@@ -39,6 +40,16 @@ from mcpobs.middleware import FailureClassifierMiddleware
 from mcpobs.payload import PayloadCapture
 from mcpobs.streaming import ObservedSubscriptionBus, instrument_progress
 
+# Read from the installed metadata rather than written here, so it cannot drift
+# from pyproject.toml -- two version strings in one package is one of them being
+# wrong. Falls back when running from a source checkout that was never
+# installed, which is how the tests and the demo server import it.
+try:  # pragma: no cover - trivial, and depends on install state
+    __version__ = _metadata_version("mcpobs")
+except Exception:  # noqa: BLE001
+    __version__ = "0.0.0.dev0"
+
+
 __all__ = [
     "ATTRIBUTE",
     "CLASSIFIER_VERSION",
@@ -52,6 +63,7 @@ __all__ = [
     "HttpBodyCapture",
     "ObservedSubscriptionBus",
     "PayloadCapture",
+    "__version__",
     "available",
     "instrument",
     "instrument_asgi",

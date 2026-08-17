@@ -269,3 +269,74 @@ class TestPublicDocsAreForCustomers:
             f"customer docs name operator-only tooling: {hits}. A customer has "
             "neither the repository nor database access to run it."
         )
+
+
+class TestSdkPackaging:
+    """The SDK is published to PyPI; the rest of this repository is not.
+
+    `normalizer/`, `query/`, `ingest/`, `control/` and `archiver/` deploy as
+    container images. Only `mcpobs/` becomes a distribution -- and a publish
+    cannot be undone, because PyPI refuses to re-upload a version even after it
+    is deleted. So the shape of what ships is asserted here rather than checked
+    at the moment it is irreversible.
+    """
+
+    SERVER_PACKAGES = (
+        "control", "normalizer", "query", "ingest", "archiver", "demo_server",
+    )
+
+    def test_the_sdk_imports_nothing_from_the_server(self) -> None:
+        """The property that makes it publishable at all.
+
+        It holds today. It would stop holding the first time someone reached for
+        a constant that happens to live in `normalizer/` -- and the symptom would
+        be an ImportError for the first customer, not for us, because every
+        server module is importable from a checkout.
+        """
+        import re
+
+        offenders = {}
+        for path in (ROOT / "mcpobs").glob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            for match in re.finditer(
+                r"^\s*(?:from|import)\s+(\w+)", text, re.MULTILINE
+            ):
+                if match.group(1) in self.SERVER_PACKAGES:
+                    offenders.setdefault(path.name, set()).add(match.group(1))
+        assert not offenders, (
+            f"the SDK imports server code: {offenders}. It would install but not "
+            "import for a customer, who has only this package."
+        )
+
+    def test_the_package_declares_the_name_that_is_free_on_pypi(self) -> None:
+        """`mcp-observability` is taken on PyPI by an unrelated publisher.
+
+        Checked before choosing rather than at upload, because discovering a name
+        collision during `twine upload` is discovering it in public.
+        """
+        import tomllib
+
+        config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        assert config["project"]["name"] == "mcpobs"
+
+    def test_the_typing_marker_exists(self) -> None:
+        """`Typing :: Typed` is a claim, and without py.typed it is a false one:
+        mypy in a customer's project ignores an installed package's annotations
+        unless the marker ships."""
+        import tomllib
+
+        config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        if "Typing :: Typed" in config["project"]["classifiers"]:
+            assert (ROOT / "mcpobs" / "py.typed").exists()
+
+    def test_optional_dependencies_stay_optional(self) -> None:
+        """Importing `mcpobs` must not require the OTLP exporter or httpx.
+
+        A customer exporting through their own pipeline should not be made to
+        install ours. This is enforced by `__init__.py` not importing
+        `mcpobs.exporter`, which is easy to undo by adding one convenience
+        re-export.
+        """
+        init = (ROOT / "mcpobs" / "__init__.py").read_text(encoding="utf-8")
+        assert "from mcpobs.exporter" not in init
+        assert "import httpx" not in init

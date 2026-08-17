@@ -1,0 +1,114 @@
+# Publish the `mcpobs` SDK to PyPI.
+#
+# TRUSTED PUBLISHING (OIDC), not an API token. A PyPI token is a long-lived
+# credential that can publish any version of this package forever, stored in a
+# repository secret -- exactly the kind of thing this project spent considerable
+# effort removing from places it should not be. OIDC mints a short-lived one per
+# run, scoped to this workflow in this repository, and there is nothing to leak
+# or rotate.
+#
+# One-time setup on PyPI (pypi.org -> your project -> Publishing):
+#   owner:       <your-org>
+#   repository:  mcp-observability
+#   workflow:    publish-sdk.yml
+#   environment: pypi
+#
+# Triggered by a tag, never by a push to a branch. A publish is irreversible --
+# PyPI does not allow re-uploading a version, even a deleted one -- so it must
+# be a deliberate act with a name attached, not a side effect of merging.
+
+name: Publish SDK
+
+on:
+  push:
+    tags: ["sdk-v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # THE SAME CHECKS AS EVERY OTHER COMMIT. A tag is not a reason to skip
+      # them; it is the one moment they matter most, because this artefact
+      # cannot be recalled.
+      - name: Install
+        run: |
+          python -m pip install -r requirements-dev.txt
+          python -m pip install build twine
+
+      - name: Lint and typecheck
+        run: |
+          ruff check normalizer/ mcpobs/ query/ control/ ingest/ archiver/ tests/ scripts/ demo_server/
+          mypy normalizer/ mcpobs/ query/ control/ ingest/ archiver/
+
+      - name: Unit tests
+        run: pytest -m "not slow"
+
+      - name: Build
+        run: python -m build
+
+      - name: Check metadata
+        run: python -m twine check dist/*
+
+      # The wheel must contain the SDK and NOTHING ELSE. This repository holds
+      # five server packages beside it, and a build-configuration mistake would ship the
+      # control plane -- including its schema and key handling -- to PyPI.
+      - name: Wheel contains only the SDK
+        run: |
+          python - <<'PY'
+          import glob, sys, zipfile
+          wheel = glob.glob("dist/*.whl")[0]
+          tops = sorted({n.split("/")[0] for n in zipfile.ZipFile(wheel).namelist()})
+          forbidden = {"control", "normalizer", "query", "ingest", "archiver",
+                       "demo_server", "tests", "scripts", "docs", "docs-public"}
+          leaked = sorted(set(tops) & forbidden)
+          print("top-level:", tops)
+          if leaked:
+              sys.exit(f"server code would be published to PyPI: {leaked}")
+          if not any(t == "mcpobs" for t in tops):
+              sys.exit("the wheel does not contain mcpobs")
+          PY
+
+      # Installed from the built artefact into a clean environment, with the
+      # repository NOT on the path. Importing it from a checkout proves nothing:
+      # every server module is importable there, so a hidden dependency on one
+      # would pass locally and fail for the first customer.
+      - name: Install the artefact standalone
+        run: |
+          python -m venv /tmp/fresh
+          /tmp/fresh/bin/python -m pip install "$(ls dist/*.whl)"
+          cd /tmp && /tmp/fresh/bin/python -c "
+          import mcpobs
+          print('version', mcpobs.__version__)
+          from mcpobs import instrument, instrument_downstream, FailureKind
+          assert FailureKind.TOOL_ERROR == 'tool_error'
+          print('standalone import ok')
+          "
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # A protected environment, so publishing can require a human approval even
+    # though the tag triggered it.
+    environment: pypi
+    permissions:
+      # The whole point: OIDC identity instead of a stored token.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

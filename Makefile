@@ -1,7 +1,7 @@
 PY := .venv/Scripts/python.exe
 COMPOSE := docker compose
 
-.PHONY: browser docs docs-build help up down demo verify attrs lag logs ps clean test lint typecheck check freshness traces metrics deferred rollups devkeys invite archive
+.PHONY: browser docs docs-build sdk sdk-check help up down demo verify attrs lag logs ps clean test lint typecheck check freshness traces metrics deferred rollups devkeys invite archive
 
 help:
 	@echo "up        - start clickhouse + kafka + collector + normalizer"
@@ -114,3 +114,13 @@ browser:
 	@echo "browser flows -- needs 'make up' and 'make devkeys' first"
 	$(PY) -m playwright install --with-deps chromium
 	$(PY) -m pytest tests/test_browser_flows.py -v
+
+sdk:
+	rm -rf dist
+	$(PY) -m build
+	$(PY) -m twine check dist/*
+
+# Publishing is a TAG, never a make target. PyPI does not allow re-uploading a
+# version -- not even a deleted one -- so it must not be one keystroke away.
+sdk-check:
+	@echo "to publish: git tag sdk-v$$($(PY) -c 'import tomllib;print(tomllib.load(open(\"pyproject.toml\",\"rb\"))[\"project\"][\"version\"])') && git push --tags"
