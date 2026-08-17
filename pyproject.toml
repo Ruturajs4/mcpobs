@@ -53,8 +53,8 @@ sessions = [
 # psycopg, redis or pymysql on their behalf.
 
 [project.urls]
-Documentation = "https://github.com/example/mcp-observability"
-Source = "https://github.com/example/mcp-observability"
+Documentation = "https://github.com/Ruturajs4/mcpobs#readme"
+Source = "https://github.com/Ruturajs4/mcpobs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["mcpobs"]

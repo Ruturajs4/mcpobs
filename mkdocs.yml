@@ -28,7 +28,7 @@ site_description: >-
   MCP-native observability for production MCP servers. See which tool failed,
   why it failed, and where the time went.
 site_url: https://docs.example.com/
-repo_url: https://github.com/example/mcp-observability
+repo_url: https://github.com/Ruturajs4/mcpobs
 edit_uri: ""
 
 docs_dir: docs-public
@@ -159,7 +159,7 @@ nav:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/example/mcp-observability
+      link: https://github.com/Ruturajs4/mcpobs
 
 # Build strictly: a broken internal link or a missing nav target fails the build
 # rather than shipping a 404 to a customer.

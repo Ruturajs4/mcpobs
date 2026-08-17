@@ -8,8 +8,8 @@
 # or rotate.
 #
 # One-time setup on PyPI (pypi.org -> your project -> Publishing):
-#   owner:       <your-org>
-#   repository:  mcp-observability
+#   owner:       Ruturajs4
+#   repository:  mcpobs
 #   workflow:    publish-sdk.yml
 #   environment: pypi
 #
