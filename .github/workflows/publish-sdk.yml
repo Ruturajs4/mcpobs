@@ -61,7 +61,14 @@ jobs:
       # between both publish targets.
       - name: Install
         run: |
-          python -m pip install -r requirements-dev.txt -r requirements-check.txt
+          # EVERY package's requirements, because the test suite spans every
+          # package: it imports ingest, query and normalizer directly. Those
+          # deps are declared per CONTAINER, so installing only the dev and
+          # check files left the suite short of fastapi and pydantic-settings
+          # -- and CI failed on every run since the repository was created,
+          # while passing locally because a developer venv happened to have
+          # them. Pinned once, in the service file that owns them.
+          python -m pip install -r requirements-dev.txt -r requirements-check.txt -r normalizer/requirements.txt -r ingest/requirements.txt -r query/requirements.txt -r archiver/requirements.txt
           python -m pip install build twine
 
       - name: Lint and typecheck
