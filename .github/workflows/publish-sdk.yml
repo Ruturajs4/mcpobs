@@ -53,9 +53,15 @@ jobs:
       # THE SAME CHECKS AS EVERY OTHER COMMIT. A tag is not a reason to skip
       # them; it is the one moment they matter most, because this artefact
       # cannot be recalled.
+      # BOTH requirement files, matching check.yml. The linters and mypy live in
+      # requirements-check.txt, not requirements-dev.txt -- installing only the
+      # latter gave `ruff: command not found` and failed the run. Written from
+      # memory instead of copied from the workflow that already worked, which is
+      # the same mistake this file avoids elsewhere by sharing one build job
+      # between both publish targets.
       - name: Install
         run: |
-          python -m pip install -r requirements-dev.txt
+          python -m pip install -r requirements-dev.txt -r requirements-check.txt
           python -m pip install build twine
 
       - name: Lint and typecheck
