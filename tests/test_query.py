@@ -16,6 +16,7 @@ from query.repository import (
     CAPABILITY_ROW_CAP,
     LATEST_SPANS,
     TRACE_DETAIL_CAP,
+    TRACE_LIST_CATEGORY_SQL,
     TRACE_SETTLE_SECONDS,
     TRACE_SPAN_CAP,
     SpanDTO,
@@ -294,6 +295,27 @@ class TestQueryClientConcurrency:
 
         assert captured["autogenerate_session_id"] is False
 
+    def test_clickhouse_secure_env_var_reaches_the_client(self, monkeypatch) -> None:
+        """BYO-database: query builds its ClickHouse client separately from
+        normalizer's (normalizer/clickhouse_sink.py) -- reading CLICKHOUSE_SECURE
+        here independently is not an oversight, it is why this needs its own
+        test rather than relying on ClickHouseSink's coverage."""
+        import query.app as query_app
+
+        captured: dict[str, object] = {}
+
+        class FakeRepository:
+            def __init__(self, **connect: object) -> None:
+                captured.update(connect)
+
+        monkeypatch.setattr(query_app, "SpanRepository", FakeRepository)
+        monkeypatch.setattr(query_app, "_repository", None)
+        monkeypatch.setenv("CLICKHOUSE_SECURE", "true")
+
+        query_app.repository()
+
+        assert captured["secure"] is True
+
 
 class TestSqlGuards:
     """These assertions exist because the decisions are easy to undo silently."""
@@ -314,6 +336,36 @@ class TestSqlGuards:
         inner WHERE to the aggregate and reject with ILLEGAL_AGGREGATION."""
         assert "AS span_time" in LATEST_SPANS
         assert "normalization_version) AS timestamp" not in LATEST_SPANS
+
+    def test_the_trace_list_ranks_category_by_severity_not_by_is_error(self) -> None:
+        """The list and the detail page must not disagree about one trace.
+
+        `argMax(failure_category, mcp_is_error)` is only DEFINED when something
+        failed. Every non-failure category -- cancelled, unauthorized, forbidden,
+        pending_input -- carries mcp_is_error = 0 (NOT_A_FAILURE), so those traces
+        tied every row at 0 and argMax returned an arbitrary row's category,
+        usually '' from a downstream child that has no MCP category at all. The
+        console rendered '' as "ok".
+
+        Measured on the live stack before the fix: of 6,088 stored traces, 1,115
+        resolved differently under a severity ranking and 125 were displayed as
+        ok/blank while actually being cancelled (84) or pending_input (41).
+        Reported from the console as "recent traces shows ok, individual trace
+        shows cancelled" on 3863fd27...
+
+        Ranking on the ROOT span instead does not work, and this is the trap
+        worth recording: that trace's true root is `POST /mcp`, the ASGI
+        transport span, whose category is '' (D7/D22). Preferring the root
+        returns "unclassified" -- a different wrong answer.
+        """
+        sql = TRACE_LIST_CATEGORY_SQL
+        assert "argMax(failure_category, mcp_is_error)" not in sql, (
+            "the bare two-argument form is ill-defined for every trace whose "
+            "outcome is a non-failure category; rank by severity instead"
+        )
+        # A real failure outranks everything, then any non-ok outcome, then ok.
+        assert "mcp_is_error" in sql
+        assert "failure_category NOT IN ('', 'ok')" in sql
 
 
 class TestDownstreamDetail:

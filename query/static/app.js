@@ -120,6 +120,11 @@ const CAT = {
   forbidden:         { c: "b-proto",   l: "403 scope",      h: "#eab308" },
   unclassified:      { c: "b-none",    l: "unclassified",   h: "#6b7280" },
 };
+/* NEVER default an absent category to "ok". Both call sites used to pass
+   `failure_category || "ok"`, which turned "we do not know" into a positive
+   claim of success -- a cancelled trace listed as ok while its own detail page
+   said `cancelled`. An unknown category falls through to `unclassified`, which
+   is the honest answer and already has a style. */
 const badge = (cat) => {
   const m = CAT[cat] || CAT.unclassified;
   return `<span class="badge ${m.c}">${m.l}</span>`;
@@ -370,7 +375,7 @@ function renderTraceList(items, heading, note, noun = "traces") {
         <td class="mono dim">${esc(t.trace_id.slice(0, 16))}</td>
         <td><strong>${esc(t.tool || "—")}</strong></td>
         <td class="mono dim">${esc(t.mcp_method)}</td>
-        <td>${badge(t.failure_category || "ok")}</td>
+        <td>${badge(t.failure_category)}</td>
         <td>${transportTag(t.transport)}</td>
         <td class="num">${t.complete === false
           ? `<span class="approx" title="Still arriving - more spans are on their way">${t.span_count}+</span>`
@@ -475,7 +480,7 @@ function renderDrawer(t, selectedId) {
     <div class="dr-head">
       <div class="dr-title">
         <strong>${esc(t.tool || t.mcp_method || "Trace")}</strong>
-        ${badge(t.failure_category || "ok")}
+        ${badge(t.failure_category)}
         <span class="mono mute">${esc(t.trace_id)}</span>
       </div>
       <div class="kv">

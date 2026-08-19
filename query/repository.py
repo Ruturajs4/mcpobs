@@ -161,6 +161,37 @@ checks the two agree on every run.
 #: said were not errors -- 62 such traces over 24h of real data.
 _NOT_A_FAILURE_SQL = ", ".join(f"'{c}'" for c in NOT_A_FAILURE)
 
+#: One trace, one status cell -- which category the list shows for a trace whose
+#: spans disagree.
+#:
+#: THIS WAS `argMax(failure_category, mcp_is_error)`, which is only DEFINED when
+#: something failed. Every non-failure category -- cancelled, unauthorized,
+#: forbidden, pending_input -- carries mcp_is_error = 0 (see NOT_A_FAILURE), so
+#: on those traces every row tied at 0 and argMax returned an ARBITRARY row's
+#: category. Downstream children (HTTP, DB) and the ASGI span have no MCP
+#: category at all, so the winner was routinely '' -- which the console rendered
+#: as "ok" via a `|| "ok"` fallback.
+#:
+#: Measured on 6,088 stored traces: 1,115 resolved differently under the ranking
+#: below, and 125 were shown as ok/blank while actually being cancelled or
+#: pending_input. Reported as "recent traces shows ok, individual trace shows
+#: cancelled" for 3863fd27...
+#:
+#: RANKING ON THE ROOT DOES NOT WORK, which is the part worth remembering: that
+#: trace's true root is `POST /mcp`, the ASGI transport span, whose category is
+#: '' (D7/D22 -- the root is frequently not an MCP span). Preferring it returns
+#: "unclassified", a different wrong answer.
+#:
+#: So rank by SEVERITY. The tuple compares lexicographically: a real failure
+#: anywhere wins; then any non-ok outcome, because that is the notable thing that
+#: happened; then 'ok'; then absent. A single trace can carry several MCP calls
+#: on one connection, so the cell must show the most significant outcome rather
+#: than whichever row sorted first.
+TRACE_LIST_CATEGORY_SQL = (
+    "argMax(failure_category, "
+    "(mcp_is_error, failure_category NOT IN ('', 'ok'), failure_category != ''))"
+)
+
 #: How long after its last span a trace is assumed to have finished arriving.
 #:
 #: There is no end-of-trace signal in OpenTelemetry, so completeness is
@@ -785,7 +816,7 @@ class SpanRepository:
                             - toUnixTimestamp64Nano(min(span_time))) / 1e6 AS duration_ms,
                            count()                                       AS span_count,
                            sum(mcp_is_error)                             AS error_count,
-                           argMax(failure_category, mcp_is_error)        AS failure_category,
+                           {TRACE_LIST_CATEGORY_SQL}                     AS failure_category,
                            -- A true root means the parent ended, and a parent
                            -- cannot end before its children: the trace is whole.
                            -- Cheap here (a max over rows already grouped) and
