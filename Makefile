@@ -1,11 +1,14 @@
 PY := .venv/Scripts/python.exe
 COMPOSE := docker compose
 
-.PHONY: browser docs docs-build sdk sdk-check help up down demo verify attrs lag logs ps clean test lint typecheck check freshness traces metrics deferred rollups devkeys invite archive
+.PHONY: browser docs docs-build sdk sdk-check help up down demo verify attrs lag logs ps clean test lint typecheck check freshness traces metrics deferred rollups devkeys invite archive up-lite down-lite devkeys-lite
 
 help:
 	@echo "up        - start clickhouse + kafka + collector + normalizer"
 	@echo "down      - stop the stack (keeps volumes)"
+	@echo "up-lite       - start the lite (self-host) stack: no kafka/collector/redis/minio"
+	@echo "down-lite     - stop the lite stack (keeps volumes)"
+	@echo "devkeys-lite  - provision dev org + API keys against the lite stack's Postgres"
 	@echo "demo      - run the MCP tool scenarios over both transports"
 	@echo "verify    - run the A1-A9 acceptance assertions (needs the stack)"
 	@echo "test      - unit tests (no stack required)"
@@ -43,6 +46,22 @@ up:
 
 down:
 	$(COMPOSE) down
+
+# Same host ports as the full stack, deliberately (docker-compose.lite.yml) --
+# so `down` before `up-lite`, never both at once.
+up-lite:
+	$(COMPOSE) -f docker-compose.lite.yml up -d --build
+	@echo "waiting for lite stack..."
+	$(PY) scripts/wait_ready.py --lite
+
+down-lite:
+	$(COMPOSE) -f docker-compose.lite.yml down
+
+# CONTROL_PLANE_DSN set explicitly: ControlPlane()'s built-in fallback
+# (control/repository.py) points at 5432, but every compose file -- lite
+# included -- publishes Postgres on 5433. Not relying on that default here.
+devkeys-lite:
+	@CONTROL_PLANE_DSN=postgresql://mcpobs:mcpobs@localhost:5433/mcpobs_control $(PY) scripts/admin.py devkeys
 
 # Both targets provision their own keys first. Ingest is authenticated now,
 # so a demo run without a key is a wall of 401s -- and `devkeys` is

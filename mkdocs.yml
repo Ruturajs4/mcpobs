@@ -126,6 +126,7 @@ nav:
       - get-started/index.md
       - Quickstart: get-started/quickstart.md
       - Your first trace: get-started/first-trace.md
+      - Lite deployment: get-started/lite.md
 
   - Integrate:
       - integrate/index.md

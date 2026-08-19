@@ -381,3 +381,56 @@ class TestSdkPackaging:
         )
 
 
+
+
+class TestLiteDeploymentDocIsHonest:
+    """The lite doc must name what it drops, not just what it adds.
+
+    Mirrors TestSdkPackaging's sessions-extra guard: a doc that only lists
+    lite's benefits (four containers, less RAM) while staying silent about
+    the real trade -- no replay, no long-retention archive -- leaves a
+    self-hoster to discover the gap themselves, which is exactly the
+    disclosure failure this project has treated as a bug everywhere else
+    (docs/decisions.md's D17 reversal, the session-token warning, the
+    console's own capture labels).
+    """
+
+    def test_the_page_exists_and_is_in_the_nav(self) -> None:
+        page = PUBLIC / "get-started" / "lite.md"
+        assert page.exists(), "docs-public/get-started/lite.md is missing"
+        mkdocs_config = (ROOT / "mkdocs.yml").read_text(encoding="utf-8")
+        assert "get-started/lite.md" in mkdocs_config, (
+            "lite.md exists but is not in mkdocs.yml's nav -- reachable by "
+            "URL, absent from the index (strict: true only catches a nav "
+            "entry pointing at a MISSING file, not a file missing from nav)"
+        )
+
+    def test_the_page_names_what_it_drops(self) -> None:
+        text = (PUBLIC / "get-started" / "lite.md").read_text(encoding="utf-8")
+        # Not exact phrases -- the point is the CONCEPT is named somewhere,
+        # not that the prose matches a specific sentence.
+        must_mention = {
+            "replay": ["replay"],
+            "archive/retention": ["archive", "retention"],
+            "ack boundary / durability trade": ["ack boundary", "durab"],
+        }
+        missing = [
+            concept
+            for concept, needles in must_mention.items()
+            if not any(needle in text.lower() for needle in needles)
+        ]
+        assert not missing, (
+            f"docs-public/get-started/lite.md never mentions: {missing}. "
+            "A page that only lists what lite mode ADDS (fewer containers, "
+            "less RAM) without naming what it REMOVES is a worse guide than "
+            "no guide -- see the sessions-extra guard above for the same "
+            "argument applied to the session-token page."
+        )
+
+    def test_the_port_collision_with_the_full_stack_is_disclosed(self) -> None:
+        """Measured while building this: docker-compose.lite.yml reuses the
+        full stack's host ports on purpose, and running both at once fails
+        confusingly rather than refusing cleanly. Silent about it, this is
+        exactly the kind of thing a reader discovers by hitting it."""
+        text = (PUBLIC / "get-started" / "lite.md").read_text(encoding="utf-8")
+        assert "make down" in text or "cannot run alongside" in text.lower()

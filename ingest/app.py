@@ -46,6 +46,7 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
     ExportTraceServiceRequest,
+    ExportTraceServiceResponse,
 )
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
 from pydantic import BaseModel, Field
@@ -61,10 +62,17 @@ from control.session import (
 from control.session import mint as mint_session
 from control.session import principal_for as principal_for_session
 from control.session import verify as verify_session
+from ingest.direct_intake import DirectIntake, IntakeError
 
 log = logging.getLogger("ingest")
 
 COLLECTOR_ENDPOINT = os.getenv("COLLECTOR_ENDPOINT", "http://otel-collector:4318/v1/traces")
+
+#: LITE MODE. No Kafka, no Collector: decode/normalize/insert run in-process
+#: instead of forwarding OTLP onward. `direct_intake` is None in full mode, so
+#: every other line in this file is unchanged and the SaaS path is untouched.
+LITE_MODE = os.getenv("MCPOBS_LITE", "").lower() in ("1", "true", "yes")
+direct_intake: DirectIntake | None = DirectIntake() if LITE_MODE else None
 
 #: What we tell a minted session to export to. Configurable because it differs
 #: per region and per deployment -- a hardcoded value would be wrong for every
@@ -105,6 +113,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     control.wait_ready()
     applied = control.migrate()
     log.info("control plane ready: %s", ", ".join(applied))
+    if direct_intake is not None:
+        # ClickHouse migrations have no other owner in lite mode: they only
+        # ever ran from the normalizer container's startup, which does not
+        # exist here (see direct_intake.py's DirectIntake.start docstring).
+        direct_intake.start()
     yield
 
 
@@ -416,6 +429,28 @@ async def traces(
         log.info("rejected malformed OTLP from %s: %s", principal.tenant, exc)
         raise HTTPException(status_code=400, detail="malformed OTLP payload") from exc
 
+    if direct_intake is not None:
+        # LITE MODE. No Collector, no Kafka: decode/normalize/insert run
+        # in-process. The ack boundary MOVES here -- 200 returns only once
+        # ClickHouse's insert returns, not once a queue durably has the
+        # batch. That is a named trade for a self-host deployment; see
+        # docs-public/get-started/lite.md.
+        try:
+            written = direct_intake.ingest(stamped)
+        except IntakeError as exc:
+            log.info("rejected malformed OTLP from %s: %s", principal.tenant, exc)
+            raise HTTPException(status_code=400, detail="malformed OTLP payload") from exc
+        except Exception as exc:  # ClickHouse down; fail closed like the collector branch
+            log.warning("ClickHouse unavailable for tenant %s: %s", principal.tenant, exc)
+            raise HTTPException(status_code=503, detail="storage unavailable") from exc
+        control.touch(principal.key_id)
+        log.debug("lite intake wrote %d spans for %s", written, principal.tenant)
+        return Response(
+            content=ExportTraceServiceResponse().SerializeToString(),
+            status_code=200,
+            media_type="application/x-protobuf",
+        )
+
     # Forwarded SYNCHRONOUSLY, and the Collector's status is returned unchanged.
     # Acking before the Collector accepted would move the ack boundary in front
     # of the queue that makes it durable, which is precisely the line
@@ -450,15 +485,26 @@ def ready() -> dict[str, str]:
         control.ping()
     except Exception:  # noqa: BLE001
         unavailable.append("control-plane")
-    try:
-        quotas.store.client.ping()
-    except Exception:  # noqa: BLE001
-        unavailable.append("quota-store")
-    try:
-        response = client().get(COLLECTOR_HEALTH_ENDPOINT, timeout=1.0)
-        response.raise_for_status()
-    except (httpx.RequestError, httpx.HTTPStatusError):
-        unavailable.append("collector")
+    if direct_intake is not None:
+        # LITE MODE. No Redis: quota checks fail open to per-process counting
+        # by design (control/quota.py), so treating a dead quota-store as
+        # "not ready" would report every lite deployment permanently
+        # unhealthy over a dependency it was built not to need. Check
+        # ClickHouse instead -- direct_intake's actual dependency.
+        try:
+            direct_intake.sink.client.query("SELECT 1")
+        except Exception:  # noqa: BLE001
+            unavailable.append("clickhouse")
+    else:
+        try:
+            quotas.store.client.ping()
+        except Exception:  # noqa: BLE001
+            unavailable.append("quota-store")
+        try:
+            response = client().get(COLLECTOR_HEALTH_ENDPOINT, timeout=1.0)
+            response.raise_for_status()
+        except (httpx.RequestError, httpx.HTTPStatusError):
+            unavailable.append("collector")
     if unavailable:
         raise HTTPException(status_code=503, detail={"unavailable": unavailable})
     return {"status": "ready"}

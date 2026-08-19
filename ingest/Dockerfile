@@ -7,7 +7,6 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY ingest /app/ingest/
 COPY control /app/control/
-RUN touch /app/ingest/__init__.py
 
 ENV PYTHONUNBUFFERED=1
 CMD ["uvicorn", "ingest.app:app", "--host", "0.0.0.0", "--port", "4319"]

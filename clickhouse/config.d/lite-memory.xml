@@ -1,0 +1,33 @@
+<clickhouse>
+    <!--
+         Memory tuning for the lite (self-host) deployment ONLY: mounted by
+         docker-compose.lite.yml, never by the full docker-compose.yml.
+
+         (Note for editors, same as keeper.xml: XML comments may not contain a
+         double hyphen, so this file uses colons and parentheses instead of
+         the dash style used elsewhere in the repo.)
+
+         The full stack's clickhouse/config.d/ has no memory settings at all,
+         so ClickHouse runs on stock cache defaults sized for a server that
+         expects to own the whole machine. Measured on this project's local
+         stack: about 978 MiB idle, almost entirely those default caches
+         rather than data actually held in memory. There is no schema or
+         workload reason a single-tenant install needs gigabyte-scale
+         mark/uncompressed caches.
+
+         THESE ARE A STARTING POINT, NOT A MEASURED RESULT. Verify the real
+         idle footprint after this file is wired into docker-compose.lite.yml
+         (docker stats, no-stream flag) and adjust; do not carry these numbers
+         into documentation as a claim until they are checked against a real
+         container.
+
+         max_server_memory_usage is an explicit cap rather than 0 (auto
+         detect from host RAM), because a self-hoster's Docker host is
+         frequently shared with other things, and ClickHouse guessing from
+         total host memory is the wrong default on a machine it does not own
+         alone.
+    -->
+    <max_server_memory_usage>805306368</max_server_memory_usage> <!-- 768 MiB -->
+    <mark_cache_size>134217728</mark_cache_size>                 <!-- 128 MiB (default is multi GiB) -->
+    <uncompressed_cache_size>67108864</uncompressed_cache_size>  <!-- 64 MiB -->
+</clickhouse>
