@@ -1,0 +1,69 @@
+// What ACTUALLY runs locally — docker-compose, 11 containers.
+//
+// Paste into https://app.eraser.io as a Cloud Architecture diagram.
+//
+// This is deliberately a SEPARATE diagram from 01-system-architecture. That one
+// is the target; this one is the artefact. Drawing both as one picture is how an
+// architecture diagram starts lying: the differences below are real and every
+// one of them is a known alpha gap, not a simplification worth hiding.
+//
+//   RF=1 on Kafka             — a single broker cannot survive losing it
+//   no TLS anywhere           — plaintext between every hop
+//   one ClickHouse, no replicas
+//   MinIO stands in for S3
+//   one Postgres serves BOTH the control plane and the demo app's own schema
+//
+// Ports are host-side, as published in docker-compose.yml.
+
+title Local Topology — docker-compose (the artefact, not the target)
+
+Demo [icon: terminal, color: green] {
+  Demo Server [label: "demo_server\nMCP server on stdio or HTTP", icon: python]
+  Partner APIs [label: "mock partner APIs\npayments :8801 · inventory :8802 · shipping :8803\nfast / slow / flaky — nothing calls the internet", icon: cloud]
+}
+
+Ingest Path [icon: log-in, color: red] {
+  Ingest [label: "ingest :4319\nFastAPI · auth · quota · tenant stamping", icon: lock]
+  Collector [label: "otel-collector\nOTLP :4318/:4317 · health :13133 · metrics :8889", icon: layers]
+  Kafka [label: "kafka :9092\nKRaft · RF=1 ⚠ · otlp.spans.raw", icon: kafka, color: purple]
+  Kafka Init [label: "kafka-init\none-shot topic creation", icon: play, color: gray]
+}
+
+Processing [icon: cpu, color: blue] {
+  Normalizer [label: "normalizer\nOTLP decode → MCP fields → failure taxonomy", icon: filter]
+  Archiver [label: "archiver\nparquet → object store", icon: archive]
+}
+
+Storage [icon: database, color: yellow] {
+  ClickHouse [label: "clickhouse :8123 / :9000\nspans_raw + rollups · single node", icon: database]
+  Postgres [label: "postgres :5433\ncontrol plane AND demo_app schema", icon: postgresql]
+  Redis [label: "redis :6379\nquotas · principal cache", icon: redis]
+  MinIO [label: "minio :9002 (console :9001)\nstands in for S3", icon: hard-drive]
+  MySQL [label: "mysql :3307\nsecond engine, so db.system is visibly not one value", icon: mysql]
+}
+
+Serving [icon: monitor, color: green] {
+  Query [label: "query :8080\nQuery API + console", icon: search]
+  Docs [label: "mkdocs :8009\ncustomer-facing docs", icon: book]
+}
+
+// ─────────────────────────────────────────────────────────────── flows
+Demo Server > Partner APIs: HTTP child spans
+Demo Server > Postgres: psycopg — demo_app schema
+Demo Server > MySQL: pymysql
+Demo Server > Redis: cache read/write
+Demo Server > Ingest: "OTLP/HTTP :4319"
+
+Ingest > Collector: forward, tenant stamped
+Ingest > Postgres: API key → tenant
+Ingest > Redis: quota counters
+Kafka Init > Kafka: create topics
+Collector > Kafka: acks=all
+
+Kafka > Normalizer
+Kafka > Archiver
+Normalizer > ClickHouse: batched insert, dedup token
+Archiver > MinIO: parquet
+
+Query > ClickHouse
+Query > Postgres

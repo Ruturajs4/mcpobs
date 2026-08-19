@@ -1,0 +1,57 @@
+// ADR-011 — short-lived session tokens for client-launched (stdio) servers.
+//
+// Paste into https://app.eraser.io as a Sequence diagram.
+//
+// THE PROBLEM THIS SOLVES. Roughly half of MCP servers run on stdio, which
+// means the CLIENT launches them, on the end user's own laptop. The only way to
+// hand such a server a credential is the client's config file:
+//
+//   {"mcpServers": {"acme": {"env": {
+//     "OTEL_EXPORTER_OTLP_HEADERS": "x-api-key=mcpo_live_..."}}}}
+//
+// That file is plaintext on a laptop — synced, backed up, pasted into support
+// tickets, readable by every process running as that user. And the key in it is
+// ORG-WIDE and PERMANENT. The exposure is not "a key leaked"; it is "a key
+// leaked and nothing expires".
+//
+// The fix borrows an authentication relationship that ALREADY EXISTS: the
+// customer already authenticates their own end user. We do not, and never will.
+
+title Session Tokens for stdio — the long-lived key never reaches a laptop
+
+End User [icon: user]
+MCP Client [icon: monitor]
+MCP Server [label: "MCP server\n+ mcpobs SDK", icon: python]
+Session Endpoint [label: "Customer's session endpoint\nHOLDS THE LONG-LIVED KEY", icon: key]
+Ingest Gateway [icon: lock]
+
+MCP Client > MCP Server: spawn over stdio
+activate MCP Server
+MCP Server > MCP Server: "instrument(mcp, session_endpoint=..., session_headers=callable)\nno credential in the client config at all"
+
+MCP Server > Session Endpoint: POST — auth the customer already has
+activate Session Endpoint
+Session Endpoint > Session Endpoint: "authenticate the end user\n(their session cookie / OAuth / whatever their product uses)"
+Session Endpoint > Ingest Gateway: mint, with the long-lived key — SERVER SIDE ONLY
+Ingest Gateway > Session Endpoint: session JWT
+Session Endpoint > MCP Server: "{token, expires_in: 10800, endpoint, attributes}"
+deactivate Session Endpoint
+
+MCP Server > MCP Server: "expires_in, NOT expires_at —\nlaptop clocks are wrong, and a relative TTL\ncannot be misread by a skewed clock"
+
+loop [label: "for the life of the process"] {
+  MCP Server > Ingest Gateway: "export spans · x-api-key: <session JWT>"
+  Ingest Gateway > Ingest Gateway: "verify LOCALLY — aud · kid · jti · epoch\nno Redis lookup: ingest is the highest-volume\npath and must not couple to a cache"
+  Ingest Gateway > MCP Server: 200
+
+  opt [label: "at 75% of TTL, ±10% jitter"] {
+    MCP Server > Session Endpoint: refresh before expiry
+    Session Endpoint > MCP Server: new token
+    MCP Server > MCP Server: "swap the header on the live exporter;\nspans queue rather than drop while it re-mints"
+  }
+}
+deactivate MCP Server
+
+opt [label: "endpoint unreachable"] {
+  MCP Server > MCP Server: "spans buffer to MAX_PENDING_SPANS = 2000, then shed.\nMeasured: a dead endpoint yields 0 delivered spans even\nwith a dev key on disk — the session path is load-bearing,\nnot a decoration over the old one."
+}

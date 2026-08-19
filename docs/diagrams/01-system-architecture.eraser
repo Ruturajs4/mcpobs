@@ -1,0 +1,85 @@
+// MCP Observability — target system architecture
+//
+// Paste into https://app.eraser.io as a Cloud Architecture diagram.
+//
+// THE ONE LINE THAT DEFINES THE SHAPE: everything LEFT of Kafka optimises for
+// accepting data and never losing it; everything RIGHT of Kafka optimises for
+// making data useful. The two halves fail independently, deploy independently
+// and scale on different signals. Read the diagram as two systems joined at a
+// durability boundary, not as one pipeline.
+
+title MCP Observability — System Architecture
+
+// ═════════════════════════════════════════════ customer environment
+Customer Environment [icon: home, color: slate] {
+  MCP Client [label: "MCP client\nClaude Desktop · IDE · agent", icon: monitor]
+  MCP Server [label: "MCP server\n+ mcpobs SDK", icon: python, color: green]
+  Downstream [label: "Postgres · MySQL · Redis · partner APIs", icon: database]
+  Session Endpoint [label: "Session endpoint\ncustomer-hosted · holds the long-lived key", icon: key, color: orange]
+  Customer Collector [label: "Collector (optional)\nmay also fan out to their APM", icon: shuffle]
+}
+
+// ═════════════════════════════════════════ regional data plane (one cell)
+Regional Data Plane [icon: globe, color: blue] {
+
+  Edge [label: "Edge / load balancer\nTLS · DDoS · rate limit", icon: shield]
+
+  Ingest Gateway [label: "Ingest gateway\nauth · quota · TRUSTED tenant stamping", icon: lock, color: red]
+
+  Collector [label: "OTel Collector fleet\nstateless · autoscaled · batch → Kafka acks=all", icon: layers]
+
+  Kafka [label: "Kafka — THE DURABILITY BOUNDARY\notlp.spans.raw · otlp.spans.dlq · RF=3 · 48–72h", icon: kafka, color: purple]
+
+  Normalizer [label: "Normalizer\nSTATELESS · OTLP decode → MCP fields → failure taxonomy", icon: filter]
+  Archiver [label: "S3 sink\nparquet archive", icon: archive]
+  Billing [label: "Billing meter\nspans + bytes per tenant", icon: activity]
+  Alerting [label: "Rule eval (future)", icon: bell, color: gray]
+
+  ClickHouse [label: "ClickHouse\nspans_raw + materialised rollups\nTRACE ASSEMBLY HAPPENS HERE", icon: database, color: yellow]
+
+  Query API [label: "Query API\ntenant filter server-side · keyset pagination · row caps", icon: search]
+  Console [label: "Console (Web UI)", icon: monitor, color: green]
+}
+
+// ═══════════════════════════════════════════ control plane (global)
+Control Plane [icon: settings, color: orange] {
+  Postgres [label: "PostgreSQL\norgs · projects · API keys · plans · retention policy", icon: postgresql]
+  Redis [label: "Redis\nprincipal cache · quota counters", icon: redis]
+  Object Store [label: "Object storage\nraw OTLP archive · large payloads", icon: hard-drive]
+}
+
+// ─────────────────────────────────────────────────────────── write path
+MCP Client > MCP Server: spawn (stdio) / HTTP
+MCP Server > Downstream: instrumented child spans
+MCP Server > Session Endpoint: request short-lived token
+Session Endpoint > MCP Server: session JWT, 3h TTL
+MCP Server > Customer Collector: OTLP
+MCP Server > Edge: "OTLP/HTTP · x-api-key or session JWT"
+Customer Collector > Edge: OTLP
+
+Edge > Ingest Gateway
+Ingest Gateway > Collector: forwarded OTLP, tenant stamped
+Collector > Kafka: "acks=all ◄── ACK BOUNDARY: 200 returned only past here"
+
+// ───────────────────────────────────── fan-out: independent consumer groups
+Kafka > Normalizer: group=normalizer
+Kafka > Archiver: group=archiver
+Kafka > Billing: group=billing
+Kafka > Alerting: group=alerting
+
+Normalizer > ClickHouse: "batch 10k/5s · dedup token · offsets commit AFTER insert"
+Archiver > Object Store
+Billing > Postgres: usage counters
+
+// ──────────────────────────────────────────────────────────── read path
+Console > Query API
+Query API > ClickHouse: rollup-vs-raw routing
+Query API > Redis: result cache 10–30s
+
+// ────────────────────────────────────────────────────── control coupling
+Ingest Gateway > Postgres: resolve API key → tenant
+Ingest Gateway > Redis: quota check (soft flag / hard reject)
+Query API > Postgres: tenant + policy
+
+// ───────────────────────────────────────── replay: why Kafka is here at all
+Kafka > Normalizer: "REPLAY: reset offsets → reprocess at normalization_version N+1"

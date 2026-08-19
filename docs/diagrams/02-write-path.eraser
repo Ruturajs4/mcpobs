@@ -1,0 +1,54 @@
+// The write path, and the one rule that governs it.
+//
+// Paste into https://app.eraser.io as a Sequence diagram.
+//
+// NOTHING after the ack boundary can lose data. NOTHING before it may perform
+// analytics, touch ClickHouse, classify payloads, or run any operation whose
+// latency we do not control. Every step below is placed relative to that line,
+// which is the only reason the order matters.
+
+title Write Path — the ack boundary is the whole design
+
+MCP Server [icon: python]
+Ingest Gateway [icon: lock]
+Postgres [icon: postgresql]
+Redis [icon: redis]
+Collector [icon: layers]
+Kafka [icon: kafka]
+
+MCP Server > Ingest Gateway: POST /v1/traces (OTLP protobuf)
+activate Ingest Gateway
+
+Ingest Gateway > Postgres: resolve API key or verify session JWT
+Postgres > Ingest Gateway: tenant · project · plan · quotas
+
+opt [label: "session JWT — verified LOCALLY, no lookup"] {
+  Ingest Gateway > Ingest Gateway: "check aud · kid · exp · epoch\ningest must not depend on Redis being up"
+}
+
+Ingest Gateway > Redis: quota check
+alt [label: "hard quota exceeded"] {
+  Redis > Ingest Gateway: over limit
+  Ingest Gateway > MCP Server: 429 — rejected before Kafka
+}
+else [label: "soft quota exceeded"] {
+  Ingest Gateway > Ingest Gateway: "stamp mcpobs.quota.soft_exceeded\na warning only we can see is not a warning"
+}
+else [label: "within quota"] {
+  Redis > Ingest Gateway: ok
+}
+
+Ingest Gateway > Ingest Gateway: "validate OTLP structure"
+Ingest Gateway > Ingest Gateway: "OVERWRITE tenant/project/region from the\nauthenticated key — inbound resource attributes\nare an assertion by an untrusted party"
+
+Ingest Gateway > Collector: forward OTLP, tenant stamped
+deactivate Ingest Gateway
+activate Collector
+Collector > Collector: memory_limiter → batch (1s / 512 spans)
+Collector > Kafka: produce · key=tenant_id · acks=all · zstd
+activate Kafka
+Kafka > Collector: durably accepted
+deactivate Kafka
+Collector > Ingest Gateway: 200
+deactivate Collector
+Ingest Gateway > MCP Server: "200 ◄════ ACK BOUNDARY ════\nreturned ONLY past this line"
