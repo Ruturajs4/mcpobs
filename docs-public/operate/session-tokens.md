@@ -37,7 +37,33 @@ graph LR
 
 Your long-lived key never leaves step 2.
 
-## 1. Get a session-minting key
+## 1. Install the SDK with the `sessions` extra
+
+```bash
+pip install "mcpobs[sessions]"
+```
+
+!!! danger "Plain `pip install mcpobs` cannot do this"
+
+    The session path needs an OTLP HTTP exporter and `httpx`, which the core
+    package deliberately does not install. Measured on a clean install of 0.1.0:
+    with the core package and a `session_endpoint` configured, **no token is ever
+    obtained and nothing is exported.** Your server starts, works, and serves
+    your users — it just reports nothing.
+
+    The diagnostic goes to **stderr**, and it is worth knowing exactly how it
+    reads, because the first half is misleading:
+
+    ```
+    [mcpobs] session endpoint unreachable (No module named 'httpx');
+             telemetry paused, retrying
+    ```
+
+    "Unreachable" sends you to your endpoint, your auth and your network. The
+    parenthesis is the real answer. If you are debugging missing telemetry on
+    this path, check the install line before anything else.
+
+## 2. Get a session-minting key
 
 Ask us for a key with the **`session`** scope, or create one from your account
 settings.
@@ -48,7 +74,7 @@ otherwise every key in your deployment config would be a credential factory.
 
 Keep this key on your servers. It is the one thing this design exists to protect.
 
-## 2. Add an endpoint to your application
+## 3. Add an endpoint to your application
 
 One handler, behind your existing authentication:
 
@@ -89,7 +115,7 @@ running five MCP servers makes five calls every three hours.
 `expires_in` is **relative**, not a timestamp, because laptop clocks are
 routinely wrong by minutes and a skewed one would refresh at the wrong moment.
 
-## 3. Point your server at it — in your server
+## 4. Point your server at it — in your server
 
 ```python
 from mcpobs import instrument

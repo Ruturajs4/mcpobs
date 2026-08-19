@@ -340,3 +340,44 @@ class TestSdkPackaging:
         init = (ROOT / "mcpobs" / "__init__.py").read_text(encoding="utf-8")
         assert "from mcpobs.exporter" not in init
         assert "import httpx" not in init
+
+    def test_the_sessions_extra_is_named_wherever_the_session_path_is_taught(
+        self,
+    ) -> None:
+        """The other half of `test_optional_dependencies_stay_optional`.
+
+        That test keeps the exporter and httpx OUT of the core install. Doing so
+        creates an obligation on the docs, because the cost lands on whoever
+        follows the session-token page. Measured on a clean `pip install mcpobs`
+        of 0.1.0 against a REACHABLE endpoint serving a valid response,
+        `SessionProvider.current()` returns None and nothing is ever exported.
+
+        The SDK is not silent about it -- it writes to stderr:
+
+            [mcpobs] session endpoint unreachable (No module named 'httpx');
+                     telemetry paused, retrying
+
+        But the message leads with "unreachable" while the cause is in the
+        parenthesis, so it points a reader at their endpoint, their auth and
+        their network rather than at their install line. A page that teaches this
+        path without naming the extra leaves that misdirection as the only clue.
+
+        (Isolating this took two wrong probes: `headers()` returns the headers
+        used to authenticate TO the customer's endpoint, so its empty dict is
+        correct in every install and proves nothing; and an unreachable test
+        endpoint produces the same None as a missing dependency. Only a reachable
+        endpoint separates the two causes.)
+        """
+        page = PUBLIC / "operate" / "session-tokens.md"
+        text = page.read_text(encoding="utf-8")
+        assert "session_endpoint" in text, (
+            "this guard assumes session-tokens.md teaches the session path; "
+            "if that moved, point the test at the page that teaches it now"
+        )
+        assert "mcpobs[sessions]" in text, (
+            f"{page.relative_to(ROOT)} teaches the session path but never names "
+            "the `mcpobs[sessions]` extra. A reader following it with plain "
+            "`pip install mcpobs` gets silent, unlogged telemetry loss."
+        )
+
+

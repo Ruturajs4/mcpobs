@@ -1,6 +1,13 @@
 # Quickstart
 
+Two separate environments, and it is worth knowing which is which before you
+start. **The SDK is a package you install from PyPI** into whatever environment
+your MCP server already runs in. **The backend is a stack you run from a clone.**
+Mixing them up is the most common way this page goes wrong.
+
 ## 1. Run the stack
+
+From a clone of the repository, in its own virtualenv:
 
 ```bash
 python -m venv .venv && .venv/Scripts/pip install -r requirements-dev.txt
@@ -13,7 +20,23 @@ make devkeys   # provision a local org and API keys
 Access is invite-only: there is no self-service signup, and no endpoint that
 mints a key.
 
-## 2. Instrument your server
+!!! note "These requirements are the backend's, not the SDK's"
+
+    `requirements-dev.txt` builds the stack above. It does **not** install
+    `mcpobs` into your server — that is the next step, and it comes from PyPI.
+
+## 2. Install the SDK in your server
+
+In your MCP server's own environment, not the one you just made:
+
+```bash
+pip install mcpobs
+```
+
+Python 3.11 or newer. If your server runs over **stdio**, install
+`"mcpobs[sessions]"` instead — see the warning in step 4.
+
+## 3. Instrument your server
 
 ```python
 from mcpobs import instrument
@@ -24,7 +47,15 @@ instrument(mcp)  # (1)!
 1.  `mcp` is your `MCPServer` instance. This adds a middleware; it does not
     wrap or replace the protocol.
 
-## 3. Point it at the collector
+!!! note "Something in your process must still export spans"
+
+    `mcpobs` annotates and classifies the spans your MCP SDK opens; it does not
+    create a `TracerProvider` and, outside the session-token path, ships no
+    exporter. If you have no OTel export configured yet, add one — otherwise the
+    next step points at a collector that never receives anything. See
+    [Python SDK](../integrate/python-sdk.md#this-package-does-not-configure-opentelemetry-for-you).
+
+## 4. Point it at the collector
 
 ```bash
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4319
@@ -35,7 +66,9 @@ export OTEL_EXPORTER_OTLP_HEADERS="x-api-key=<your ingest key>"
 
     The client launches it on your **user's** machine, so a key in that config
     is a permanent credential on someone else's laptop. Use
-    [session tokens](../operate/session-tokens.md) instead.
+    [session tokens](../operate/session-tokens.md) instead — and install
+    `"mcpobs[sessions]"` rather than plain `mcpobs`, or no token is ever obtained
+    and the stderr diagnostic will blame your endpoint for a missing dependency.
 
 !!! note "Ingest keys and read keys are different"
 
@@ -44,7 +77,7 @@ export OTEL_EXPORTER_OTLP_HEADERS="x-api-key=<your ingest key>"
     console will refuse an ingest key and the ingest endpoint will refuse a read
     key. See [API keys and access](../operate/keys.md).
 
-## 4. Open the console
+## 5. Open the console
 
 ```
 http://localhost:8080
