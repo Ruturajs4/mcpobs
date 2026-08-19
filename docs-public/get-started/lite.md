@@ -90,6 +90,47 @@ export OTEL_EXPORTER_OTLP_HEADERS="x-api-key=<your ingest key>"
 Open the console at `http://localhost:8080` and sign in with the **read**
 key, exactly as in the full stack.
 
+## Bring your own database
+
+Two containers instead of four: no local ClickHouse, no local Postgres.
+Point `ingest` and `query` at databases you already run — ClickHouse Cloud,
+your own self-hosted ClickHouse, and RDS/Supabase/Neon/Cloud SQL or any
+Postgres.
+
+Nothing about `ingest` or `query` assumes its database is a sibling
+container — connection details are read from environment variables either
+way. This is the same lite image, with the two managed database containers
+removed.
+
+```bash
+cat > .env <<'EOF'
+CONTROL_PLANE_DSN=postgresql://user:pass@your-postgres-host:5432/mcpobs?sslmode=require
+CLICKHOUSE_HOST=your-instance.clickhouse.cloud
+CLICKHOUSE_PORT=8443
+CLICKHOUSE_PASSWORD=your-clickhouse-password
+EOF
+
+make up-byo
+make devkeys
+```
+
+`docker compose` reads `.env` automatically. `CONTROL_PLANE_DSN`,
+`CLICKHOUSE_HOST`, `CLICKHOUSE_PORT` and `CLICKHOUSE_PASSWORD` have no
+defaults and the stack refuses to start without them — better than silently
+falling back to a hostname that will never resolve. `CLICKHOUSE_SECURE`
+defaults to `true` here (most external ClickHouse is TLS-only); set it to
+`false` if yours genuinely isn't.
+
+!!! warning "Check ReplicatedMergeTree support before committing to this"
+
+    This project's idempotent inserts (spans surviving a retried export
+    without duplicating) rely on `ReplicatedMergeTree`, which needs a working
+    Keeper. ClickHouse Cloud has this built in. A bare self-hosted
+    `clickhouse-server` with no Keeper configured will fail the schema
+    migration outright the first time `ingest` starts — see
+    `clickhouse/config.d/keeper.xml` in the repository for what the managed
+    deployments set up on your behalf.
+
 ## Next
 
 - [Your first trace](first-trace.md) — how to read what you're now collecting.

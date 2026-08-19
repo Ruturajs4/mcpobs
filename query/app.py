@@ -91,6 +91,13 @@ def repository() -> SpanRepository:
             database=os.getenv("CLICKHOUSE_DB", "mcpobs"),
             username=os.getenv("CLICKHOUSE_USER", "default"),
             password=os.getenv("CLICKHOUSE_PASSWORD", ""),
+            # False for every compose-managed ClickHouse this project ships
+            # (plain HTTP on the docker network); a user-provided instance --
+            # ClickHouse Cloud in particular -- is TLS-only. Same flag,
+            # independently read here because this repository's ClickHouse
+            # client is constructed separately from normalizer's
+            # (normalizer/clickhouse_sink.py), not through normalizer.config.
+            secure=os.getenv("CLICKHOUSE_SECURE", "false").lower() in ("1", "true", "yes"),
             # This repository is shared by FastAPI's worker threads. A generated
             # ClickHouse session id would be shared too, and clickhouse-connect
             # rejects overlapping requests in one session. The HTTP connection

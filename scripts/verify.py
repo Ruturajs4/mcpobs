@@ -43,10 +43,19 @@ def record(name: str, ok: bool | str, detail: str) -> None:
 
 
 def client():
+    # username/password/secure were missing entirely until BYO-database
+    # (docker-compose.byo-db.yml) needed them: this script only ever ran
+    # against the local stack's blank-password `default` user, so the gap
+    # was invisible. Same env vars and defaults as query/app.py's client
+    # construction, which has the identical split (a real remote ClickHouse
+    # needs real credentials and TLS).
     return clickhouse_connect.get_client(
         host=os.getenv("CLICKHOUSE_HOST", "localhost"),
         port=int(os.getenv("CLICKHOUSE_PORT", "8123")),
         database=os.getenv("CLICKHOUSE_DB", "mcpobs"),
+        username=os.getenv("CLICKHOUSE_USER", "default"),
+        password=os.getenv("CLICKHOUSE_PASSWORD", ""),
+        secure=os.getenv("CLICKHOUSE_SECURE", "false").lower() in ("1", "true", "yes"),
     )
 
 

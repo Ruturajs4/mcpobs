@@ -1,0 +1,70 @@
+# Bring-your-own-database. Two containers: `ingest` and `query`. No
+# ClickHouse, no Postgres -- point this at databases you already run
+# (ClickHouse Cloud, RDS/Supabase/Neon/Cloud SQL, or your own self-hosted
+# instances) instead of ones this repository starts for you.
+#
+# This is docker-compose.lite.yml's ingest image (ingest/Dockerfile.lite,
+# MCPOBS_LITE=1: decode/normalize/insert in-process, no Kafka) with the two
+# database containers removed and their connection details externalized.
+# Nothing else changes -- same schema, same modules, same migrations run
+# from ingest's own lifespan on first boot.
+#
+# REQUIRED ENV VARS have NO DEFAULTS here on purpose, using compose's
+# `${VAR:?message}` syntax -- `docker compose up` refuses to start rather
+# than silently falling back to a local-Docker hostname that will never
+# resolve against a real database. Set them in a `.env` file next to this one
+# or export them before running `make up-byo`.
+#
+# COMPATIBILITY, worth checking before you commit to this: ADR-006's
+# insert_deduplication_token needs ReplicatedMergeTree, which needs a working
+# Keeper. ClickHouse Cloud has this built in. A bare self-hosted
+# clickhouse-server with no Keeper configured will fail the schema migration
+# outright -- see clickhouse/config.d/keeper.xml for what the managed compose
+# files set up for you.
+name: mcp-observability-byo-db
+
+services:
+  ingest:
+    build:
+      context: .
+      dockerfile: ingest/Dockerfile.lite
+    container_name: mcpobs-byo-ingest
+    ports: ["4319:4319"]
+    environment:
+      MCPOBS_LITE: "1"
+      CONTROL_PLANE_DSN: ${CONTROL_PLANE_DSN:?set CONTROL_PLANE_DSN to your Postgres, e.g. postgresql://user:pass@host:5432/db?sslmode=require}
+      CLICKHOUSE_HOST: ${CLICKHOUSE_HOST:?set CLICKHOUSE_HOST to your ClickHouse hostname}
+      CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:?set CLICKHOUSE_PORT, e.g. 8443 for ClickHouse Cloud, 8123 for plain HTTP}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-mcpobs}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD -- do not run a remote database with no password}
+      CLICKHOUSE_SECURE: ${CLICKHOUSE_SECURE:-true}
+      # Session tokens (ADR-011) are optional here, same as everywhere else --
+      # unset means the /v1/sessions endpoint is simply unavailable, not a
+      # startup failure. Uncomment and set from a secret store, never a
+      # committed value.
+      # MCPOBS_SESSION_SIGNING_KEY: ""
+      MCPOBS_PUBLIC_INGEST_ENDPOINT: ${MCPOBS_PUBLIC_INGEST_ENDPOINT:-http://127.0.0.1:4319}
+      EXPOSE_API_DOCS: "true"
+      DATA_REGION: local
+      # No REDIS_URL: quota enforcement fails open to per-process counting
+      # (control/quota.py), same as lite mode -- there is no managed Redis
+      # container in this file either.
+    restart: unless-stopped
+
+  query:
+    build:
+      context: .
+      dockerfile: query/Dockerfile
+    container_name: mcpobs-byo-query
+    ports: ["8080:8080"]
+    environment:
+      CONTROL_PLANE_DSN: ${CONTROL_PLANE_DSN:?set CONTROL_PLANE_DSN to your Postgres, e.g. postgresql://user:pass@host:5432/db?sslmode=require}
+      CLICKHOUSE_HOST: ${CLICKHOUSE_HOST:?set CLICKHOUSE_HOST to your ClickHouse hostname}
+      CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:?set CLICKHOUSE_PORT, e.g. 8443 for ClickHouse Cloud, 8123 for plain HTTP}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-mcpobs}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD -- do not run a remote database with no password}
+      CLICKHOUSE_SECURE: ${CLICKHOUSE_SECURE:-true}
+      EXPOSE_API_DOCS: "true"
+    restart: unless-stopped

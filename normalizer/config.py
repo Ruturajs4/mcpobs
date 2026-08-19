@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     clickhouse_db: str = "mcpobs"
     clickhouse_user: str = "default"
     clickhouse_password: str = ""
+    # False by default: every compose-managed ClickHouse this project ships
+    # (full and lite) talks plain HTTP on the docker network. A user-provided
+    # ClickHouse -- Cloud in particular -- is TLS-only, so bring-your-own-
+    # database deployments set this true. `clickhouse_connect` derives its
+    # http/https interface from this flag; no separate `interface` setting.
+    clickhouse_secure: bool = False
 
     # Batching. Deliberate defaults: 10k rows is a healthy ClickHouse insert
     # block; 5s bounds ingest freshness, the headline pipeline metric.

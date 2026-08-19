@@ -33,6 +33,7 @@ class ClickHouseSink:
                 database=self.settings.clickhouse_db,
                 username=self.settings.clickhouse_user,
                 password=self.settings.clickhouse_password,
+                secure=self.settings.clickhouse_secure,
             )
         return self._client
 

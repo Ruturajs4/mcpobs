@@ -232,6 +232,79 @@ def test_rollup_replacement_waits_for_all_active_replicas() -> None:
     assert replace[1] == {"alter_sync": 2}
 
 
+class TestOperatorScriptsSupportByoDatabase:
+    """scripts/verify.py and scripts/recompute_rollups.py are host-side
+    tooling, not deployed containers -- but a self-hoster running BYO-database
+    (docker-compose.byo-db.yml) still needs to run `make verify` and repair a
+    rollup against their own ClickHouse. Both were missing pieces of the same
+    env-var surface `ingest`/`query` already have, invisible until now because
+    every existing use pointed at the local stack's blank-password `default`
+    user over plain HTTP."""
+
+    def test_recompute_rollups_client_forwards_secure(self, monkeypatch) -> None:
+        from normalizer.config import Settings
+        from scripts.recompute_rollups import RollupRecomputer
+
+        captured: dict[str, object] = {}
+
+        def fake_get_client(**kwargs: object):
+            captured.update(kwargs)
+            return object()
+
+        import clickhouse_connect
+
+        monkeypatch.setattr(clickhouse_connect, "get_client", fake_get_client)
+
+        recomputer = RollupRecomputer(Settings(clickhouse_secure=True))
+        _ = recomputer.client
+
+        assert captured["secure"] is True
+
+    def test_verify_client_reads_user_password_and_secure(self, monkeypatch) -> None:
+        """These three were absent from scripts/verify.py's client() entirely
+        -- not defaulted, not read at all -- so a real remote ClickHouse's
+        credentials had no way to reach the connection."""
+        from scripts import verify
+
+        captured: dict[str, object] = {}
+
+        def fake_get_client(**kwargs: object):
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setattr(verify.clickhouse_connect, "get_client", fake_get_client)
+        monkeypatch.setenv("CLICKHOUSE_USER", "byo_user")
+        monkeypatch.setenv("CLICKHOUSE_PASSWORD", "byo_pass")
+        monkeypatch.setenv("CLICKHOUSE_SECURE", "true")
+
+        verify.client()
+
+        assert captured["username"] == "byo_user"
+        assert captured["password"] == "byo_pass"
+        assert captured["secure"] is True
+
+    def test_verify_client_defaults_match_the_local_stack(self, monkeypatch) -> None:
+        """The completeness fix must not change behavior for `make verify`
+        against the local stack -- default user, blank password, plain HTTP."""
+        from scripts import verify
+
+        captured: dict[str, object] = {}
+
+        def fake_get_client(**kwargs: object):
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setattr(verify.clickhouse_connect, "get_client", fake_get_client)
+        for var in ("CLICKHOUSE_USER", "CLICKHOUSE_PASSWORD", "CLICKHOUSE_SECURE"):
+            monkeypatch.delenv(var, raising=False)
+
+        verify.client()
+
+        assert captured["username"] == "default"
+        assert captured["password"] == ""
+        assert captured["secure"] is False
+
+
 class TestGenericFilters:
     """The browser receives a catalog, while SQL receives only bound values."""
 

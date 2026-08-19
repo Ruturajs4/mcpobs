@@ -1,7 +1,7 @@
 PY := .venv/Scripts/python.exe
 COMPOSE := docker compose
 
-.PHONY: browser docs docs-build sdk sdk-check help up down demo verify attrs lag logs ps clean test lint typecheck check freshness traces metrics deferred rollups devkeys invite archive up-lite down-lite devkeys-lite
+.PHONY: browser docs docs-build sdk sdk-check help up down demo verify attrs lag logs ps clean test lint typecheck check freshness traces metrics deferred rollups devkeys invite archive up-lite down-lite devkeys-lite up-byo down-byo
 
 help:
 	@echo "up        - start clickhouse + kafka + collector + normalizer"
@@ -9,6 +9,8 @@ help:
 	@echo "up-lite       - start the lite (self-host) stack: no kafka/collector/redis/minio"
 	@echo "down-lite     - stop the lite stack (keeps volumes)"
 	@echo "devkeys-lite  - provision dev org + API keys against the lite stack's Postgres"
+	@echo "up-byo        - start ingest+query only, against a database YOU provide (.env required)"
+	@echo "down-byo      - stop the bring-your-own-database stack"
 	@echo "demo      - run the MCP tool scenarios over both transports"
 	@echo "verify    - run the A1-A9 acceptance assertions (needs the stack)"
 	@echo "test      - unit tests (no stack required)"
@@ -62,6 +64,18 @@ down-lite:
 # included -- publishes Postgres on 5433. Not relying on that default here.
 devkeys-lite:
 	@CONTROL_PLANE_DSN=postgresql://mcpobs:mcpobs@localhost:5433/mcpobs_control $(PY) scripts/admin.py devkeys
+
+# No database containers, so no wait-for-postgres step here -- CONTROL_PLANE_DSN
+# and CLICKHOUSE_* must already point at something reachable. Reads a `.env`
+# file at the repo root (docker compose's own convention) or exported shell
+# vars; docker-compose.byo-db.yml refuses to start with any of them unset.
+up-byo:
+	$(COMPOSE) -f docker-compose.byo-db.yml up -d --build
+	@echo "waiting for ingest + query against your database..."
+	$(PY) scripts/wait_ready.py --lite
+
+down-byo:
+	$(COMPOSE) -f docker-compose.byo-db.yml down
 
 # Both targets provision their own keys first. Ingest is authenticated now,
 # so a demo run without a key is a wall of 401s -- and `devkeys` is
