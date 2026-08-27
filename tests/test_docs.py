@@ -1,0 +1,447 @@
+"""The customer documentation must not publish internal engineering documents.
+
+The mechanism is now STRUCTURAL: customer pages live in `docs-public/`, which is
+MkDocs' `docs_dir`, and internal engineering documents live in `docs/`, which
+MkDocs never reads. A file cannot be published if it is not in the tree.
+
+It used to be a maintained list (`exclude_docs:`), and before that the obvious
+guard, which does not work at all: leaving a file out of `nav` only removes its
+sidebar link. Measured before relying on it -- a non-nav file was still rendered
+to `site/<name>/index.html` and its full text written into
+`search/search_index.json`, so searching the published docs for "alpha" returned
+"not ready for a customer-facing alpha".
+
+That matters because the internal set is a security document:
+`alpha-readiness.md` enumerates unpatched weaknesses and `deferred.md` lists
+known gaps, so publishing either hands an attacker a prioritised checklist.
+
+So these tests assert two things a directory split does not give for free:
+that no internal file has DRIFTED into `docs-public/`, and that the BUILT SITE
+contains none of their text. A boundary is a promise; the artefact is evidence.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+import yaml
+
+ROOT = Path(__file__).parents[1]
+CONFIG = ROOT / "mkdocs.yml"
+DOCS = ROOT / "docs"            # internal engineering documents
+PUBLIC = ROOT / "docs-public"   # MkDocs docs_dir -- customer facing only
+
+#: `docs/` is gitignored in the public repo -- it names the private
+#: control-plane package and lists unpatched weaknesses, so it never leaves
+#: a maintainer's machine. A fresh clone (including CI) has no `docs/` at
+#: all, which is the point, not a gap: the tests that need its CONTENT to
+#: check the boundary skip rather than fail. The tests that check
+#: `docs-public/` and `mkdocs.yml` on their own need no such skip and keep
+#: running -- that half of the guard holds with or without `docs/` present.
+DOCS_AVAILABLE = DOCS.is_dir()
+
+#: Files that must never reach a customer. Named individually rather than
+#: matched by pattern: a new internal document should fail this test loudly
+#: until someone decides which side of the line it is on.
+INTERNAL_FILES = {
+    "Architecture.md",
+    "decisions.md",
+    "deferred.md",
+    "alpha-readiness.md",
+    "Day_01_Engineering_Doc_MCP_Observability.md",
+    "Day_02_Engineering_Doc_MCP_Observability.md",
+    "observed_attributes.md",
+}
+
+#: Phrases that exist only in the internal documents. Checked against the built
+#: site so the assertion survives a file being renamed -- excluding
+#: `alpha-readiness.md` by name does nothing if its contents move to
+#: `readiness.md` and someone forgets to update the list.
+INTERNAL_PHRASES = (
+    "not ready for an external alpha",
+    "Release blockers",
+    "run as root",
+    "no tenant isolation",
+    "DF-19",
+)
+
+
+def _config() -> dict:
+    # MkDocs uses `!!python/name:` tags that SafeLoader rejects, and those tags
+    # are the reason this cannot simply use yaml.safe_load. Only the keys this
+    # test cares about are read, so an unknown tag is stubbed rather than
+    # executed -- the file is never evaluated.
+    class Loader(yaml.SafeLoader):
+        pass
+
+    Loader.add_multi_constructor(
+        "tag:yaml.org,2002:python/name:", lambda loader, suffix, node: suffix
+    )
+    Loader.add_multi_constructor("!!python/name:", lambda loader, suffix, node: suffix)
+    return yaml.load(CONFIG.read_text(encoding="utf-8"), Loader=Loader)
+
+
+def _nav_targets(nav: object, out: set[str] | None = None) -> set[str]:
+    out = set() if out is None else out
+    if isinstance(nav, str):
+        out.add(nav)
+    elif isinstance(nav, list):
+        for item in nav:
+            _nav_targets(item, out)
+    elif isinstance(nav, dict):
+        for value in nav.values():
+            _nav_targets(value, out)
+    return out
+
+
+class TestInternalDocsAreExcluded:
+    @pytest.mark.skipif(not DOCS_AVAILABLE, reason="docs/ is gitignored in the public repo")
+    def test_every_canary_phrase_still_appears_in_an_internal_doc(self) -> None:
+        """A phrase that matches nothing protects nothing.
+
+        Rewriting `alpha-readiness.md` changed "not ready for a customer-facing
+        alpha" to "not ready for an external alpha", which silently disarmed
+        that canary -- the leak test kept passing because it was searching the
+        built site for a string that no longer existed anywhere. Editing an
+        internal document must not be able to weaken the guard on it.
+        """
+        corpus = "\n".join(
+            (DOCS / f).read_text(encoding="utf-8", errors="ignore")
+            for f in INTERNAL_FILES
+            if (DOCS / f).exists()
+        )
+        dead = [p for p in INTERNAL_PHRASES if p not in corpus]
+        assert not dead, (
+            f"canary phrases matching no internal document: {dead}. "
+            "They would never detect a leak. Replace them with text that is "
+            "actually in the file you are trying to protect."
+        )
+
+
+    def test_the_public_tree_is_the_docs_dir(self) -> None:
+        """The split only protects anything if MkDocs reads the public tree."""
+        assert _config().get("docs_dir") == "docs-public"
+
+    def test_no_internal_file_has_drifted_into_the_public_tree(self) -> None:
+        """The one way the directory split can still fail.
+
+        Nothing stops someone adding `deferred.md` to `docs-public/` -- and
+        because it would then be a normal page in the docs_dir, it would publish
+        with no warning at all.
+        """
+        strays = {f for f in INTERNAL_FILES if (PUBLIC / f).exists()}
+        assert not strays, (
+            f"{sorted(strays)} are in docs-public/, which IS the published tree. "
+            "Internal documents belong in docs/."
+        )
+
+    def test_no_internal_document_text_is_in_the_public_tree(self) -> None:
+        """Catches the copy that a filename check cannot.
+
+        A section pasted into a customer page publishes just as completely as
+        the whole file, and under a name this list would never flag.
+        """
+        hits = {}
+        for path in PUBLIC.rglob("*.md"):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for phrase in INTERNAL_PHRASES:
+                if phrase in text:
+                    hits.setdefault(phrase, []).append(str(path.relative_to(PUBLIC)))
+        assert not hits, f"internal text found in public pages: {hits}"
+
+    def test_no_internal_file_is_referenced_by_the_nav(self) -> None:
+        targets = _nav_targets(_config().get("nav", []))
+        assert not (targets & INTERNAL_FILES)
+
+    def test_the_nav_is_an_explicit_list(self) -> None:
+        """A glob would publish whatever lands in `docs/` next."""
+        assert _config().get("nav"), "nav must be declared, never inferred"
+
+    @pytest.mark.skipif(not DOCS_AVAILABLE, reason="docs/ is gitignored in the public repo")
+    def test_every_internal_file_still_exists(self) -> None:
+        """Guards the guard.
+
+        If someone renames `deferred.md`, this fails and forces the rename to be
+        reflected here -- rather than the exclusion silently protecting a file
+        that no longer exists while the renamed one publishes.
+        """
+        missing = {f for f in INTERNAL_FILES if not (DOCS / f).exists()}
+        assert not missing, (
+            f"{sorted(missing)} no longer exist. If they were renamed, update "
+            "INTERNAL_FILES and mkdocs.yml -- the exclusion is now protecting "
+            "nothing."
+        )
+
+
+def _mkdocs_available() -> bool:
+    """Whether `python -m mkdocs` will run.
+
+    Gating on `shutil.which("mkdocs")` looked equivalent and was not: the
+    console script is not on PATH in a venv-invoked test run, so these tests
+    skipped silently while appearing green -- a guard that protects nothing but
+    reports success is worse than no guard.
+    """
+    return importlib.util.find_spec("mkdocs") is not None
+
+
+@pytest.mark.skipif(not _mkdocs_available(), reason="mkdocs not installed")
+class TestBuiltSiteIsClean:
+    """The artefact, not the config."""
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def site(tmp_path_factory: pytest.TempPathFactory) -> Path:
+        out = tmp_path_factory.mktemp("site")
+        subprocess.run(
+            [sys.executable, "-m", "mkdocs", "build", "--site-dir", str(out)],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+        )
+        return out
+
+    def test_no_internal_page_was_rendered(self, site: Path) -> None:
+        published = {p.parent.name for p in site.rglob("index.html")}
+        leaked = {f for f in INTERNAL_FILES if f.removesuffix(".md") in published}
+        assert not leaked, f"{sorted(leaked)} were published to the site"
+
+    def test_no_internal_phrase_appears_anywhere(self, site: Path) -> None:
+        """Including the search index, which is where the first leak was found."""
+        hits: dict[str, list[str]] = {}
+        for path in site.rglob("*"):
+            if not path.is_file() or path.suffix not in (".html", ".json", ".txt", ".xml"):
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for phrase in INTERNAL_PHRASES:
+                if phrase in text:
+                    hits.setdefault(phrase, []).append(str(path.relative_to(site)))
+        assert not hits, f"internal phrases reached the built site: {hits}"
+
+    def test_no_internal_cross_references_in_the_sdk_reference(self, site: Path) -> None:
+        """Docstrings become customer documentation the moment they are published.
+
+        `mcpobs/__init__.py` cited "(V2 §18.2)" -- a design document the reader
+        has no access to. Engineers will keep writing docstrings for engineers,
+        so this fails the build rather than relying on anyone remembering that
+        this particular package is public.
+        """
+        import re
+
+        page = (site / "reference" / "sdk" / "index.html").read_text(
+            encoding="utf-8", errors="ignore"
+        )
+        patterns = {
+            "internal spec citation": r"V2 (?:§|&#167;)",
+            "ADR reference": r"\bADR-\d",
+            "deferral id": r"\bDF-\d",
+            "decision id": r"\(D\d{1,3}[),]",
+        }
+        found = {
+            label: re.findall(pattern, page)[:3]
+            for label, pattern in patterns.items()
+            if re.search(pattern, page)
+        }
+        assert not found, (
+            f"internal cross-references reached the SDK reference: {found}. "
+            "Rewrite the docstring so it stands alone for a customer."
+        )
+
+
+class TestPublicDocsAreForCustomers:
+    """The published pages must not tell a customer to run our operator tools.
+
+    `scripts/admin.py` is how WE issue keys: it needs the repository and direct
+    database access, neither of which a customer has. It was removed from the
+    sign-in page as pre-authentication disclosure and then written back into a
+    customer page -- the same mistake, one surface over.
+    """
+
+    #: `make up` and `make devkeys` are NOT here: the quickstart is a
+    #: self-hosting guide and they are the right instruction on that page. The
+    #: admin CLI is different -- it needs direct database access, and no
+    #: customer runs it on either deployment model.
+    OPERATOR_ONLY = (
+        "scripts/admin.py",
+        ".mcpobs-keys.env",
+    )
+
+    def test_no_operator_tooling_is_named(self) -> None:
+        hits: dict[str, list[str]] = {}
+        for path in PUBLIC.rglob("*.md"):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for needle in self.OPERATOR_ONLY:
+                if needle in text:
+                    hits.setdefault(needle, []).append(str(path.relative_to(PUBLIC)))
+        assert not hits, (
+            f"customer docs name operator-only tooling: {hits}. A customer has "
+            "neither the repository nor database access to run it."
+        )
+
+
+class TestSdkPackaging:
+    """The SDK is published to PyPI; the rest of this repository is not.
+
+    `normalizer/`, `query/`, `ingest/`, `control/` and `archiver/` deploy as
+    container images. Only `mcpobs/` becomes a distribution -- and a publish
+    cannot be undone, because PyPI refuses to re-upload a version even after it
+    is deleted. So the shape of what ships is asserted here rather than checked
+    at the moment it is irreversible.
+    """
+
+    SERVER_PACKAGES = (
+        "control", "normalizer", "query", "ingest", "archiver", "demo_server",
+    )
+
+    def test_the_sdk_imports_nothing_from_the_server(self) -> None:
+        """The property that makes it publishable at all.
+
+        It holds today. It would stop holding the first time someone reached for
+        a constant that happens to live in `normalizer/` -- and the symptom would
+        be an ImportError for the first customer, not for us, because every
+        server module is importable from a checkout.
+        """
+        import re
+
+        offenders = {}
+        for path in (ROOT / "mcpobs").glob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            for match in re.finditer(
+                r"^\s*(?:from|import)\s+(\w+)", text, re.MULTILINE
+            ):
+                if match.group(1) in self.SERVER_PACKAGES:
+                    offenders.setdefault(path.name, set()).add(match.group(1))
+        assert not offenders, (
+            f"the SDK imports server code: {offenders}. It would install but not "
+            "import for a customer, who has only this package."
+        )
+
+    def test_the_package_declares_the_name_that_is_free_on_pypi(self) -> None:
+        """`mcp-observability` is taken on PyPI by an unrelated publisher.
+
+        Checked before choosing rather than at upload, because discovering a name
+        collision during `twine upload` is discovering it in public.
+        """
+        import tomllib
+
+        config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        assert config["project"]["name"] == "mcpobs"
+
+    def test_the_typing_marker_exists(self) -> None:
+        """`Typing :: Typed` is a claim, and without py.typed it is a false one:
+        mypy in a customer's project ignores an installed package's annotations
+        unless the marker ships."""
+        import tomllib
+
+        config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        if "Typing :: Typed" in config["project"]["classifiers"]:
+            assert (ROOT / "mcpobs" / "py.typed").exists()
+
+    def test_optional_dependencies_stay_optional(self) -> None:
+        """Importing `mcpobs` must not require the OTLP exporter or httpx.
+
+        A customer exporting through their own pipeline should not be made to
+        install ours. This is enforced by `__init__.py` not importing
+        `mcpobs.exporter`, which is easy to undo by adding one convenience
+        re-export.
+        """
+        init = (ROOT / "mcpobs" / "__init__.py").read_text(encoding="utf-8")
+        assert "from mcpobs.exporter" not in init
+        assert "import httpx" not in init
+
+    def test_the_sessions_extra_is_named_wherever_the_session_path_is_taught(
+        self,
+    ) -> None:
+        """The other half of `test_optional_dependencies_stay_optional`.
+
+        That test keeps the exporter and httpx OUT of the core install. Doing so
+        creates an obligation on the docs, because the cost lands on whoever
+        follows the session-token page. Measured on a clean `pip install mcpobs`
+        of 0.1.0 against a REACHABLE endpoint serving a valid response,
+        `SessionProvider.current()` returns None and nothing is ever exported.
+
+        The SDK is not silent about it -- it writes to stderr:
+
+            [mcpobs] session endpoint unreachable (No module named 'httpx');
+                     telemetry paused, retrying
+
+        But the message leads with "unreachable" while the cause is in the
+        parenthesis, so it points a reader at their endpoint, their auth and
+        their network rather than at their install line. A page that teaches this
+        path without naming the extra leaves that misdirection as the only clue.
+
+        (Isolating this took two wrong probes: `headers()` returns the headers
+        used to authenticate TO the customer's endpoint, so its empty dict is
+        correct in every install and proves nothing; and an unreachable test
+        endpoint produces the same None as a missing dependency. Only a reachable
+        endpoint separates the two causes.)
+        """
+        page = PUBLIC / "operate" / "session-tokens.md"
+        text = page.read_text(encoding="utf-8")
+        assert "session_endpoint" in text, (
+            "this guard assumes session-tokens.md teaches the session path; "
+            "if that moved, point the test at the page that teaches it now"
+        )
+        assert "mcpobs[sessions]" in text, (
+            f"{page.relative_to(ROOT)} teaches the session path but never names "
+            "the `mcpobs[sessions]` extra. A reader following it with plain "
+            "`pip install mcpobs` gets silent, unlogged telemetry loss."
+        )
+
+
+
+
+class TestLiteDeploymentDocIsHonest:
+    """The lite doc must name what it drops, not just what it adds.
+
+    Mirrors TestSdkPackaging's sessions-extra guard: a doc that only lists
+    lite's benefits (four containers, less RAM) while staying silent about
+    the real trade -- no replay, no long-retention archive -- leaves a
+    self-hoster to discover the gap themselves, which is exactly the
+    disclosure failure this project has treated as a bug everywhere else
+    (docs/decisions.md's D17 reversal, the session-token warning, the
+    console's own capture labels).
+    """
+
+    def test_the_page_exists_and_is_in_the_nav(self) -> None:
+        page = PUBLIC / "get-started" / "lite.md"
+        assert page.exists(), "docs-public/get-started/lite.md is missing"
+        mkdocs_config = (ROOT / "mkdocs.yml").read_text(encoding="utf-8")
+        assert "get-started/lite.md" in mkdocs_config, (
+            "lite.md exists but is not in mkdocs.yml's nav -- reachable by "
+            "URL, absent from the index (strict: true only catches a nav "
+            "entry pointing at a MISSING file, not a file missing from nav)"
+        )
+
+    def test_the_page_names_what_it_drops(self) -> None:
+        text = (PUBLIC / "get-started" / "lite.md").read_text(encoding="utf-8")
+        # Not exact phrases -- the point is the CONCEPT is named somewhere,
+        # not that the prose matches a specific sentence.
+        must_mention = {
+            "replay": ["replay"],
+            "archive/retention": ["archive", "retention"],
+            "ack boundary / durability trade": ["ack boundary", "durab"],
+        }
+        missing = [
+            concept
+            for concept, needles in must_mention.items()
+            if not any(needle in text.lower() for needle in needles)
+        ]
+        assert not missing, (
+            f"docs-public/get-started/lite.md never mentions: {missing}. "
+            "A page that only lists what lite mode ADDS (fewer containers, "
+            "less RAM) without naming what it REMOVES is a worse guide than "
+            "no guide -- see the sessions-extra guard above for the same "
+            "argument applied to the session-token page."
+        )
+
+    def test_the_port_collision_with_the_full_stack_is_disclosed(self) -> None:
+        """Measured while building this: docker-compose.lite.yml reuses the
+        full stack's host ports on purpose, and running both at once fails
+        confusingly rather than refusing cleanly. Silent about it, this is
+        exactly the kind of thing a reader discovers by hitting it."""
+        text = (PUBLIC / "get-started" / "lite.md").read_text(encoding="utf-8")
+        assert "make down" in text or "cannot run alongside" in text.lower()

@@ -1,0 +1,91 @@
+# Collector gateway -- the production ingress (Architecture.md ADR-003).
+# It authenticates, stamps trusted tenant metadata, batches, and produces to
+# Kafka. It performs NO analytics and never touches ClickHouse.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 75
+    spike_limit_percentage: 15
+
+  # NO tenant stamping here any more. The ingest gateway does it, from the
+  # authenticated API key, before the payload ever reaches this process
+  # (ingest/app.py).
+  #
+  # Two processes writing the same attribute is a race with a silent winner:
+  # this one used to `upsert` tenant.id = local, which would now OVERWRITE the
+  # authenticated tenant and collapse every customer back into one. Deleting it
+  # is the fix -- a "fallback" default would do exactly the same damage whenever
+  # the gateway was bypassed, which is precisely when you least want it.
+  #
+  # A payload arriving here with no tenant is therefore UNTENANTED and stays
+  # that way. That is intended: it is what an unauthenticated bypass looks like,
+  # and it should be visible rather than papered over with a default.
+
+  batch:
+    timeout: 1s
+    send_batch_size: 512
+    send_batch_max_size: 2048
+
+exporters:
+  kafka:
+    brokers: [kafka:9092]
+    topic: otlp.spans.raw
+    encoding: otlp_proto          # never transcode to JSON
+    # ADR-004: partition by tenant, NOT by trace. Keying by trace would explode
+    # every OTLP batch into per-trace messages.
+    partition_traces_by_id: false
+    producer:
+      required_acks: -1           # acks=all -- THE ack boundary (ADR-008)
+      compression: zstd
+      max_message_bytes: 10000000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+    sending_queue:
+      enabled: true
+      queue_size: 1000
+
+  debug:
+    verbosity: normal             # raise to `detailed` for T3-style inspection
+
+  # Self-telemetry sink. Prometheus rather than another storage system: these
+  # are OUR operational metrics, and the point of separating them from the
+  # traces pipeline is that an outage which breaks ingestion must not also
+  # blind us to it (V2 §19).
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion:
+      enabled: true
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [kafka, debug]
+
+    # SEPARATE from traces on purpose. Our own metrics never touch Kafka, never
+    # touch a customer tenant, and survive a ClickHouse or Kafka outage -- which
+    # is exactly when we need them most.
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]
+  telemetry:
+    logs:
+      level: info

@@ -1,0 +1,5 @@
+# Split out of requirements.txt for the lite (non-Kafka) deployment mode.
+# confluent-kafka pulls in librdkafka -- real weight that only `consumer.py`
+# needs. `ingest/Dockerfile.lite` installs requirements.txt without this file;
+# `normalizer/Dockerfile` installs both.
+confluent-kafka==2.15.0

@@ -1,0 +1,460 @@
+@font-face {
+  font-family: "MCP Inter";
+  src: url("/static/fonts/inter-variable.woff2") format("woff2-variations");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "MCP Mono";
+  src: url("/static/fonts/jetbrains-mono-regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "MCP Mono";
+  src: url("/static/fonts/jetbrains-mono-semibold.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+}
+
+/* ---------------------------------------------------------------------------
+   Design tokens. Dark-first, in the SigNoz idiom (V2 §14.7): near-black ground,
+   a single blue accent, and status colour reserved for status ONLY -- never
+   decoration. An operator scanning this at 3am must be able to trust that a red
+   pixel means something is wrong.
+--------------------------------------------------------------------------- */
+:root {
+  --bg: #0b0c0e; --panel: #121419; --raised: #171a20;
+  --border: #23262e; --border-lo: #1a1d23;
+  --text: #e6e8ec; --text-dim: #9aa1ad; --text-mute: #6b7280;
+  --accent: #4e74f8; --accent-dim: #2c3f80;
+  --ok: #22c55e; --warn: #f59e0b; --err: #ef4444;
+  --purple: #a855f7; --cyan: #06b6d4; --pink: #ec4899;
+  --mono: "MCP Mono", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: "MCP Inter", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --r: 6px;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 13px/1.5 var(--sans); font-optical-sizing: auto;
+  font-feature-settings: "liga" 1, "calt" 1; letter-spacing: -0.005em;
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+
+/* --------------------------------------------------------------- layout */
+.app { display: grid; grid-template-columns: 208px 1fr; height: 100vh; }
+.side { background: var(--panel); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; overflow: hidden; }
+.brand { padding: 16px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 9px; }
+.brand .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok);
+  box-shadow: 0 0 10px var(--ok); flex: none; }
+.brand h1 { margin: 0; font-size: 13.5px; font-weight: 650; letter-spacing: -0.025em; }
+.brand .sub { font-size: 10px; color: var(--text-mute); font-family: var(--mono); }
+
+nav { padding: 8px; display: flex; flex-direction: column; gap: 1px; overflow-y: auto; }
+nav a { padding: 7px 10px; border-radius: var(--r); color: var(--text-dim);
+  font-size: 12.5px; display: flex; align-items: center; gap: 9px; cursor: pointer;
+  transition: background .12s, color .12s; }
+nav a:hover { background: var(--raised); color: var(--text); }
+nav a.on { background: var(--accent-dim); color: #fff; }
+nav a .ic { width: 14px; text-align: center; opacity: .85; font-size: 12px; }
+nav .grp { padding: 13px 10px 5px; font-size: 10px; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--text-mute); font-weight: 600; }
+
+/* The sidebar footer answers two different questions and they are separated
+   accordingly: "is what I am looking at current?" (status) and "is the pipeline
+   healthy?" (stats). Mixing them in one column of 10px mono made both
+   unreadable, which is what they were before. */
+.side-foot { margin-top: auto; padding: 12px 14px; border-top: 1px solid var(--border);
+  font-size: 11px; color: var(--text-mute);
+  display: flex; flex-direction: column; gap: 12px; }
+
+.foot-status { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+/* Green when refreshing, amber when paused. The colour carries the state so the
+   word beside it is confirmation rather than the only signal. */
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok);
+  box-shadow: 0 0 8px var(--ok); flex: none; }
+.live-dot.paused { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+#foot-updated { flex: 1; min-width: 0; }
+
+#refresh-now { background: var(--raised); border: 1px solid var(--border);
+  border-radius: 4px; color: var(--text-dim); font-size: 11px; cursor: pointer;
+  padding: 3px 9px; font-family: inherit; }
+#refresh-now:hover { border-color: var(--accent); color: var(--text); }
+
+/* A label above each number, because "19.9s" alone is not a fact anyone can
+   act on. The full explanation is on hover rather than in the sidebar, which
+   has no room for a sentence. */
+.foot-stats { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.foot-stats > div { display: flex; justify-content: space-between; align-items: baseline;
+  gap: 8px; cursor: help; border-bottom: 1px dotted transparent; }
+.foot-stats > div:hover { border-bottom-color: var(--border); }
+.foot-stats dt { color: var(--text-mute); }
+.foot-stats dd { margin: 0; font-family: var(--mono); color: var(--text-dim); }
+
+/* The admin footer pairs sign-out with a link to the customer console; both are
+   navigation away from here, so they share one separated block. */
+.foot-actions { display: flex; flex-direction: column; gap: 8px;
+  border-top: 1px solid var(--border-lo); padding-top: 8px; }
+.foot-actions .link-out { color: var(--text-mute); text-decoration: none; font-size: 11px; }
+.foot-actions .link-out:hover { color: var(--accent); }
+.foot-actions #sign-out { border-top: 0; padding-top: 0; }
+
+#sign-out { background: none; border: 0; border-top: 1px solid var(--border-lo);
+  padding: 8px 0 0; margin: 0; color: var(--text-mute); font-size: 11px;
+  font-family: inherit; cursor: pointer; text-align: left; }
+#sign-out:hover { color: var(--err); }
+
+.main { display: flex; flex-direction: column; overflow: hidden; }
+.top { height: 52px; flex: none; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 14px; padding: 0 20px; background: var(--panel); }
+.top h2 { margin: 0; font-size: 14.5px; font-weight: 650; letter-spacing: -0.02em; }
+.top .spacer { flex: 1; }
+/* Between the header and the scrolling list: `flex: none` so it never scrolls
+   away. Filters you cannot see are filters you forget are applied, and a list
+   silently narrowed by an off-screen control is how people conclude their data
+   is missing. Empty views collapse it to nothing via :empty. */
+.filters { flex: none; padding: 0 20px; }
+.filters:empty { display: none; }
+.content { flex: 1; overflow-y: auto; padding: 20px; }
+
+.range { display: flex; background: var(--raised); border: 1px solid var(--border);
+  border-radius: var(--r); overflow: hidden; }
+.range button { background: none; border: 0; color: var(--text-dim); padding: 5px 11px;
+  font: inherit; font-size: 12px; cursor: pointer; border-right: 1px solid var(--border-lo); }
+.range button:last-child { border-right: 0; }
+.range button:hover { color: var(--text); background: #1e2129; }
+.range button.on { background: var(--accent); color: #fff; }
+
+/* ---------------------------------------------------------------- cards */
+.grid { display: grid; gap: 12px; }
+.g4 { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+.card .lbl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text-mute); font-weight: 600; margin-bottom: 7px; }
+.card .big { font-size: 27px; font-weight: 620; letter-spacing: -0.035em; font-variant-numeric: tabular-nums; }
+.card .sub { font-size: 11.5px; color: var(--text-dim); margin-top: 3px; }
+
+.panel { background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; overflow: hidden; margin-top: 12px; }
+.panel > header { padding: 11px 16px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 10px; }
+.panel > header h3 { margin: 0; font-size: 12.5px; font-weight: 600; }
+.panel > header .note { font-size: 11px; color: var(--text-mute); margin-left: auto; }
+
+.tabs { display: flex; align-items: center; gap: 6px; }
+.tab { background: var(--panel); border: 1px solid var(--border); color: var(--text-dim);
+  padding: 6px 13px; border-radius: var(--r); font: inherit; font-size: 12.5px; cursor: pointer; }
+.tab:hover { color: var(--text); background: var(--raised); }
+.tab.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tabs .note { margin-left: auto; font-size: 11px; color: var(--text-mute); }
+
+/* "Show N more" under the waterfall. Quiet: it is a continuation, not an
+   action with consequences. */
+.wf-more { display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+  border-top: 1px solid var(--border-lo); }
+.wf-more button { background: var(--raised); border: 1px solid var(--border);
+  border-radius: var(--r); color: var(--text-dim); font: inherit; font-size: 12px;
+  padding: 5px 12px; cursor: pointer; }
+.wf-more button:hover { border-color: var(--accent); color: var(--text); }
+.wf-more .mute { font-size: 11.5px; color: var(--text-mute); }
+
+/* Transport tag. Deliberately quieter than a status badge -- the transport is
+   context, not a verdict, and status colour is reserved for status only. */
+.tag { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 10.5px;
+  font-family: var(--mono); border: 1px solid var(--border); color: var(--text-dim);
+  background: var(--raised); white-space: nowrap; }
+.tag.t-stdio { border-color: #4e74f855; color: #93aaff; background: #4e74f814; }
+.tag.t-http  { border-color: #06b6d455; color: #67d9ea; background: #06b6d414; }
+
+/* --------------------------------------------------------------- tables */
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--text-mute); font-weight: 600; padding: 9px 16px;
+  border-bottom: 1px solid var(--border); white-space: nowrap; }
+td { padding: 9px 16px; border-bottom: 1px solid var(--border-lo); font-size: 12.5px; vertical-align: middle; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr.click { cursor: pointer; }
+tbody tr.click:hover { background: var(--raised); }
+tbody tr.sel { background: var(--accent-dim); }
+tbody tr.sel td { border-bottom-color: transparent; }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.mono { font-family: var(--mono); font-size: 11.5px; }
+.num, .mono, code, pre { font-variant-ligatures: none; letter-spacing: -0.015em; }
+.dim { color: var(--text-dim); } .mute { color: var(--text-mute); }
+
+/* --------------------------------------------------------------- badges */
+.badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px;
+  border-radius: 20px; font-size: 11px; font-weight: 500; white-space: nowrap;
+  border: 1px solid transparent; }
+.badge::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.b-ok { color: var(--ok); background: #22c55e18; border-color: #22c55e33; }
+.b-tool { color: var(--warn); background: #f59e0b18; border-color: #f59e0b33; }
+.b-server { color: var(--err); background: #ef444418; border-color: #ef444433; }
+.b-unknown { color: var(--purple); background: #a855f718; border-color: #a855f733; }
+.b-args { color: var(--cyan); background: #06b6d418; border-color: #06b6d433; }
+.b-proto { color: var(--pink); background: #ec489918; border-color: #ec489933; }
+.b-pending { color: var(--text-dim); background: #9aa1ad14; border-color: #9aa1ad33; }
+.b-none { color: var(--text-mute); background: transparent; border-color: var(--border); }
+
+.dist { display: flex; height: 5px; border-radius: 3px; overflow: hidden;
+  background: var(--border-lo); min-width: 90px; }
+.dist i { display: block; height: 100%; }
+
+/* ---------------------------------------------------------------- drawer */
+.scrim { position: fixed; inset: 0; background: #0006; opacity: 0; pointer-events: none;
+  transition: opacity .18s; z-index: 40; }
+.drawer.open ~ .scrim, body:has(.drawer.open) .scrim { opacity: 1; pointer-events: auto; }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(62%, 1000px);
+  background: var(--panel); border-left: 1px solid var(--border);
+  box-shadow: -18px 0 40px #0007; transform: translateX(100%);
+  transition: transform .2s cubic-bezier(.4, 0, .2, 1); z-index: 50;
+  display: flex; flex-direction: column; }
+.drawer.open { transform: none; }
+.drawer-body { flex: 1; overflow-y: auto; }
+.dr-close { position: absolute; top: 12px; right: 14px; z-index: 2;
+  background: var(--raised); border: 1px solid var(--border); color: var(--text-dim);
+  width: 26px; height: 26px; border-radius: var(--r); cursor: pointer; font-size: 12px; }
+.dr-close:hover { color: var(--text); background: #22262f; }
+
+.dr-head { padding: 16px 18px 0; border-bottom: 1px solid var(--border); }
+.dr-title { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.dr-title strong { font-size: 14px; }
+.kv { display: flex; gap: 22px; flex-wrap: wrap; padding-bottom: 13px; }
+.kv div { display: flex; flex-direction: column; gap: 3px; }
+.kv .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--text-mute); font-weight: 600; }
+.kv .v { font-size: 13px; font-family: var(--mono); }
+
+/* ------------------------------------------------------------ waterfall */
+.wf-head { display: grid; grid-template-columns: 300px 84px 1fr; gap: 14px;
+  padding: 8px 18px; border-bottom: 1px solid var(--border);
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--text-mute); font-weight: 600; }
+.axis { display: flex; justify-content: space-between; font-family: var(--mono);
+  font-size: 9.5px; text-transform: none; letter-spacing: 0; }
+.wf-row { display: grid; grid-template-columns: 300px 84px 1fr; gap: 14px;
+  align-items: center; padding: 0 18px; border-bottom: 1px solid var(--border-lo);
+  min-height: 34px; cursor: pointer; transition: background .1s; }
+.wf-row:hover { background: var(--raised); }
+.wf-row.sel { background: #1b2136; box-shadow: inset 2px 0 0 var(--accent); }
+.wf-name { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.wf-name .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.wf-name .rail { flex: none; width: 11px; height: 10px; margin: -10px 0 0 -3px;
+  border-left: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  border-bottom-left-radius: 3px; }
+.rootmark { font-size: 9.5px; flex: none; }
+/* Status at a glance: finding the failing span in a deep trace should not
+   require reading every row. */
+.dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.d-ok { background: var(--ok); } .d-err { background: var(--err); }
+.d-none { background: var(--text-mute); opacity: .4; }
+/* What the span actually did, inline -- so "where did the time go" is
+   answerable without opening every span in turn. */
+.fact { font-family: var(--mono); font-size: 10px; color: var(--text-mute);
+  border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; flex: none; }
+
+.wf-kind { font-size: 9.5px; padding: 1px 5px; border-radius: 3px; font-family: var(--mono);
+  text-transform: uppercase; letter-spacing: .04em; border: 1px solid; flex: none; }
+.k-mcp { color: var(--accent); border-color: #4e74f855; background: #4e74f814; }
+.k-http { color: var(--cyan); border-color: #06b6d455; background: #06b6d414; }
+.k-db { color: var(--warn); border-color: #f59e0b55; background: #f59e0b14; }
+.k-llm { color: var(--purple); border-color: #a855f755; background: #a855f714; }
+.k-int { color: var(--text-mute); border-color: var(--border); }
+
+.wf-track { position: relative; height: 18px; background: var(--border-lo); border-radius: 3px; }
+.wf-bar { position: absolute; top: 0; height: 18px; border-radius: 3px; min-width: 2px;
+  display: flex; align-items: center; padding: 0 5px; overflow: hidden; opacity: .55; }
+/* Self-time as a solid inner segment against a faded total: the difference
+   between "this span is slow" and "this span waits on something slow". */
+.wf-bar .self { position: absolute; left: 0; top: 0; bottom: 0;
+  background: inherit; opacity: 1; border-radius: 3px; }
+.wf-bar span { font-size: 10px; font-family: var(--mono); color: #fff;
+  white-space: nowrap; position: relative; z-index: 1; }
+.bar-mcp { background: #4e74f8; } .bar-http { background: #06b6d4; }
+.bar-db { background: #f59e0b; } .bar-llm { background: #a855f7; }
+.bar-int { background: #3f444f; } .bar-err { background: #ef4444; }
+
+/* --------------------------------------------------------- span detail */
+.detail { padding: 16px 18px 40px; border-top: 1px solid var(--border); background: var(--bg); }
+.detail-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.detail-head strong { font-size: 13.5px; }
+
+.err-block { background: #ef444410; border: 1px solid #ef444438; border-radius: var(--r);
+  margin-bottom: 16px; overflow: hidden; }
+.err-head { padding: 8px 12px; border-bottom: 1px solid #ef444430; font-size: 11px;
+  font-weight: 600; color: #fca5a5; display: flex; align-items: center; gap: 10px; }
+.err-head .note { font-weight: 400; color: var(--text-mute); font-size: 10.5px; margin-left: auto; }
+.err-block pre { margin: 0; padding: 11px 12px; font-family: var(--mono); font-size: 11.5px;
+  color: #fecaca; white-space: pre-wrap; word-break: break-word; }
+
+.io { border: 1px solid var(--border); border-radius: var(--r); margin-bottom: 8px; overflow: hidden; }
+.io-head { padding: 6px 11px; background: var(--raised); border-bottom: 1px solid var(--border);
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim);
+  font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.io-head .note { margin-left: auto; text-transform: none; letter-spacing: 0;
+  font-weight: 400; color: var(--text-mute); }
+.io pre { margin: 0; padding: 10px 11px; font-family: var(--mono); font-size: 11.5px;
+  color: var(--text); white-space: pre-wrap; word-break: break-word;
+  max-height: 260px; overflow-y: auto; }
+/* Distinguishes stacked segments inside one .io block -- an HTTP span's
+   headers and body are both JSON, and two unlabelled tree boxes back to
+   back are visually identical; without this a viewer has to infer which is
+   which from content alone. */
+.io-sublabel { padding: 8px 11px 2px; font-size: 10px; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--text-mute); font-weight: 600;
+  border-top: 1px solid var(--border-lo); }
+.io-off { padding: 11px 12px; border: 1px dashed var(--border); border-radius: var(--r);
+  color: var(--text-mute); font-size: 11.5px; }
+.io-off code { font-family: var(--mono); color: var(--text-dim); background: var(--raised);
+  padding: 1px 5px; border-radius: 3px; }
+
+/* --------------------------------------------------------- JSON tree
+   Collapsible, syntax-highlighted rendering for any value app.js's
+   maybeJson() recognised as JSON -- used both inside .io blocks (request/
+   response payloads) and inline in .fields rows (JSON-shaped attribute
+   values, via .f-json below). Colours are the palette's non-status accents
+   ONLY (--accent/--purple/--pink/--text-mute) -- --ok/--warn/--err stay
+   reserved for status, per this file's own header comment. */
+.json-tree { position: relative; padding: 10px 34px 10px 11px; font-family: var(--mono);
+  font-size: 11.5px; line-height: 1.6; max-height: 260px; overflow: auto; }
+.jv-copy { position: absolute; top: 6px; right: 8px; background: var(--raised);
+  border: 1px solid var(--border); border-radius: 4px; color: var(--text-mute);
+  font-size: 10px; font-family: var(--sans); padding: 2px 7px; cursor: pointer; }
+.jv-copy:hover { color: var(--text); border-color: var(--accent-dim); }
+/* <details> is `display: block` by default (the browser's own UA
+   stylesheet) -- undoing that is what keeps a nested object/array flowing
+   right after its "key": on the same line instead of forcing a line break
+   there, and another for every closed node's own one-line summary. */
+.jv-node { display: inline-block; vertical-align: top; margin: 0; }
+.jv-node > summary { cursor: pointer; list-style: revert; }
+.jv-node > summary::marker { color: var(--text-mute); }
+.jv-node[open] > summary { margin-bottom: 1px; }
+.jv-summary { display: inline-flex; gap: 6px; align-items: baseline; }
+.jv-body { margin-left: 15px; padding-left: 6px; border-left: 1px solid var(--border-lo); }
+.jv-row { word-break: break-word; }
+.jv-key { color: var(--accent); }
+/* pre-wrap on the STRING SPAN only, not the row -- app.js's template
+   literals span multiple source lines for readability, and pre-wrap on a
+   containing row preserves those literal newlines as visible blank lines.
+   Scoped to .jv-str, this only preserves a genuine embedded newline inside
+   a JSON string value, which is the one case worth keeping. */
+.jv-str { color: var(--text); white-space: pre-wrap; }
+.jv-num { color: var(--purple); }
+.jv-bool, .jv-null { color: var(--pink); }
+.jv-punct { color: var(--text-mute); }
+.jv-count { color: var(--text-mute); font-size: 10.5px; }
+
+.grp { margin-bottom: 16px; }
+.grp h4 { margin: 0 0 7px; font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--text-mute); font-weight: 600;
+  display: flex; align-items: center; gap: 8px; }
+.grp h4 .note { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 10.5px; }
+.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+  gap: 0 20px; border-top: 1px solid var(--border-lo); }
+/* minmax(0, …) on both tracks: without it a long key like
+   `deployment.environment.name` overflows its column and prints on top of the
+   value. Grid columns do not shrink below min-content unless told to. */
+.f { display: grid; grid-template-columns: minmax(0, 150px) minmax(0, 1fr); gap: 10px;
+  padding: 5px 0; border-bottom: 1px solid var(--border-lo); font-size: 12px; }
+.fk { color: var(--text-mute); font-family: var(--mono); font-size: 11px;
+  overflow-wrap: anywhere; }
+.fv { font-family: var(--mono); font-size: 11.5px; word-break: break-word; }
+.fv.bad { color: var(--err); }
+/* A JSON-shaped attribute value (mcpobs.http.request.headers and friends)
+   needs the tree's own width, not the narrow inline .fv column -- spans the
+   full row across .fields' auto-fit columns instead of sharing one. */
+.f-json { grid-template-columns: minmax(0, 150px) 1fr; grid-column: 1 / -1; }
+.f-json .json-tree { padding-left: 0; }
+
+/* ---------------------------------------------------------------- misc */
+.note-bar { display: flex; gap: 9px; align-items: flex-start; background: #f59e0b10;
+  border: 1px solid #f59e0b33; border-radius: var(--r); padding: 10px 13px;
+  margin-bottom: 12px; font-size: 12px; color: #fbbf24; }
+.note-bar b { color: #fcd34d; }
+.empty { padding: 44px; text-align: center; color: var(--text-mute); font-size: 13px; }
+.spin { padding: 44px; text-align: center; color: var(--text-mute); }
+
+/* A latency the host clock could not resolve. Dimmed and dotted rather than
+   hidden: the number is the best available answer, it just is not a precise
+   one, and hiding it would leave an operator with no signal at all (DF-4).
+   The tooltip carries the reason, computed server-side where the clock was
+   actually measured. */
+.approx { color: var(--text-dim); border-bottom: 1px dotted var(--text-mute); cursor: help; }
+
+
+/* Sign-in. Deliberately plain: it is the one screen where a user should be
+   thinking about their credential and nothing else. */
+.signin { display: flex; align-items: center; justify-content: center;
+  min-height: 100vh; background: var(--bg); }
+.signin-card { width: 420px; max-width: 92vw; background: var(--panel);
+  border: 1px solid var(--border); border-radius: var(--r); padding: 28px; }
+.signin-card h1 { margin: 0 0 6px; font-size: 18px; color: var(--text); }
+.signin-card p { color: var(--text-dim); font-size: 13px; line-height: 1.5; margin: 0 0 16px; }
+.signin-card input { width: 100%; padding: 9px 11px; background: var(--raised);
+  border: 1px solid var(--border); border-radius: var(--r); color: var(--text);
+  font-family: var(--mono); font-size: 13px; }
+.signin-card button { margin-top: 12px; width: 100%; padding: 9px;
+  background: var(--accent); border: 0; border-radius: var(--r); color: #fff;
+  font-size: 13px; font-weight: 600; cursor: pointer; }
+.signin-hint { margin-top: 16px !important; font-size: 12px; color: var(--text-mute); }
+.signin-hint code { font-family: var(--mono); color: var(--text-dim); }
+#sign-out { background: none; border: 0; color: var(--text-mute); font-size: 12px;
+  cursor: pointer; padding: 4px 8px; }
+#sign-out:hover { color: var(--text-dim); }
+
+
+/* Queue spans. Its own colour, because "which downstream kind" is the first
+   thing scanned in a waterfall and a queue publish behaves nothing like an
+   HTTP call. */
+.k-msg { background: #ec489922; color: #f9a8d4; }
+.bar-msg { background: var(--pink); }
+
+/* API-described filter panel. The controls are generic: the server supplies
+   labels, help and option values; this stylesheet only knows the four control
+   types. */
+.btn-ghost { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r);
+  color: var(--text-dim); font: inherit; font-size: 12.5px; padding: 6px 11px; cursor: pointer; }
+.btn-ghost:hover { background: var(--raised); color: var(--text); }
+.btn-ghost.on { border-color: var(--accent); color: var(--text); background: #4e74f81a; }
+.chip { display: inline-flex; align-items: center; gap: 6px; background: var(--raised);
+  border: 1px solid var(--border); border-radius: 20px; padding: 3px 5px 3px 10px;
+  font-size: 11.5px; color: var(--text-dim); }
+.chip button { background: none; border: 0; color: var(--text-mute); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 0 3px; border-radius: 50%; }
+.chip button:hover { color: var(--err); background: #ef444422; }
+.chip-clear { background: none; border: 0; color: var(--accent); cursor: pointer;
+  font: inherit; font-size: 11.5px; padding: 2px 4px; }
+.chip-clear:hover { text-decoration: underline; }
+.fcount { color: var(--text-mute); font-size: 11.5px; }
+.filter-summary { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding: 12px 0 2px; }
+.filter-summary input { width: 250px; background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--r); color: var(--text); font: inherit; font-size: 12.5px; padding: 7px 9px; }
+.filter-summary input:focus, .generic-control input:focus, .generic-control select:focus { outline: none; border-color: var(--accent); }
+.filter-loading { color: var(--text-mute); font-size: 12px; padding: 11px 0; }
+.filter-panel { position: fixed; z-index: 70; top: 0; right: 0; bottom: 0; width: min(380px, 100vw);
+  display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--border);
+  box-shadow: -18px 0 48px #0008; transform: translateX(105%); transition: transform .18s ease; }
+.filter-panel.open { transform: translateX(0); }
+.filter-panel-head, .filter-panel-foot { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid var(--border); }
+.filter-panel-head strong { display: block; font-size: 14px; }.filter-panel-head span { display: block; color: var(--text-mute); font-size: 11.5px; margin-top: 2px; }
+.filter-panel-head button { background: none; border: 0; color: var(--text-mute); cursor: pointer; font-size: 22px; line-height: 1; }
+.filter-panel-body { overflow-y: auto; padding: 4px 18px 24px; }.filter-panel-foot { margin-top: auto; border-top: 1px solid var(--border); border-bottom: 0; }
+.filter-group { border-bottom: 1px solid var(--border-lo); padding: 16px 0; }.filter-group h4 { margin: 0 0 10px; color: var(--text-mute); font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; }
+.generic-control { display: block; margin: 10px 0; }.generic-control > span { display: block; color: var(--text-dim); font-size: 12px; margin-bottom: 5px; }
+.generic-control input, .generic-control select { width: 100%; background: var(--raised); border: 1px solid var(--border); border-radius: var(--r); color: var(--text); font: inherit; font-size: 12.5px; padding: 7px 8px; }
+.generic-control small, .generic-toggle small { display: block; color: var(--text-mute); font-size: 11px; line-height: 1.35; margin-top: 4px; }
+.generic-toggle { display: block; color: var(--text-dim); font-size: 12.5px; padding: 7px 0; cursor: pointer; }.generic-toggle input { margin: 0 8px 0 0; accent-color: var(--accent); }
+.generic-advanced-row { display: grid; grid-template-columns: 1fr 100px; gap: 7px; margin: 9px 0;
+  padding: 10px; background: var(--bg); border: 1px solid var(--border-lo); border-radius: var(--r); }
+.generic-advanced-row input { grid-column: 1 / 2; }
+.generic-advanced-row button { grid-column: 2; background: transparent; border: 1px solid var(--border);
+  border-radius: var(--r); color: var(--text-mute); cursor: pointer; font-size: 17px; }
+.generic-advanced-row select, .generic-advanced-row input { min-width: 0; width: 100%; background: var(--raised);
+  border: 1px solid var(--border); border-radius: var(--r); color: var(--text); font: inherit; padding: 7px 8px; }
+.generic-empty { color: var(--text-mute); font-size: 11.5px; margin: 0 0 10px; }
+.pagination { display: flex; justify-content: flex-end; align-items: center; gap: 9px; padding: 14px 0 2px; color: var(--text-mute); font-size: 12px; }.pagination button:disabled { cursor: not-allowed; opacity: .45; }

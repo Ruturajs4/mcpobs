@@ -1,0 +1,23 @@
+# The lite (self-host) query image. Built from the REPO ROOT, same as
+# query/Dockerfile, and identical to it except for the one line it
+# deliberately omits -- see below.
+FROM python:3.11-slim
+
+WORKDIR /app
+COPY query/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+COPY query /app/query/
+COPY control /app/control/
+RUN touch /app/query/__init__.py
+
+# Deliberately does NOT `pip install /app/control` (contrast with
+# query/Dockerfile) -- not registering the mcpobs_control_plane entry point
+# is what makes control/resolve.py fall back to control/local.py's
+# single-tenant LocalAuthenticator: no Postgres, no CONTROL_PLANE_DSN. Must
+# stay in lockstep with ingest/Dockerfile.lite in docker-compose.lite.yml: if
+# one of the pair registered the real ControlPlane and the other did not,
+# spans ingested under one tenant model would be queried under another.
+
+ENV PYTHONUNBUFFERED=1
+CMD ["uvicorn", "query.app:app", "--host", "0.0.0.0", "--port", "8080"]

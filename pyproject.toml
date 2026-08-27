@@ -1,0 +1,109 @@
+# THIS FILE IS THE SDK's MANIFEST, and that is not a conflation of repo with
+# package. `normalizer/`, `query/`, `ingest/`, `control/` and `archiver/` deploy
+# as CONTAINER IMAGES and are never pip-installed, so none of them needs
+# distribution metadata. `mcpobs/` is the only thing a customer installs.
+#
+# The name is `mcpobs`, not `mcp-observability`: that name is already published
+# on PyPI by someone else (v0.1.2, "Open, vendor-agnostic observability SDK for
+# Model Context Protocol") -- checked before choosing, because discovering it at
+# `twine upload` would be discovering it in public. `mcpobs` is also what the
+# import already is, so `pip install mcpobs` matches `from mcpobs import ...`.
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mcpobs"
+version = "0.1.0"
+description = "MCP-native observability for Model Context Protocol servers"
+readme = "README-sdk.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+keywords = ["mcp", "model-context-protocol", "opentelemetry", "observability", "tracing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Monitoring",
+    "Typing :: Typed",
+]
+
+# CORE ONLY. `mcpobs/__init__.py` deliberately does not import the exporter, so
+# the OTLP HTTP exporter and httpx are NOT required to classify failures -- they
+# are needed only by the session-token path. A customer who exports through
+# their own pipeline should not be made to install ours.
+dependencies = [
+    "opentelemetry-api>=1.30",
+    "opentelemetry-sdk>=1.30",
+]
+
+[project.optional-dependencies]
+# Short-lived credentials for servers a client launches (stdio).
+sessions = [
+    "opentelemetry-exporter-otlp-proto-http>=1.30",
+    "httpx>=0.27",
+]
+
+# NOTHING for downstream instrumentation, on purpose. `instrument_downstream()`
+# discovers packages through OpenTelemetry's own entry-point group, so the
+# customer installs exactly the instrumentors they use and we never pull in
+# psycopg, redis or pymysql on their behalf.
+
+[project.urls]
+Documentation = "https://github.com/Ruturajs4/mcpobs#readme"
+Source = "https://github.com/Ruturajs4/mcpobs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mcpobs"]
+
+[tool.hatch.build.targets.sdist]
+# The SDK and what a reader needs to evaluate it. Not the server, not the tests
+# that need a live ClickHouse.
+include = ["mcpobs", "README-sdk.md", "LICENSE"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF", "ANN", "BLE"]
+ignore = [
+    "ANN401",  # Any is correct for OTLP attribute values
+    "B008",
+    "RUF012",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# `normalizer/` is production code and stays strict. The harness below is not:
+# broad excepts are deliberate there (best-effort instrumentation and scenario
+# driving must never take the process down over a secondary concern).
+"tests/*" = ["ANN", "S101"]
+"scripts/*" = ["ANN", "BLE001", "E501", "SIM105"]
+"demo_server/*" = ["BLE001"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+warn_redundant_casts = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+exclude = ["\\.venv", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["confluent_kafka.*", "clickhouse_connect.*", "opentelemetry.*"]
+ignore_errors = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+asyncio_mode = "auto"
+markers = [
+    # Spawns a real MCP server subprocess and waits for its span export. Seconds
+    # rather than milliseconds, so it is skippable with `-m "not slow"` -- but
+    # it runs by DEFAULT, because these are the tests that exercise the
+    # transport customers actually deploy on.
+    "slow: spawns a real server subprocess and waits for exported spans",
+]

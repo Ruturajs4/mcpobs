@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP Observability</title>
+<link rel="preload" href="/static/fonts/inter-variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/jetbrains-mono-regular.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='12' fill='%234e74f8'/></svg>">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="dot" id="health-dot"></div>
+      <div>
+        <h1>MCP Observability</h1>
+        <div class="sub">local · 2026-07-28</div>
+      </div>
+    </div>
+    <nav id="nav">
+      <div class="grp">Monitor</div>
+      <a data-view="overview" class="on"><span class="ic">◧</span> Overview</a>
+      <a data-view="servers"><span class="ic">▤</span> Servers</a>
+      <div class="grp">Capabilities</div>
+      <a data-view="capabilities" data-kind="tool"><span class="ic">⬡</span> Tools</a>
+      <a data-view="capabilities" data-kind="prompt"><span class="ic">✎</span> Prompts</a>
+      <a data-view="capabilities" data-kind="resource"><span class="ic">◈</span> Resources</a>
+      <a data-view="capabilities" data-kind="protocol"><span class="ic">⇄</span> Protocol</a>
+      <div class="grp">Investigate</div>
+      <a data-view="traces"><span class="ic">≡</span> Traces</a>
+      <a data-view="errors"><span class="ic">▲</span> Errors</a>
+    </nav>
+    <!-- Four unlabelled numbers in 10px mono used to live here: "freshness
+         19.9s", "classified 92%", a bare timestamp and two lowercase buttons.
+         Every one of them was jargon or an abbreviation of jargon, and none
+         said what it was for. Now: one status line about whether the page is
+         live, two LABELLED metrics that explain themselves on hover, and the
+         account action set apart from both. -->
+    <div class="side-foot">
+      <div class="foot-status">
+        <span class="live-dot" id="live-dot"></span>
+        <span id="foot-updated">Loading…</span>
+        <button id="refresh-now" type="button" title="Fetch the latest data now">
+          Refresh
+        </button>
+      </div>
+
+      <dl class="foot-stats">
+        <div title="How long a span takes to travel from happening in your server to being queryable here. Under a minute is healthy.">
+          <dt>Ingest lag</dt><dd id="foot-fresh">—</dd>
+        </div>
+        <div title="Share of failures classified precisely, rather than reported as a generic tool error. Below 100% means some of your servers are not running the mcpobs helper.">
+          <dt>Error detail</dt><dd id="foot-class">—</dd>
+        </div>
+      </dl>
+
+      <!-- Sign out clears the key from localStorage. Present because a shared
+           machine is the normal case for an ops console. -->
+      <button id="sign-out" type="button">Sign out</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="top">
+      <h2 id="title">Overview</h2>
+      <div class="spacer"></div>
+      <div class="range" id="range">
+        <button data-m="15">15m</button>
+        <button data-m="60" class="on">1h</button>
+        <button data-m="360">6h</button>
+        <button data-m="1440">24h</button>
+        <button data-m="10080">7d</button>
+      </div>
+    </header>
+    <!-- The filter bar lives OUTSIDE #content deliberately. render() replaces
+         the whole of #content, so a search box inside it would be destroyed and
+         rebuilt on every keystroke -- losing focus and the caret mid-word. Here
+         it survives every list redraw, including the 30s auto-refresh. -->
+    <div class="filters" id="filters"></div>
+    <div class="content" id="content"><div class="spin">Loading…</div></div>
+  </main>
+</div>
+
+<!-- The trace drawer. Slides in from the right OVER the list rather than
+     replacing it: debugging is comparison, and navigating away loses the list
+     you were working through. -->
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer">
+  <button class="dr-close" id="drawer-close" title="Close (Esc)">✕</button>
+  <div class="drawer-body" id="drawer-body"></div>
+</aside>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

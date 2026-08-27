@@ -1,0 +1,167 @@
+# Customer-facing documentation.
+#
+# `docs_dir` is `docs-public/`, and the internal engineering documents live in
+# `docs/`. That separation is the whole safety mechanism, and it is structural:
+# MkDocs cannot publish a file it never reads.
+#
+# IT USED TO BE A LIST. `docs/` held both, and the exclusion was an
+# `exclude_docs:` block naming each internal file -- which worked, but only for
+# as long as someone maintained it. A new internal document was published by
+# default and stayed published until a human noticed.
+#
+# The obvious-looking guard was weaker still: leaving a file out of `nav` only
+# removes its sidebar link. Measured before relying on it -- a non-nav file was
+# still rendered to `site/<name>/index.html` AND its full text written into
+# `search/search_index.json`, so searching the published docs for "alpha" would
+# have returned "not ready for a customer-facing alpha".
+#
+# That matters because the internal set is a security document:
+# alpha-readiness.md enumerates unpatched weaknesses and deferred.md lists known
+# gaps. Publishing either hands an attacker a prioritised checklist.
+#
+# `tests/test_docs.py` asserts no internal file has drifted into `docs-public/`
+# AND greps the built site. A directory boundary is a promise; the artefact is
+# evidence.
+
+site_name: MCP Observability
+site_description: >-
+  MCP-native observability for production MCP servers. See which tool failed,
+  why it failed, and where the time went.
+site_url: https://docs.example.com/
+repo_url: https://github.com/Ruturajs4/mcpobs
+edit_uri: ""
+
+docs_dir: docs-public
+site_dir: site
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.sections      # the left-hand index the docs are organised around
+    - navigation.top
+    - navigation.tracking
+    - navigation.indexes
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+  palette:
+    # Defaults to the reader's system setting rather than forcing one. The
+    # console is dark-first; the docs are read in daylight as often as not.
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Follow system theme
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          # ONLY `mcpobs`. The normalizer, query and control packages are
+          # internal -- auto-documenting them would republish the internals this
+          # file exists to keep out, one docstring at a time.
+          paths: [.]
+          options:
+            docstring_style: google
+            show_source: false        # source view would expose internal calls
+            show_root_heading: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+            separate_signature: true
+            signature_crossrefs: true
+            filters: ["!^_"]          # no private members in customer docs
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+# ------------------------------------------------------------------- the nav
+# Still an explicit list, even though `docs-public/` now contains only public
+# pages. The directory keeps internal documents out; the list keeps the ORDER
+# and the section headings deliberate, and a page added without a nav entry is
+# reachable by URL but absent from the index -- which `strict: true` reports.
+nav:
+  - Overview: index.md
+
+  - Get started:
+      - get-started/index.md
+      - Quickstart: get-started/quickstart.md
+      - Your first trace: get-started/first-trace.md
+      - Lite deployment: get-started/lite.md
+
+  - Integrate:
+      - integrate/index.md
+      - Python SDK: integrate/python-sdk.md
+      - Databases, caches and APIs: integrate/downstream.md
+      - Payloads and privacy: integrate/payloads.md
+
+  - Concepts:
+      - concepts/index.md
+      - Traces and spans: concepts/traces.md
+      - Failure taxonomy: concepts/failures.md
+      - Long-running tools: concepts/long-running.md
+      - Latency and clock accuracy: concepts/latency.md
+
+  - Console:
+      - console/index.md
+      - Filtering and search: console/filtering.md
+
+  - Reference:
+      - reference/index.md
+      - SDK reference: reference/sdk.md
+      - Failure categories: reference/failure-categories.md
+      - Query API: reference/query-api.md
+
+  - Operate:
+      - operate/index.md
+      - API keys and access: operate/keys.md
+      - Session tokens for stdio: operate/session-tokens.md
+      - Quotas: operate/quotas.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Ruturajs4/mcpobs
+
+# Build strictly: a broken internal link or a missing nav target fails the build
+# rather than shipping a 404 to a customer.
+strict: true

@@ -1,0 +1,110 @@
+# Lite (self-host) slice. Three containers instead of eleven: no Kafka, no
+# Collector, no MinIO/archiver, no Redis, no Postgres. `docker-compose.yml`
+# is untouched -- this is a separate, standalone file, not an overlay of it.
+#
+# STANDALONE RATHER THAN AN OVERLAY, deliberately: the topology genuinely
+# differs (ingest has no Collector to forward to; there is no normalizer
+# container at all), and a self-hoster reading this file top-to-bottom is
+# worth more than not repeating the clickhouse block.
+#
+# WHAT MOVES WHEN KAFKA IS GONE:
+#   - ingest decodes/normalizes/inserts in-process (ingest/direct_intake.py)
+#     instead of forwarding to a Collector -- see MCPOBS_LITE below.
+#   - ClickHouse schema migrations, which only ever ran from the normalizer
+#     container's own startup, now run from ingest's lifespan instead
+#     (ingest/app.py; there is still no standalone `make migrate`).
+#   - The ack boundary moves: 200 returns once ClickHouse's insert returns,
+#     not once a queue durably has the batch. See docs-public/get-started/
+#     lite.md for what that trades away (replay, in particular).
+#
+# NO POSTGRES: `ingest/Dockerfile.lite` and `query/Dockerfile.lite` do not
+# register the mcpobs_control_plane entry point, so control/resolve.py falls
+# back to control/local.py's LocalAuthenticator for both -- a single static
+# tenant, no database, no CONTROL_PLANE_DSN to configure. A self-hoster who
+# wants real multi-tenancy needs the private ECC control plane installed
+# alongside these images (see control/resolve.py, control/pyproject.toml).
+#
+# CANNOT RUN ALONGSIDE docker-compose.yml: same host ports (8123, 9000, 4319,
+# 8080), by design -- a self-hoster runs one deployment or the other, not
+# both against the same client config. `make down` before `make up-lite`.
+name: mcp-observability-lite
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: mcpobs-lite-clickhouse
+    ports: ["8123:8123", "9000:9000"]
+    environment:
+      CLICKHOUSE_DB: mcpobs
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    volumes:
+      # Embedded Keeper: ReplicatedMergeTree and insert_deduplication_token
+      # (ADR-006) need it regardless of deployment size -- see
+      # clickhouse/config.d/keeper.xml for why.
+      #
+      # Both mounted as FILES, never as the directory: mounting
+      # ./clickhouse/config.d over /etc/clickhouse-server/config.d shadows the
+      # image's own docker_related_config.xml (which sets `listen_host`), and
+      # the server silently binds to 127.0.0.1 only -- every in-network client
+      # gets "connection refused" while `docker exec` still works. Measured
+      # once already on this project; not repeating it here.
+      - ./clickhouse/config.d/keeper.xml:/etc/clickhouse-server/config.d/keeper.xml:ro
+      - ./clickhouse/config.d/lite-memory.xml:/etc/clickhouse-server/config.d/lite-memory.xml:ro
+      - ch-lite-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
+
+  ingest:
+    build:
+      context: .
+      dockerfile: ingest/Dockerfile.lite
+    container_name: mcpobs-lite-ingest
+    ports: ["4319:4319"]
+    environment:
+      MCPOBS_LITE: "1"
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      CLICKHOUSE_DB: mcpobs
+      # Session tokens (ADR-011) still work in lite mode -- stdio is roughly
+      # half of MCP servers, and there is no reason a self-hoster should not
+      # get the same credential story. Same disclaimer as the full stack:
+      # local dev value only, a real deployment reads this from a secret
+      # store.
+      MCPOBS_SESSION_SIGNING_KEY: "local-dev-only-signing-key-not-for-production-use"
+      MCPOBS_PUBLIC_INGEST_ENDPOINT: "http://127.0.0.1:4319"
+      EXPOSE_API_DOCS: "true"
+      DATA_REGION: local
+      # No REDIS_URL: absent, quota enforcement fails open to per-process
+      # counting (control/quota.py) -- documented behavior, not a missing
+      # feature. No COLLECTOR_ENDPOINT: there is no Collector to forward to.
+      # No CONTROL_PLANE_DSN: there is no control plane -- see the NO
+      # POSTGRES note above.
+    depends_on:
+      clickhouse: { condition: service_healthy }
+    restart: unless-stopped
+
+  query:
+    build:
+      context: .
+      dockerfile: query/Dockerfile.lite
+    container_name: mcpobs-lite-query
+    ports: ["8080:8080"]
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      CLICKHOUSE_DB: mcpobs
+      EXPOSE_API_DOCS: "true"
+    depends_on:
+      clickhouse: { condition: service_healthy }
+    restart: unless-stopped
+
+volumes:
+  ch-lite-data:

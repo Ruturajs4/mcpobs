@@ -1,0 +1,33 @@
+# Local development. Pinned -- unpinned versions make the T3 report unreproducible.
+mcp[cli]==2.0.0
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp==1.44.0
+opentelemetry-instrumentation-httpx==0.65b0
+opentelemetry-proto==1.44.0
+httpx==0.28.1
+confluent-kafka==2.15.0
+clickhouse-connect==1.7.1
+opentelemetry-instrumentation-sqlite3==0.65b0
+psycopg[binary]==3.2.3
+opentelemetry-instrumentation-asgi==0.65b0
+opentelemetry-instrumentation-psycopg==0.65b0
+redis==5.2.1
+opentelemetry-instrumentation-redis==0.65b0
+# pymysql and its instrumentor are pinned TOGETHER on purpose: the instrumentor
+# installed without the driver beside it is what produced the misleading
+# diagnostic recorded in otel_bootstrap.
+pymysql==1.1.1
+opentelemetry-instrumentation-pymysql==0.65b0
+opentelemetry-instrumentation-requests==0.65b0
+opentelemetry-instrumentation-confluent-kafka==0.65b0
+# Customer documentation. Material is in maintenance mode (9.7.x is the
+# final feature release, security fixes to Nov 2026); its successor Zensical
+# reads mkdocs.yml natively, so this is a migration path rather than a dead
+# end. mkdocstrings generates the SDK reference from the mcpobs docstrings.
+mkdocs==1.6.1
+mkdocs-material==9.7.7
+mkdocstrings[python]==1.0.6
+PyJWT==2.13.0
+# Browser flows (tests/test_browser_flows.py). The console was verified by
+# hand for its whole life, which is how a column-order bug shipped.
+playwright==1.62.0

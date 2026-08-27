@@ -1,0 +1,48 @@
+# API keys and access
+
+!!! note "This is the managed, multi-tenant control plane"
+
+    The [self-hosted lite image](../get-started/lite.md) is single-tenant:
+    any `x-api-key` value is accepted, and there is no key to issue, revoke,
+    or scope. Everything below describes access control in a deployment that
+    runs the multi-tenant control plane in front of `ingest`/`query`.
+
+Access is **invite-only**. There is no self-service signup, and no endpoint that
+mints a key.
+
+## Scopes
+
+| Scope | Used by | Lives in |
+| --- | --- | --- |
+| `ingest` | Your MCP server, sending telemetry | Server process, deployment config |
+| `read` | The console and the Query API | A browser |
+| `admin` | The operator console | Issued out of band |
+| `session` | Your backend, minting [session tokens](session-tokens.md) | Your servers only |
+
+The three are deliberately separate. An ingest key and a read key identify the
+same organisation, but they live in different places — so one being compromised
+must not imply the other. The console refuses an ingest key; the ingest endpoint
+refuses a read key.
+
+!!! tip "Running over stdio?"
+
+    Then the client launches your server on your user's machine, and none of
+    these keys should be there. Use
+    [session tokens](session-tokens.md) instead: your backend keeps the
+    long-lived key and the laptop only ever holds a 3-hour one.
+
+## Storage
+
+Key secrets are stored as **hashes**. The full key is shown once, when it is
+issued, and cannot be retrieved afterwards — including by an operator. The
+console lists key **prefixes** only, so there is nothing in the listing to leak.
+
+## Revocation
+
+Revoking a key takes effect within the principal cache TTL (30 seconds) in every
+running process. There is no restart required.
+
+## Rotation
+
+Issue the new key, deploy it, then revoke the old one. Because ingest and read
+keys are separate, rotating one does not interrupt the other.

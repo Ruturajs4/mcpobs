@@ -1,0 +1,13 @@
+# Pinned: unpinned versions make the T3 attribute report unreproducible.
+#
+# confluent-kafka lives in requirements-kafka.txt, not here: it pulls in
+# librdkafka, needed only by consumer.py's poll loop. `ingest`'s lite Dockerfile
+# imports otlp_decode/normalize/clickhouse_sink directly and never touches
+# consumer.py, so it installs this file alone. `normalizer/Dockerfile`
+# installs both, unchanged.
+clickhouse-connect==1.7.1
+opentelemetry-proto==1.44.0
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.44.0
+pydantic==2.13.4
+pydantic-settings==2.15.0

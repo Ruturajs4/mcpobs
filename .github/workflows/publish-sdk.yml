@@ -1,0 +1,182 @@
+# Publish the `mcpobs` SDK to PyPI.
+#
+# TRUSTED PUBLISHING (OIDC), not an API token. A PyPI token is a long-lived
+# credential that can publish any version of this package forever, stored in a
+# repository secret -- exactly the kind of thing this project spent considerable
+# effort removing from places it should not be. OIDC mints a short-lived one per
+# run, scoped to this workflow in this repository, and there is nothing to leak
+# or rotate.
+#
+# One-time setup, on BOTH indexes (they are separate services with separate
+# accounts and separate publisher configuration):
+#
+#   test.pypi.org -> Publishing -> Add a pending publisher
+#     project: mcpobs   owner: Ruturajs4   repo: mcpobs
+#     workflow: publish-sdk.yml   environment: testpypi
+#
+#   pypi.org      -> Publishing -> Add a pending publisher
+#     project: mcpobs   owner: Ruturajs4   repo: mcpobs
+#     workflow: publish-sdk.yml   environment: pypi
+#
+# "Pending" is the correct form for a name that does not exist on the index yet.
+#
+# THE TRIGGER CHOOSES THE TARGET, so neither can be reached by accident:
+#
+#   workflow_dispatch  -> TestPyPI   (rehearsal, reversible in practice)
+#   tag sdk-v*         -> PyPI       (irreversible)
+#
+# A dispatch cannot publish to production and a tag cannot stop at TestPyPI.
+# That is deliberately not a dropdown: an input naming the target would put the
+# irreversible option one mis-click from the rehearsal one.
+#
+# A real publish is a tag rather than a branch push because PyPI does not allow
+# re-uploading a version, even a deleted one -- so it must be a deliberate act
+# with a name attached, not a side effect of merging.
+
+name: Publish SDK
+
+on:
+  push:
+    tags: ["sdk-v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # THE SAME CHECKS AS EVERY OTHER COMMIT. A tag is not a reason to skip
+      # them; it is the one moment they matter most, because this artefact
+      # cannot be recalled.
+      # BOTH requirement files, matching check.yml. The linters and mypy live in
+      # requirements-check.txt, not requirements-dev.txt -- installing only the
+      # latter gave `ruff: command not found` and failed the run. Written from
+      # memory instead of copied from the workflow that already worked, which is
+      # the same mistake this file avoids elsewhere by sharing one build job
+      # between both publish targets.
+      - name: Install
+        run: |
+          # EVERY package's requirements, because the test suite spans every
+          # package: it imports ingest, query and normalizer directly. Those
+          # deps are declared per CONTAINER, so installing only the dev and
+          # check files left the suite short of fastapi and pydantic-settings
+          # -- and CI failed on every run since the repository was created,
+          # while passing locally because a developer venv happened to have
+          # them. Pinned once, in the service file that owns them.
+          python -m pip install -r requirements-dev.txt -r requirements-check.txt -r normalizer/requirements.txt -r ingest/requirements.txt -r query/requirements.txt -r archiver/requirements.txt
+          python -m pip install build twine
+
+      - name: Lint and typecheck
+        run: |
+          ruff check normalizer/ mcpobs/ query/ control/ ingest/ archiver/ tests/ scripts/ demo_server/
+          mypy normalizer/ mcpobs/ query/ control/ ingest/ archiver/
+
+      - name: Unit tests
+        run: pytest -m "not slow"
+
+      - name: Build
+        run: python -m build
+
+      - name: Check metadata
+        run: python -m twine check dist/*
+
+      # The wheel must contain the SDK and NOTHING ELSE. This repository holds
+      # five server packages beside it, and a build-configuration mistake would ship the
+      # control plane -- including its schema and key handling -- to PyPI.
+      - name: Wheel contains only the SDK
+        run: |
+          python - <<'PY'
+          import glob, sys, zipfile
+          wheel = glob.glob("dist/*.whl")[0]
+          tops = sorted({n.split("/")[0] for n in zipfile.ZipFile(wheel).namelist()})
+          forbidden = {"control", "normalizer", "query", "ingest", "archiver",
+                       "demo_server", "tests", "scripts", "docs", "docs-public"}
+          leaked = sorted(set(tops) & forbidden)
+          print("top-level:", tops)
+          if leaked:
+              sys.exit(f"server code would be published to PyPI: {leaked}")
+          if not any(t == "mcpobs" for t in tops):
+              sys.exit("the wheel does not contain mcpobs")
+          PY
+
+      # Installed from the built artefact into a clean environment, with the
+      # repository NOT on the path. Importing it from a checkout proves nothing:
+      # every server module is importable there, so a hidden dependency on one
+      # would pass locally and fail for the first customer.
+      - name: Install the artefact standalone
+        run: |
+          python -m venv /tmp/fresh
+          /tmp/fresh/bin/python -m pip install "$(ls dist/*.whl)"
+          cd /tmp && /tmp/fresh/bin/python -c "
+          import mcpobs
+          print('version', mcpobs.__version__)
+          from mcpobs import instrument, instrument_downstream, FailureKind
+          assert FailureKind.TOOL_ERROR == 'tool_error'
+          print('standalone import ok')
+          "
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # ---------------------------------------------------------------- rehearsal
+  # Run this before the real thing. It is the only way to see the rendered
+  # project page while the outcome is still reversible -- on PyPI proper the
+  # first version is permanent, README mistakes included.
+  testpypi:
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+      # TestPyPI does not mirror PyPI, so a dependency resolved from it would
+      # fail for reasons that have nothing to do with this package. Only mcpobs
+      # comes from TestPyPI; everything it needs comes from the real index.
+      - name: Install from TestPyPI
+        run: |
+          sleep 30   # the index takes a moment to serve a new release
+          python -m venv /tmp/fromtest
+          /tmp/fromtest/bin/python -m pip install             --index-url https://test.pypi.org/simple/             --extra-index-url https://pypi.org/simple/             mcpobs
+          cd /tmp && /tmp/fromtest/bin/python -c "
+          import mcpobs
+          print('installed from TestPyPI:', mcpobs.__version__)
+          from mcpobs import instrument, FailureKind
+          assert FailureKind.TOOL_ERROR == 'tool_error'
+          print('ok')
+          "
+
+  # ------------------------------------------------------------ the real thing
+  publish:
+    if: startsWith(github.ref, 'refs/tags/sdk-v')
+    needs: build
+    runs-on: ubuntu-latest
+    # A protected environment, so publishing can require a human approval even
+    # though the tag triggered it.
+    environment: pypi
+    permissions:
+      # The whole point: OIDC identity instead of a stored token.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

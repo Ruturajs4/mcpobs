@@ -1,0 +1,37 @@
+# The lite (self-host) ingest image. Built from the REPO ROOT, same as
+# ingest/Dockerfile -- the gateway needs `control/`, and this image
+# additionally needs the non-Kafka half of `normalizer/` (decode, normalize,
+# ClickHouse sink, schema) so it can insert directly instead of forwarding to
+# a Collector.
+#
+# `normalizer/requirements.txt` on its own, NEVER `requirements-kafka.txt`:
+# that file is only confluent-kafka, which pulls in librdkafka -- weight this
+# image has no use for, since it never imports normalizer/consumer.py (the
+# only module that touches Kafka). The whole `normalizer/` directory is
+# copied rather than an itemized file list: consumer.py sitting unimported in
+# the image is harmless (normalizer/__init__.py is empty, so nothing pulls it
+# in transitively), and copying the directory whole matches the pattern
+# ingest/Dockerfile and query/Dockerfile already use for `control/`.
+FROM python:3.11-slim
+
+WORKDIR /app
+COPY ingest/requirements.txt /app/ingest-requirements.txt
+COPY normalizer/requirements.txt /app/normalizer-requirements.txt
+RUN pip install --no-cache-dir -r /app/ingest-requirements.txt -r /app/normalizer-requirements.txt
+
+COPY ingest /app/ingest/
+COPY control /app/control/
+COPY normalizer /app/normalizer/
+
+# Deliberately does NOT `pip install /app/control` (contrast with
+# ingest/Dockerfile) -- this is the self-host image, and NOT registering the
+# mcpobs_control_plane entry point is what makes control/resolve.py fall back
+# to control/local.py's single-tenant LocalAuthenticator: no Postgres, no
+# CONTROL_PLANE_DSN, no ECC dependency. A self-hoster who wants real
+# multi-tenancy AND this image's direct_intake/no-Kafka path needs
+# ingest/Dockerfile.byo instead -- ingest/Dockerfile (the full one) does not
+# copy `normalizer/`, so MCPOBS_LITE=1 would crash it on import.
+
+ENV PYTHONUNBUFFERED=1
+ENV MCPOBS_LITE=1
+CMD ["uvicorn", "ingest.app:app", "--host", "0.0.0.0", "--port", "4319"]

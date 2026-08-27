@@ -1,0 +1,22 @@
+-- Re-adds `http_response_body`, dropped by 011. This is NOT the same mistake
+-- repeating -- read 011's own comment before touching this file again.
+--
+-- 011 dropped the column because the PYTHON hook genuinely never populated
+-- it: `HTTPXClientInstrumentor` wraps the transport, so its span ends when
+-- `handle_async_request` returns -- before `Client.send` ever reads the
+-- body. A permanently empty column is worse than a missing one, and that
+-- was the right call at the time.
+--
+-- It does not hold for the JS SDK (mcpobs-js). Measured directly, twice --
+-- an instant same-process response and a server that drip-feeds its body
+-- over 500ms to simulate real network latency -- the Node CLIENT span from
+-- `@opentelemetry/instrumentation-http` stays open through the response
+-- stream's 'end' event, unlike httpx's transport-wrapping approach. See
+-- mcpobs-js/src/downstream.ts's module docstring for the full measurement.
+--
+-- So this column is HONESTLY asymmetric: populated for JS-sourced spans,
+-- empty for Python-sourced ones, exactly reflecting what each SDK can
+-- actually do -- not a repeat of 011's always-empty trap, because there is
+-- now a real path that fills it.
+ALTER TABLE mcpobs.spans_raw
+    ADD COLUMN IF NOT EXISTS http_response_body String DEFAULT '';
