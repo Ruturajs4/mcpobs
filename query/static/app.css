@@ -44,6 +44,21 @@ body { margin: 0; background: var(--bg); color: var(--text);
   font-feature-settings: "liga" 1, "calt" 1; letter-spacing: -0.005em;
   -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
 
+/* One rule for every plain <button> in the app (time-range, refresh, sign
+   out, tabs, "show more") -- a component with its own more specific
+   :focus-visible rule (nav button, the sign-in CTA) wins over this by
+   ordinary specificity. Without this, every unstyled button fell back to
+   whatever the browser's default ring looks like, which belongs to no
+   palette here. */
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+::selection { background: var(--accent-dim); color: #fff; }
+* { scrollbar-color: var(--border) var(--panel); scrollbar-width: thin; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--panel); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; border: 2px solid var(--panel); }
+::-webkit-scrollbar-thumb:hover { background: var(--text-mute); }
+
 /* --------------------------------------------------------------- layout */
 .app { display: grid; grid-template-columns: 208px 1fr; height: 100vh; }
 .side { background: var(--panel); border-right: 1px solid var(--border);
@@ -144,7 +159,7 @@ nav .grp { padding: 13px 10px 5px; font-size: 11px; text-transform: uppercase;
 .grid { display: grid; gap: 12px; }
 .g4 { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
-.card .lbl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
+.card .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
   color: var(--text-mute); font-weight: 600; margin-bottom: 7px; }
 .card .big { font-size: 27px; font-weight: 620; letter-spacing: -0.035em; font-variant-numeric: tabular-nums; }
 .card .sub { font-size: 11.5px; color: var(--text-dim); margin-top: 3px; }
@@ -190,6 +205,7 @@ td { padding: 9px 16px; border-bottom: 1px solid var(--border-lo); font-size: 12
 tbody tr:last-child td { border-bottom: 0; }
 tbody tr.click { cursor: pointer; }
 tbody tr.click:hover { background: var(--raised); }
+tbody tr.click:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--raised); }
 tbody tr.sel { background: var(--accent-dim); }
 tbody tr.sel td { border-bottom-color: transparent; }
 .num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }

@@ -898,7 +898,20 @@ const VIEWS = {
 function bindAll(sel, fn) {
   // The event is passed through: a chip's remove button sits inside a row that
   // has its own click handler, so it needs stopPropagation.
-  document.querySelectorAll(sel).forEach((n) => (n.onclick = (ev) => fn(n, ev)));
+  //
+  // Every caller of this wires a <tr>, which has no click semantics of its
+  // own -- tabindex/role/keydown here is the one place that matters for all
+  // of them, rather than six call sites each remembering it separately.
+  document.querySelectorAll(sel).forEach((n) => {
+    n.onclick = (ev) => fn(n, ev);
+    n.tabIndex = 0;
+    n.setAttribute("role", "button");
+    n.onkeydown = (ev) => {
+      if (ev.key !== "Enter" && ev.key !== " ") return;
+      ev.preventDefault();
+      fn(n, ev);
+    };
+  });
 }
 
 /* The URL carries the filters, so a narrowed view is a link. The parameter
