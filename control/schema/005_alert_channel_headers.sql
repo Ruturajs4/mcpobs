@@ -1,0 +1,14 @@
+-- Custom headers for a webhook alert channel (follow-up to 004_alerts.sql).
+--
+-- Slack's incoming-webhook contract puts the whole secret in the URL, so it
+-- never needed this. A generic webhook receiver usually does -- an
+-- Authorization bearer token, an HMAC signing secret, anything the receiver
+-- uses to tell a real alert from a forged POST. Without this column the
+-- only way to add one was outside the product entirely (a proxy in front
+-- of the receiver), which defeats the point of self-serve.
+--
+-- A separate column, not folded into `target`: `target` is a URL and stays
+-- one, so nothing that already reads it (the evaluator's `send_slack`/
+-- `send_webhook`, both admin/self-serve create-channel responses) has to
+-- learn a combined syntax.
+ALTER TABLE alert_channels ADD COLUMN IF NOT EXISTS headers JSONB NOT NULL DEFAULT '{}'::jsonb;

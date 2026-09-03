@@ -102,6 +102,11 @@ class AlertChannel(_Row):
     #: (see `query/admin.py`'s alert-channel routes), the same one-way shape
     #: `IssuedKey.token` already has for a key's secret.
     target: str = Field(repr=False)
+    #: Custom headers sent with every notification to this channel (an
+    #: Authorization token, an HMAC signing secret) -- same one-way shape as
+    #: `target`, and for the same reason: these are credentials, not display
+    #: data (005_alert_channel_headers.sql).
+    headers: dict[str, str] = Field(default_factory=dict, repr=False)
 
 
 class AlertRule(_Row):
