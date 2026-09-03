@@ -52,8 +52,8 @@ body { margin: 0; background: var(--bg); color: var(--text);
   display: flex; align-items: center; gap: 9px; }
 .brand .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok);
   box-shadow: 0 0 10px var(--ok); flex: none; }
-.brand h1 { margin: 0; font-size: 13.5px; font-weight: 650; letter-spacing: -0.025em; }
-.brand .sub { font-size: 10px; color: var(--text-mute); font-family: var(--mono); }
+.brand h1 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: -0.025em; }
+.brand .sub { font-size: 11px; color: var(--text-mute); font-family: var(--mono); }
 
 nav { padding: 8px; display: flex; flex-direction: column; gap: 1px; overflow-y: auto; }
 /* <button>, not <a>: these swap views via JS, never navigate to a URL of
@@ -69,7 +69,7 @@ nav button.on { background: var(--accent-dim); color: #fff; }
 nav button .ic { width: 14px; height: 14px; display: inline-flex; opacity: .85; flex: none; }
 nav button .ic svg, .note-bar svg, .dr-close svg { width: 100%; height: 100%; fill: currentColor; display: block; }
 .note-bar svg, .dr-close svg { width: 14px; height: 14px; flex: none; }
-nav .grp { padding: 13px 10px 5px; font-size: 10px; text-transform: uppercase;
+nav .grp { padding: 13px 10px 5px; font-size: 11px; text-transform: uppercase;
   letter-spacing: .07em; color: var(--text-mute); font-weight: 600; }
 
 /* The sidebar footer answers two different questions and they are separated
@@ -119,7 +119,7 @@ nav .grp { padding: 13px 10px 5px; font-size: 10px; text-transform: uppercase;
 .main { display: flex; flex-direction: column; overflow: hidden; }
 .top { height: 52px; flex: none; border-bottom: 1px solid var(--border);
   display: flex; align-items: center; gap: 14px; padding: 0 20px; background: var(--panel); }
-.top h2 { margin: 0; font-size: 14.5px; font-weight: 650; letter-spacing: -0.02em; }
+.top h2 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: -0.02em; }
 .top .spacer { flex: 1; }
 /* Between the header and the scrolling list: `flex: none` so it never scrolls
    away. Filters you cannot see are filters you forget are applied, and a list
