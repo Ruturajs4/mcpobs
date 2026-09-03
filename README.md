@@ -1,3 +1,5 @@
+<img src="assets/logo.svg" width="48" height="48" alt="mcpobs">
+
 # mcp-observability
 
 MCP-native observability for Model Context Protocol servers. Spans travel
