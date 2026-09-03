@@ -531,24 +531,28 @@ function renderDrawer(t, selectedId) {
     const dot = failed ? "d-err" : s.status === "OK" ? "d-ok" : "d-none";
 
     return `<div class="wf-row ${s.span_id === selectedId ? "sel" : ""}" data-span="${esc(s.span_id)}">
-      <div class="wf-name" style="padding-left:${s.depth * 18}px">
+      <div class="wf-name" style="padding-left:${s.depth * 14}px">
         ${s.depth ? '<span class="rail"></span>' : ""}
         <span class="dot ${dot}"></span>
         <span class="wf-kind ${k.cls}">${k.tag}</span>
         <span class="txt" title="${esc(s.name)}">${esc(s.name)}</span>
-        ${s.downstream_detail ? `<span class="fact">${esc(s.downstream_detail)}</span>` : ""}
         ${s.span_id === t.root_span_id ? '<span class="mute mono rootmark">ROOT</span>' : ""}
+        <span class="num dim wf-dur">${dur(s.duration_ms)}</span>
       </div>
-      <div class="num dim">${dur(s.duration_ms)}</div>
+      ${s.downstream_detail ? `<div class="fact" style="margin-left:${s.depth * 14 + 15}px">${esc(s.downstream_detail)}</div>` : ""}
       <div class="wf-track">
         <div class="wf-bar ${failed ? "bar-err" : k.bar}" style="left:${left}%;width:${width}%">
           <i class="self" style="width:${selfPct}%"></i>
-          ${width > 9 ? `<span>${dur(s.duration_ms)}</span>` : ""}
         </div>
       </div>
     </div>`;
   }).join("");
 
+  // Two panes, not one scrolling column: the waterfall stays on screen
+  // while its detail is read, so picking a different span is "click it" --
+  // not "scroll up, click, scroll back down to where the detail landed
+  // this time." Comparing spans is exactly the case D22/D24 already
+  // reasoned about for comparing TRACES; it applies one level down too.
   el("drawer-body").innerHTML = `
     <div class="dr-head">
       <div class="dr-title">
@@ -574,23 +578,27 @@ function renderDrawer(t, selectedId) {
     ${t.truncated ? `<div class="note-bar"><span>${ICON_WARNING}</span><div>
       <b>This trace is too large to show in full.</b> These are the first
       ${num(t.span_cap)} spans, from the start of the call.</div></div>` : ""}
-    <div class="wf-head">
-      <div>Span</div><div class="num">Duration</div>
-      <div class="axis"><span>0</span><span>${dur(total * 0.25)}</span><span>${dur(total * 0.5)}</span>
-        <span>${dur(total * 0.75)}</span><span>${dur(total)}</span></div>
-    </div>
-    <div class="wf">${rows}</div>
-    ${remaining > 0 ? `<div class="wf-more">
-      <button id="wf-more" type="button">Show ${num(Math.min(WF_STEP, remaining))} more</button>
-      <span class="mute">${num(visible.length)} of ${num(t.spans.length)} spans</span>
-    </div>` : ""}
-    <div id="span-detail"></div>`;
+    <div class="dr-split">
+      <div class="dr-waterfall">
+        <div class="wf-head"><span>Span</span><span>${dur(total)} total</span></div>
+        <div class="wf">${rows}</div>
+        ${remaining > 0 ? `<div class="wf-more">
+          <button id="wf-more" type="button">Show ${num(Math.min(WF_STEP, remaining))} more</button>
+          <span class="mute">${num(visible.length)} of ${num(t.spans.length)} spans</span>
+        </div>` : ""}
+      </div>
+      <div class="dr-detail"><div id="span-detail"></div></div>
+    </div>`;
 
+  // Selecting a span updates ONLY the selection highlight and the detail
+  // pane -- re-rendering the whole waterfall on every click would reset
+  // its scroll position, which is exactly the list-losing-your-place
+  // problem this split exists to avoid.
   bindAll("[data-span]", (n) => {
     S.span = n.dataset.span;
     pushUrl();
-    renderDrawer(S.traceData, S.span);
-    el("span-detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    document.querySelectorAll(".wf-row").forEach((r) => r.classList.toggle("sel", r === n));
+    showSpanDetail(t, S.span);
   });
   const more = el("wf-more");
   if (more) more.onclick = () => {

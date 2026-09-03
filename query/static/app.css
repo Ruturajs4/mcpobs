@@ -235,13 +235,29 @@ tbody tr.sel td { border-bottom-color: transparent; }
 .scrim { position: fixed; inset: 0; background: #0006; opacity: 0; pointer-events: none;
   transition: opacity .18s; z-index: 40; }
 .drawer.open ~ .scrim, body:has(.drawer.open) .scrim { opacity: 1; pointer-events: auto; }
-.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(62%, 1000px);
+/* Widened from 62%/1000px: a two-pane span view needs real room for both
+   the waterfall list and a request/response body at once. Once you are
+   reading spans within ONE trace, comparison has already shifted from
+   "which trace" (the list behind this drawer) to "which span" (inside
+   it) -- so covering more of the list here is the correct trade, not a
+   regression of the list-stays-visible reasoning above. */
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(85%, 1360px);
   background: var(--panel); border-left: 1px solid var(--border);
   box-shadow: -18px 0 40px #0007; transform: translateX(100%);
   transition: transform .2s cubic-bezier(.4, 0, .2, 1); z-index: 50;
   display: flex; flex-direction: column; }
 .drawer.open { transform: none; }
-.drawer-body { flex: 1; overflow-y: auto; }
+.drawer-body { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+/* Waterfall on the left, span detail on the right, each scrolling on its
+   own. Picking a different span no longer means "scroll down to where the
+   detail rendered last time, then scroll back up to pick another" -- both
+   stay on screen together, which is the whole point of a trace view: you
+   are comparing spans, not reading one in isolation. */
+.dr-split { flex: 1; display: flex; overflow: hidden; min-height: 0; }
+.dr-waterfall { width: 360px; flex: none; overflow-y: auto;
+  border-right: 1px solid var(--border); }
+.dr-detail { flex: 1; overflow-y: auto; min-width: 0; background: var(--bg); }
 .dr-close { position: absolute; top: 12px; right: 14px; z-index: 2;
   background: var(--raised); border: 1px solid var(--border); color: var(--text-dim);
   width: 26px; height: 26px; border-radius: var(--r); cursor: pointer;
@@ -258,32 +274,35 @@ tbody tr.sel td { border-bottom-color: transparent; }
 .kv .v { font-size: 13px; font-family: var(--mono); }
 
 /* ------------------------------------------------------------ waterfall */
-.wf-head { display: grid; grid-template-columns: 300px 84px 1fr; gap: 14px;
-  padding: 8px 18px; border-bottom: 1px solid var(--border);
-  font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
-  color: var(--text-mute); font-weight: 600; }
-.axis { display: flex; justify-content: space-between; font-family: var(--mono);
-  font-size: 9.5px; text-transform: none; letter-spacing: 0; }
-.wf-row { display: grid; grid-template-columns: 300px 84px 1fr; gap: 14px;
-  align-items: center; padding: 0 18px; border-bottom: 1px solid var(--border-lo);
-  min-height: 34px; cursor: pointer; transition: background .1s; }
+/* Compact, for the 360px list pane: a name+duration line, then a full-width
+   track underneath, rather than the three-column layout a full-width
+   single column used to afford. Same colors, same self-time treatment --
+   only the spatial arrangement changes for the narrower column. */
+.wf-head { display: flex; justify-content: space-between; padding: 8px 14px;
+  border-bottom: 1px solid var(--border); font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--text-mute); font-weight: 600; }
+.wf-row { padding: 7px 14px 8px; border-bottom: 1px solid var(--border-lo);
+  cursor: pointer; transition: background .1s; }
 .wf-row:hover { background: var(--raised); }
 .wf-row.sel { background: #1b2136; box-shadow: inset 2px 0 0 var(--accent); }
-.wf-name { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.wf-name .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.wf-name { display: flex; align-items: center; gap: 6px; min-width: 0; margin-bottom: 5px; }
+.wf-name .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .wf-name .rail { flex: none; width: 11px; height: 10px; margin: -10px 0 0 -3px;
   border-left: 1px solid var(--border); border-bottom: 1px solid var(--border);
   border-bottom-left-radius: 3px; }
+.wf-dur { margin-left: auto; flex: none; font-size: 11px; padding-left: 6px; }
 .rootmark { font-size: 9.5px; flex: none; }
 /* Status at a glance: finding the failing span in a deep trace should not
    require reading every row. */
 .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
 .d-ok { background: var(--ok); } .d-err { background: var(--err); }
 .d-none { background: var(--text-mute); opacity: .4; }
-/* What the span actually did, inline -- so "where did the time go" is
-   answerable without opening every span in turn. */
+/* What the span actually did -- so "where did the time go" is answerable
+   without opening every span in turn. Its own line now: there is no
+   third grid column left to tuck it into at this width. */
 .fact { font-family: var(--mono); font-size: 10px; color: var(--text-mute);
-  border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; flex: none; }
+  border: 1px solid var(--border); border-radius: 3px; padding: 0 4px;
+  display: inline-block; margin-bottom: 5px; }
 
 .wf-kind { font-size: 9.5px; padding: 1px 5px; border-radius: 3px; font-family: var(--mono);
   text-transform: uppercase; letter-spacing: .04em; border: 1px solid; flex: none; }
@@ -293,21 +312,19 @@ tbody tr.sel td { border-bottom-color: transparent; }
 .k-llm { color: var(--purple); border-color: #a855f755; background: #a855f714; }
 .k-int { color: var(--text-mute); border-color: var(--border); }
 
-.wf-track { position: relative; height: 18px; background: var(--border-lo); border-radius: 3px; }
-.wf-bar { position: absolute; top: 0; height: 18px; border-radius: 3px; min-width: 2px;
-  display: flex; align-items: center; padding: 0 5px; overflow: hidden; opacity: .55; }
+.wf-track { position: relative; height: 10px; background: var(--border-lo); border-radius: 3px; }
+.wf-bar { position: absolute; top: 0; height: 10px; border-radius: 3px; min-width: 2px;
+  overflow: hidden; opacity: .55; }
 /* Self-time as a solid inner segment against a faded total: the difference
    between "this span is slow" and "this span waits on something slow". */
 .wf-bar .self { position: absolute; left: 0; top: 0; bottom: 0;
   background: inherit; opacity: 1; border-radius: 3px; }
-.wf-bar span { font-size: 10px; font-family: var(--mono); color: #fff;
-  white-space: nowrap; position: relative; z-index: 1; }
 .bar-mcp { background: #4e74f8; } .bar-http { background: #06b6d4; }
 .bar-db { background: #f59e0b; } .bar-llm { background: #a855f7; }
 .bar-int { background: #3f444f; } .bar-err { background: #ef4444; }
 
 /* --------------------------------------------------------- span detail */
-.detail { padding: 16px 18px 40px; border-top: 1px solid var(--border); background: var(--bg); }
+.detail { padding: 16px 18px 40px; }
 .detail-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
 .detail-head strong { font-size: 13.5px; }
 
