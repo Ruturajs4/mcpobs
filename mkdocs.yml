@@ -27,7 +27,7 @@ site_name: MCP Observability
 site_description: >-
   MCP-native observability for production MCP servers. See which tool failed,
   why it failed, and where the time went.
-site_url: https://docs.example.com/
+site_url: https://docs.mcpobs.dev/
 repo_url: https://github.com/Ruturajs4/mcpobs
 edit_uri: ""
 
