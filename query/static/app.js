@@ -11,6 +11,14 @@
 
 const S = { view: "overview", window: 60, trace: null, span: null, kind: "tool" };
 
+/* Inline Phosphor icons (regular weight, fill="currentColor" via .note-bar/.dr-close
+   svg{} rule in app.css) -- replaces the hand-picked Unicode glyphs that used to
+   sit here, which rendered at inconsistent weights across platforms. */
+const ICON_WARNING = '<svg viewBox="0 0 256 256"><path d="M236.8,188.09,149.35,36.22h0a24.76,24.76,0,0,0-42.7,0L19.2,188.09a23.51,23.51,0,0,0,0,23.72A24.35,24.35,0,0,0,40.55,224h174.9a24.35,24.35,0,0,0,21.33-12.19A23.51,23.51,0,0,0,236.8,188.09ZM222.93,203.8a8.5,8.5,0,0,1-7.48,4.2H40.55a8.5,8.5,0,0,1-7.48-4.2,7.59,7.59,0,0,1,0-7.72L120.52,44.21a8.75,8.75,0,0,1,15,0l87.45,151.87A7.59,7.59,0,0,1,222.93,203.8ZM120,144V104a8,8,0,0,1,16,0v40a8,8,0,0,1-16,0Zm20,36a12,12,0,1,1-12-12A12,12,0,0,1,140,180Z"/></svg>';
+const ICON_HOURGLASS = '<svg viewBox="0 0 256 256"><path d="M200,75.64V40a16,16,0,0,0-16-16H72A16,16,0,0,0,56,40V76a16.07,16.07,0,0,0,6.4,12.8L114.67,128,62.4,167.2A16.07,16.07,0,0,0,56,180v36a16,16,0,0,0,16,16H184a16,16,0,0,0,16-16V180.36a16.09,16.09,0,0,0-6.35-12.77L141.27,128l52.38-39.6A16.05,16.05,0,0,0,200,75.64ZM184,216H72V180l56-42,56,42.35Zm0-140.36L128,118,72,76V40H184Z"/></svg>';
+const ICON_CIRCLE_HALF = '<svg viewBox="0 0 256 256"><path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm8,16.37a86.4,86.4,0,0,1,16,3V212.67a86.4,86.4,0,0,1-16,3Zm32,9.26a87.81,87.81,0,0,1,16,10.54V195.83a87.81,87.81,0,0,1-16,10.54ZM40,128a88.11,88.11,0,0,1,80-87.63V215.63A88.11,88.11,0,0,1,40,128Zm160,50.54V77.46a87.82,87.82,0,0,1,0,101.08Z"/></svg>';
+const ICON_X = '<svg viewBox="0 0 256 256"><path d="M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z"/></svg>';
+
 /* The API key, held in localStorage. A cookie would ride along automatically on
    every request the browser makes to this origin, which is what makes CSRF
    possible; an explicit header cannot be sent by a form on someone else's
@@ -244,11 +252,11 @@ async function viewOverview(signal) {
   // said "~0.75ms" -- a number measured once on one laptop and then frozen into
   // the UI, so it was wrong for every other host and silent when the clock was
   // fine but most calls still floored to zero.
-  if (o.latency.clock_warning) banners.push(`<div class="note-bar"><span>&#9888;</span><div>
+  if (o.latency.clock_warning) banners.push(`<div class="note-bar"><span>${ICON_WARNING}</span><div>
     <b>Latency percentiles are not reliable on this host.</b>
     ${esc(o.latency.clock_warning)}. Linux hosts are nanosecond-grade and
     unaffected; a server on Windows is not.</div></div>`);
-  if (o.classified_ratio < 1) banners.push(`<div class="note-bar"><span>◐</span><div>
+  if (o.classified_ratio < 1) banners.push(`<div class="note-bar"><span>${ICON_CIRCLE_HALF}</span><div>
     <b>${Math.round(o.classified_ratio * 100)}% of failures are precisely classified.</b>
     The rest come from servers not running the <code>mcpobs</code> helper and report
     only the coarse <em>tool error</em>. Two data qualities, kept distinct.</div></div>`);
@@ -390,7 +398,7 @@ async function viewCapabilities(signal) {
      bites, SAY SO: a table that silently stops at 200 is one where somebody
      concludes a tool is not being called. The sort is named because which rows
      were dropped depends entirely on it. */
-  const cut = page.truncated ? `<div class="note-bar"><span>&#9888;</span><div>
+  const cut = page.truncated ? `<div class="note-bar"><span>${ICON_WARNING}</span><div>
     <b>Showing the first ${num(page.cap)}.</b> More ${esc(meta[1].toLowerCase())}
     matched than fit in one table. These are the top ${num(page.cap)} by
     <em>${esc(SORT_LABELS[valuesFromUrl().sort || "calls"])}</em> — narrow with search,
@@ -559,11 +567,11 @@ function renderDrawer(t, selectedId) {
         <div><span class="k">Started</span><span class="v">${esc(t.start_time.replace("T", " ").slice(0, 19))}</span></div>
       </div>
     </div>
-    ${t.complete === false ? `<div class="note-bar"><span>&#8987;</span><div>
+    ${t.complete === false ? `<div class="note-bar"><span>${ICON_HOURGLASS}</span><div>
       <b>This trace is still arriving.</b> The duration and span count below are
       lower bounds &mdash; more spans are on their way. Refresh in a
       moment.</div></div>` : ""}
-    ${t.truncated ? `<div class="note-bar"><span>&#9888;</span><div>
+    ${t.truncated ? `<div class="note-bar"><span>${ICON_WARNING}</span><div>
       <b>This trace is too large to show in full.</b> These are the first
       ${num(t.span_cap)} spans, from the start of the call.</div></div>` : ""}
     <div class="wf-head">
@@ -1248,7 +1256,7 @@ function renderFilterPanel() {
   }
   if (advancedRows === null) advancedRows = readAdvancedRows();
   const values = valuesFromUrl();
-  panel.innerHTML = `<div class="filter-panel-head"><div><strong>Filters</strong><span>Refine this ${esc(filterCatalog.view)} view</span></div><button id="close-filter-panel" type="button" aria-label="Close filters">×</button></div>
+  panel.innerHTML = `<div class="filter-panel-head"><div><strong>Filters</strong><span>Refine this ${esc(filterCatalog.view)} view</span></div><button id="close-filter-panel" type="button" aria-label="Close filters">${ICON_X}</button></div>
     <div class="filter-panel-body">${filterCatalog.groups.map((group) => `<section class="filter-group"><h4>${esc(group.name)}</h4>${group.filters.map((spec) => genericControl(spec, values[spec.key])).join("")}</section>`).join("")}</div>
     <div class="filter-panel-foot"><button class="chip-clear" id="panel-clear" type="button">Clear all</button><button class="btn-ghost" id="panel-done" type="button">Done</button></div>`;
   panel.querySelector(".filter-panel-body").insertAdjacentHTML("beforeend", advancedPanel());
