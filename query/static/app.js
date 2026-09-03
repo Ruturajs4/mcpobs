@@ -26,10 +26,19 @@ const ICON_X = '<svg viewBox="0 0 256 256"><path d="M205.66,194.34a8,8,0,0,1-11.
 const KEY_STORAGE = "mcpobs.key";
 const readKey = () => localStorage.getItem(KEY_STORAGE) || "";
 
-async function api(path, signal = null) {
+/* The general form: any method, an optional body, extra headers. `api()`
+   below is the GET-only shape every view in this file already calls --
+   kept as its own function, unchanged, rather than folding callers over to
+   passing an options object for no benefit to them. `apiRequest` exists so
+   a registered extension (window.mcpobsConsole.api, below VIEWS) can also
+   POST/DELETE with the same auth and 401-handling, instead of reimplementing
+   both. */
+async function apiRequest(path, { method = "GET", body, headers = {}, signal } = {}) {
   const sep = path.includes("?") ? "&" : "?";
   const r = await fetch(`/api/v1${path}${sep}window_minutes=${S.window}`, {
-    headers: readKey() ? { "x-api-key": readKey() } : {},
+    method,
+    body,
+    headers: { ...(readKey() ? { "x-api-key": readKey() } : {}), ...headers },
     signal,
   });
   if (r.status === 401) {
@@ -40,6 +49,10 @@ async function api(path, signal = null) {
   }
   if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 200)}`);
   return r.json();
+}
+
+async function api(path, signal = null) {
+  return apiRequest(path, { signal });
 }
 
 function signIn(rejected) {
@@ -903,6 +916,49 @@ const VIEWS = {
   errors:       { t: "Errors",       f: viewErrors },
 };
 
+/* ===========================================================================
+   Extension point. A managed build (ECC or otherwise) can add a dashboard
+   view -- a new nav item plus a render function -- without forking this file
+   or index.html. `boot()` below `import()`s an optional module
+   ("/static/extensions.js") that a self-hosted install never has; a missing
+   module 404s, the promise rejects, and boot() swallows it -- so this object
+   existing costs a self-hosted user nothing beyond one always-attempted,
+   same-origin request for a file that isn't there.
+
+   Deliberately small: registering a view and the few primitives (an
+   authenticated fetch, a DOM lookup, HTML-escaping) an external view is
+   likely to need anyway, reused rather than reimplemented. Nothing here
+   names what any particular extension is for -- this file has no idea
+   "alerts" exists. */
+window.mcpobsConsole = {
+  version: 1,
+  registerView(key, { title, navGroup, navLabel, navIcon = "", render }) {
+    if (VIEWS[key]) {
+      console.warn(`mcpobsConsole: view "${key}" is already registered`);
+      return;
+    }
+    VIEWS[key] = { t: title, f: render };
+    const nav = el("nav");
+    if (navGroup) {
+      const g = document.createElement("div");
+      g.className = "grp";
+      g.textContent = navGroup;
+      nav.appendChild(g);
+    }
+    const b = document.createElement("button");
+    b.type = "button";
+    b.dataset.view = key;
+    b.innerHTML = `${navIcon ? `<span class="ic">${navIcon}</span> ` : ""}${esc(navLabel || title)}`;
+    // The same click behaviour every built-in nav button gets (#nav button's
+    // own click binding runs once at load, before this button exists).
+    b.onclick = () => go(key);
+    nav.appendChild(b);
+  },
+  api: apiRequest,
+  el,
+  esc,
+};
+
 function bindAll(sel, fn) {
   // The event is passed through: a chip's remove button sits inside a row that
   // has its own click handler, so it needs stopPropagation.
@@ -1494,8 +1550,13 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-(function boot() {
+(async function boot() {
   if (!readKey()) { signIn(false); return; }
+  // Awaited before the first render so a bookmarked ?view=<extension-key>
+  // URL resolves correctly instead of racing the extension's registration.
+  // Rejects (network 404) in a self-hosted install with no such file --
+  // silently, on purpose (see window.mcpobsConsole's own comment above).
+  await import("/static/extensions.js").catch(() => {});
   restoreRoute();
   renderFilterBar();
   render();
