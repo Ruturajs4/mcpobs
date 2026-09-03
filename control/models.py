@@ -92,6 +92,32 @@ class Principal(_Row):
         return scope in self.scopes
 
 
+class AlertChannel(_Row):
+    id: int
+    org_id: int
+    kind: str
+    #: The webhook URL. Present here because this object is the return value
+    #: of *creating* a channel -- the one moment its target is shown back.
+    #: Nothing reads a channel row back out through the admin API afterward
+    #: (see `query/admin.py`'s alert-channel routes), the same one-way shape
+    #: `IssuedKey.token` already has for a key's secret.
+    target: str = Field(repr=False)
+
+
+class AlertRule(_Row):
+    id: int
+    org_id: int
+    project_id: int
+    name: str
+    metric: str
+    tool_name: str | None = None
+    threshold: float
+    window_minutes: int = 5
+    consecutive_breaches: int = 2
+    channel_id: int
+    enabled: bool = True
+
+
 class IssuedKey(_Row):
     """A newly minted key. The secret exists in this object and nowhere else.
 
