@@ -970,7 +970,7 @@ async function render() {
   const v = VIEWS[S.view] || VIEWS.overview;
   el("title").textContent = S.view === "capabilities"
     ? (KINDS.find(([k]) => k === S.kind)?.[1] ?? "Capabilities") : v.t;
-  document.querySelectorAll("#nav a").forEach((a) =>
+  document.querySelectorAll("#nav button").forEach((a) =>
     a.classList.toggle("on", a.dataset.view === S.view && (!a.dataset.kind || a.dataset.kind === S.kind)));
 
   /* THE FLICKER. This blanked the pane to a spinner on EVERY render, including
@@ -1018,7 +1018,7 @@ async function render() {
   }
 }
 
-document.querySelectorAll("#nav a").forEach((a) =>
+document.querySelectorAll("#nav button").forEach((a) =>
   (a.onclick = () => go(a.dataset.view, a.dataset.kind ? { kind: a.dataset.kind } : {})));
 
 el("range").onclick = (e) => {
