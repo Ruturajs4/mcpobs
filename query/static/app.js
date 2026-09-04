@@ -657,6 +657,39 @@ async function showSpanDetail(t, spanId) {
   }
 }
 
+/* A visual hint for `client_name`, nothing more. These are ORIGINAL glyphs,
+   not the clients' own logos -- this field is self-reported and unverified
+   (see the "client" row below), and drawing a real brand's mark next to
+   text that anyone can put anything in would look like a verified badge it
+   is not. Matched by loose substring, case-insensitively: `client_name` is
+   free text, and a client naming itself "Claude-Code-Fork/9.9" should still
+   get the terminal glyph rather than the generic fallback. Unmatched but
+   non-empty names get a plain "connected" glyph rather than nothing, so a
+   client we don't specifically recognise still reads as a client. */
+const CLIENT_ICON_CLI =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 9l3 3-3 3"/><path d="M12 15h6"/></svg>';
+const CLIENT_ICON_ASSISTANT =
+  '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2z"/></svg>';
+const CLIENT_ICON_EDITOR =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 8.5h18"/><path d="M8 13v3"/></svg>';
+const CLIENT_ICON_INSPECTOR =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 00-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 005.4-5.4l-2.8 2.8-2-2 2.8-2.8z"/></svg>';
+const CLIENT_ICON_GENERIC =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v4M15 2v4M7 6h10v3a5 5 0 01-10 0V6z"/><path d="M12 14v4M9 18h6"/></svg>';
+
+const CLIENT_ICON_RULES = [
+  [/claude.?code/i, CLIENT_ICON_CLI],
+  [/inspector/i, CLIENT_ICON_INSPECTOR],
+  [/claude/i, CLIENT_ICON_ASSISTANT],
+  [/cursor|windsurf|cline|continue|vscode|(?:^|[^a-z])code(?:[^a-z]|$)/i, CLIENT_ICON_EDITOR],
+];
+
+function clientIcon(name) {
+  if (!name) return "";
+  const svg = (CLIENT_ICON_RULES.find(([re]) => re.test(name)) || [null, CLIENT_ICON_GENERIC])[1];
+  return `<span class="client-ic">${svg}</span>`;
+}
+
 /* Everything we hold about one span. Nothing omitted for being uninteresting:
    the console previously showed 17 of 55 columns, and the dropped ones were
    exactly what you need when something is wrong. */
@@ -852,8 +885,13 @@ function renderSpanDetail(d) {
         row("session", d.session_id),
         // Self-reported by the client and unverified, exactly as the spec warns.
         // Labelled so nobody reads it as an identity the server authenticated.
-        row("client", [d.client_name, d.client_version].filter(Boolean).join(" ")
-          + (d.client_name ? " · self-reported" : "")),
+        // Not built via row(): the icon is real markup from OUR fixed lookup
+        // (clientIcon), not derived from d.client_name itself, but the name/
+        // version text still goes through esc() same as row() would -- it is
+        // exactly the untrusted, self-reported value the comment warns about.
+        d.client_name ? `<div class="f"><span class="fk">client</span><span class="fv">${clientIcon(d.client_name)}${esc(
+          [d.client_name, d.client_version].filter(Boolean).join(" ") + " · self-reported"
+        )}</span></div>` : "",
         row("mrtr in", d.mrtr_state_in), row("mrtr out", d.mrtr_state_out),
       ].join(""))}
       ${group("Downstream", [

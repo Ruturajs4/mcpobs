@@ -410,6 +410,11 @@ tbody tr.sel td { border-bottom-color: transparent; }
   overflow-wrap: anywhere; }
 .fv { font-family: var(--mono); font-size: 11.5px; word-break: break-word; }
 .fv.bad { color: var(--err); }
+/* clientIcon()'s glyph, inline with the "client" row's text. Not .ic (that
+   class is nav-scoped) -- same sizing convention, own name. */
+.client-ic { display: inline-flex; width: 13px; height: 13px; margin-right: 6px;
+  vertical-align: -2px; opacity: .8; flex: none; }
+.client-ic svg { width: 100%; height: 100%; display: block; }
 /* A JSON-shaped attribute value (mcpobs.http.request.headers and friends)
    needs the tree's own width, not the narrow inline .fv column -- spans the
    full row across .fields' auto-fit columns instead of sharing one. */
