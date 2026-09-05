@@ -39,6 +39,7 @@ from mcpobs.downstream import available, instrument_downstream
 from mcpobs.http import HttpBodyCapture, instrument_httpx
 from mcpobs.middleware import FailureClassifierMiddleware
 from mcpobs.payload import PayloadCapture
+from mcpobs.sampling import SamplingSpanProcessor
 from mcpobs.streaming import ObservedSubscriptionBus, instrument_progress
 
 # Read from the installed metadata rather than written here, so it cannot drift
@@ -64,6 +65,7 @@ __all__ = [
     "HttpBodyCapture",
     "ObservedSubscriptionBus",
     "PayloadCapture",
+    "SamplingSpanProcessor",
     "__version__",
     "available",
     "instrument",

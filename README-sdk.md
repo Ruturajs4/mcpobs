@@ -65,6 +65,30 @@ On failing calls only, a truncated error message is recorded so you can see
 *why* something failed. `instrument(mcp, capture_error_detail=False)` turns that
 off.
 
+## Sending less than everything
+
+High-volume servers do not always want every span exported. `SamplingSpanProcessor`
+wraps your real exporter and decides, per call, whether to forward it:
+
+```python
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from mcpobs import SamplingSpanProcessor
+
+provider.add_span_processor(
+    SamplingSpanProcessor(BatchSpanProcessor(exporter), mode="errors_only")
+)
+```
+
+- `mode="all"` (default) — export everything. Identical to not wrapping at all.
+- `mode="errors_only"` — export only calls that actually failed.
+- `mode="percentage"` with `rate=0.1` — export failures always, plus 10% of
+  successful calls.
+
+**Failures are never sampled away**, in either mode. The decision is made after
+a call finishes, not before — sampling before you know whether something is
+about to fail would mean discarding traffic *before* deciding which slice would
+have been the failures, which defeats the reason to have this product at all.
+
 ## Servers launched by the client (stdio)
 
 If the client starts your server, it runs on your **user's** machine — so it
